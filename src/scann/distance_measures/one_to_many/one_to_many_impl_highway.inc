@@ -15,6 +15,7 @@
 #endif
 
 #include "hwy/highway.h"
+#include "scann/distance_measures/one_to_one/dot_product.h"
 
 #if HWY_HAVE_CONSTEXPR_LANES
 HWY_BEFORE_NAMESPACE();
@@ -333,7 +334,7 @@ SCANN_HIGHWAY_INLINE void HorizontalSum4X(D d, hn::Vec<D>& accums0,
 
 SCANN_HIGHWAY_INLINE double StaticallyInvokeOneToOneDenseDotProduct(
     const DatapointPtr<float>& qq, const DatapointPtr<int8_t>& db) {
-  return ::research_scann::dp_internal::DenseDotProductHighway(db, qq);
+  return DenseDotProduct<int8_t, float>(db, qq);
 }
 
 SCANN_HIGHWAY_INLINE double StaticallyInvokeOneToOneDenseDotProduct(
