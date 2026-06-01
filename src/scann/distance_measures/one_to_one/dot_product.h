@@ -29,6 +29,7 @@
 #include "scann/distance_measures/one_to_one/dot_product_highway.h"
 #include "scann/distance_measures/one_to_one/dot_product_neon.h"
 #include "scann/distance_measures/one_to_one/dot_product_sse4.h"
+#include "scann/distance_measures/one_to_one/dot_product_sve.h"
 #include "scann/utils/common.h"
 #include "scann/utils/intrinsics/flags.h"
 #include "scann/utils/reduction.h"
@@ -302,7 +303,9 @@ inline double DenseDotProduct<float, int8_t, int8_t>(
 template <>
 inline double DenseDotProduct<int8_t, float>(const DatapointPtr<int8_t>& a,
                                              const DatapointPtr<float>& b) {
-  if (RuntimeSupportsNeon()) {
+  if (RuntimeSupportsSVE()) {
+    return dp_internal::DenseDotProductSve(a, b);
+  } else if (RuntimeSupportsNeon()) {
     return dp_internal::DenseDotProductNeon(a, b);
   } else {
     return DenseDotProductFallback(a, b);
