@@ -67,6 +67,13 @@ class EpsilonFilteringCallback {
     slow_path_fn_(block, first_dp_idx, query_idx);
   }
 
+  SCANN_INLINE void InvokeSlowPath(MutableSpan<FloatT> block,
+                                   size_t first_dp_idx, size_t query_idx) {
+    slow_path_fn_(block, first_dp_idx, query_idx);
+  }
+
+  std::atomic<FloatT>* epsilons() const { return epsilons_; }
+
  private:
   std::atomic<FloatT>* epsilons_;
   ManyToManyResultsCallback<FloatT> slow_path_fn_;

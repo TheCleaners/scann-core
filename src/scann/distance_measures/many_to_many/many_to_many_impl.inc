@@ -632,14 +632,6 @@ class DenseManyToManyTransposed final
 
   template <size_t kNumQueries>
   SCANN_SIMD_INLINE static void BottomLevelBatchNeon(BottomLevelBatchArgs args);
-
-  template <size_t kNumQueries>
-  SCANN_SIMD_INLINE static Simd<FloatT, kNumQueries, 2>
-  DoAccumulationTransposedTemplateNeon(const FloatT* transposed_block0,
-                                       const FloatT* transposed_block1,
-                                       const FloatT** query_ptrs,
-                                       const FloatT* query_norms,
-                                       size_t dimensionality);
 #endif
 
   template <size_t kNumQueries>

@@ -32,6 +32,40 @@ static inline int8x8_t load_s8_4x1(const int8_t* p) {
   return ret;
 }
 
+static inline void load_f32_2x10(const float* s, ptrdiff_t src_stride,
+                                 float32x2_t& s0, float32x2_t& s1,
+                                 float32x2_t& s2, float32x2_t& s3,
+                                 float32x2_t& s4, float32x2_t& s5,
+                                 float32x2_t& s6, float32x2_t& s7,
+                                 float32x2_t& s8, float32x2_t& s9) {
+  s0 = vld1_f32(s);
+  s += src_stride;
+  s1 = vld1_f32(s);
+  s += src_stride;
+  s2 = vld1_f32(s);
+  s += src_stride;
+  s3 = vld1_f32(s);
+  s += src_stride;
+  s4 = vld1_f32(s);
+  s += src_stride;
+  s5 = vld1_f32(s);
+  s += src_stride;
+  s6 = vld1_f32(s);
+  s += src_stride;
+  s7 = vld1_f32(s);
+  s += src_stride;
+  s8 = vld1_f32(s);
+  s += src_stride;
+  s9 = vld1_f32(s);
+}
+
+static inline void load_f32_4x2(const float* s, ptrdiff_t src_stride,
+                                float32x4_t& s0, float32x4_t& s1) {
+  s0 = vld1q_f32(s);
+  s += src_stride;
+  s1 = vld1q_f32(s);
+}
+
 static inline void load_f32_4x4(const float* s, ptrdiff_t src_stride,
                                 float32x4_t& s0, float32x4_t& s1,
                                 float32x4_t& s2, float32x4_t& s3) {
@@ -42,6 +76,55 @@ static inline void load_f32_4x4(const float* s, ptrdiff_t src_stride,
   s2 = vld1q_f32(s);
   s += src_stride;
   s3 = vld1q_f32(s);
+}
+
+static inline void load_f32_4x8(const float* s, ptrdiff_t src_stride,
+                                float32x4_t& s0, float32x4_t& s1,
+                                float32x4_t& s2, float32x4_t& s3,
+                                float32x4_t& s4, float32x4_t& s5,
+                                float32x4_t& s6, float32x4_t& s7) {
+  s0 = vld1q_f32(s);
+  s += src_stride;
+  s1 = vld1q_f32(s);
+  s += src_stride;
+  s2 = vld1q_f32(s);
+  s += src_stride;
+  s3 = vld1q_f32(s);
+  s += src_stride;
+  s4 = vld1q_f32(s);
+  s += src_stride;
+  s5 = vld1q_f32(s);
+  s += src_stride;
+  s6 = vld1q_f32(s);
+  s += src_stride;
+  s7 = vld1q_f32(s);
+}
+
+static inline void load_dup_f32_1x10(const float* s, ptrdiff_t src_stride,
+                                     float32x4_t& s0, float32x4_t& s1,
+                                     float32x4_t& s2, float32x4_t& s3,
+                                     float32x4_t& s4, float32x4_t& s5,
+                                     float32x4_t& s6, float32x4_t& s7,
+                                     float32x4_t& s8, float32x4_t& s9) {
+  s0 = vdupq_n_f32(*s);
+  s += src_stride;
+  s1 = vdupq_n_f32(*s);
+  s += src_stride;
+  s2 = vdupq_n_f32(*s);
+  s += src_stride;
+  s3 = vdupq_n_f32(*s);
+  s += src_stride;
+  s4 = vdupq_n_f32(*s);
+  s += src_stride;
+  s5 = vdupq_n_f32(*s);
+  s += src_stride;
+  s6 = vdupq_n_f32(*s);
+  s += src_stride;
+  s7 = vdupq_n_f32(*s);
+  s += src_stride;
+  s8 = vdupq_n_f32(*s);
+  s += src_stride;
+  s9 = vdupq_n_f32(*s);
 }
 
 static inline void store_f32_4x4(float* s, ptrdiff_t dst_stride,
