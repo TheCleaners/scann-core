@@ -25,7 +25,7 @@ SCANN_SIMD_INLINE Simd<T, index_sequence_sum_v<kNumElements...>> SimdConcat(
 }
 
 template <typename FloatT>
-SCANN_SIMD_INLINE void ExpandPretransposedFP8BlockImpl(
+SCANN_SIMD_INLINE void ExpandPretransposedFP8BlockImplHighway(
     ConstSpan<int8_t> block, size_t dimensionality, size_t n_to_transpose,
     const float* __restrict__ inverse_multipliers_or_null,
     FloatT* __restrict__ transposed_storage) {
@@ -152,16 +152,32 @@ class M2MTransposer {
                                                 const FloatT* database,
                                                 size_t first_dp_idx,
                                                 size_t n_to_transpose) {
+#if defined(__aarch64__)
+    if constexpr (std::is_same_v<FloatT, float>) {
+      if (RuntimeSupportsNeon()) {
+        TransposeDatabaseBlockNeon(dimensionality, database, first_dp_idx,
+                                   n_to_transpose);
+        return;
+      }
+    }
+#endif
+    TransposeDatabaseBlockHighway(dimensionality, database, first_dp_idx,
+                                  n_to_transpose);
+  }
+
+  SCANN_SIMD_INLINE void TransposeDatabaseBlockHighway(
+      const size_t dimensionality, const FloatT* database, size_t first_dp_idx,
+      size_t n_to_transpose) {
     FloatT* __restrict__ transposed_ptr0 = GetTransposedPtr0(dimensionality);
     FloatT* __restrict__ transposed_ptr1 = GetTransposedPtr1(dimensionality);
 
     if (ABSL_PREDICT_FALSE(n_to_transpose <= kElementsPerRegister)) {
-      TransposeDatabaseBlockImpl(dimensionality, database, first_dp_idx,
-                                 n_to_transpose, transposed_ptr0);
+      TransposeDatabaseBlockImplHighway(dimensionality, database, first_dp_idx,
+                                        n_to_transpose, transposed_ptr0);
     } else {
-      TransposeDatabaseBlockImpl(dimensionality, database, first_dp_idx,
-                                 kElementsPerRegister, transposed_ptr0);
-      TransposeDatabaseBlockImpl(
+      TransposeDatabaseBlockImplHighway(dimensionality, database, first_dp_idx,
+                                        kElementsPerRegister, transposed_ptr0);
+      TransposeDatabaseBlockImplHighway(
           dimensionality, database, first_dp_idx + kElementsPerRegister,
           n_to_transpose - kElementsPerRegister, transposed_ptr1);
     }
@@ -170,7 +186,7 @@ class M2MTransposer {
     }
   }
 
-  SCANN_SIMD_INLINE static void TransposeDatabaseBlockImpl(
+  SCANN_SIMD_INLINE static void TransposeDatabaseBlockImplHighway(
       const size_t dimensionality, const FloatT* database, size_t first_dp_idx,
       size_t n_to_transpose, FloatT* __restrict__ transposed_storage) {
     DCHECK_LE(n_to_transpose, kElementsPerRegister);
@@ -213,20 +229,35 @@ class M2MTransposer {
       const FP8SimdBlockTransposedDatabase& fp8_db, size_t first_dp_idx,
       size_t n_to_transpose) {
     DCHECK_EQ(kElementsPerRegister, fp8_db.simd_block_size());
+#if defined(__aarch64__)
+    if constexpr (std::is_same_v<FloatT, float>) {
+      if (RuntimeSupportsNeon()) {
+        ExpandPretransposedFP8BlockNeon(fp8_db, first_dp_idx, n_to_transpose);
+        return;
+      }
+    }
+#endif
+    ExpandPretransposedFP8BlockHighway(fp8_db, first_dp_idx, n_to_transpose);
+  }
+
+  SCANN_SIMD_INLINE void ExpandPretransposedFP8BlockHighway(
+      const FP8SimdBlockTransposedDatabase& fp8_db, size_t first_dp_idx,
+      size_t n_to_transpose) {
+    DCHECK_EQ(kElementsPerRegister, fp8_db.simd_block_size());
     const size_t dimensionality = fp8_db.dimensionality();
     const size_t first_block_idx = first_dp_idx / kElementsPerRegister;
     FloatT* __restrict__ transposed_ptr0 = GetTransposedPtr0(dimensionality);
     FloatT* __restrict__ transposed_ptr1 = GetTransposedPtr1(dimensionality);
     if (ABSL_PREDICT_FALSE(n_to_transpose <= kElementsPerRegister)) {
-      ExpandPretransposedFP8BlockImpl(
+      ExpandPretransposedFP8BlockImplHighway(
           fp8_db.GetBlock(first_block_idx), dimensionality, n_to_transpose,
           fp8_db.inverse_fp8_multipliers().data(), transposed_ptr0);
     } else {
-      ExpandPretransposedFP8BlockImpl(fp8_db.GetBlock(first_block_idx),
-                                      dimensionality, kElementsPerRegister,
-                                      fp8_db.inverse_fp8_multipliers().data(),
-                                      transposed_ptr0);
-      ExpandPretransposedFP8BlockImpl(
+      ExpandPretransposedFP8BlockImplHighway(
+          fp8_db.GetBlock(first_block_idx), dimensionality,
+          kElementsPerRegister, fp8_db.inverse_fp8_multipliers().data(),
+          transposed_ptr0);
+      ExpandPretransposedFP8BlockImplHighway(
           fp8_db.GetBlock(first_block_idx + 1), dimensionality,
           n_to_transpose - kElementsPerRegister,
           fp8_db.inverse_fp8_multipliers().data(), transposed_ptr1);
@@ -236,7 +267,29 @@ class M2MTransposer {
     }
   }
 
+#if defined(__aarch64__)
+  SCANN_SIMD_INLINE void TransposeDatabaseBlockNeon(const size_t dimensionality,
+                                                    const FloatT* database,
+                                                    size_t first_dp_idx,
+                                                    size_t n_to_transpose);
+
+  SCANN_SIMD_INLINE void ExpandPretransposedFP8BlockNeon(
+      const FP8SimdBlockTransposedDatabase& fp8_db, size_t first_dp_idx,
+      size_t n_to_transpose);
+#endif
+
  private:
+#if defined(__aarch64__)
+  SCANN_SIMD_INLINE static void TransposeDatabaseBlockImplNeon(
+      const size_t dimensionality, const float* database, size_t first_dp_idx,
+      size_t n_to_transpose, float* __restrict__ transposed_storage);
+
+  SCANN_SIMD_INLINE static void ExpandPretransposedFP8BlockImplNeon(
+      ConstSpan<int8_t> block, size_t dimensionality, size_t n_to_transpose,
+      const float* __restrict__ inverse_multipliers_or_null,
+      float* __restrict__ transposed_storage);
+#endif
+
   SCANN_SIMD_INLINE static void AugmentWithL2Norms(
       FloatT* __restrict__ transposed_ptr0,
       FloatT* __restrict__ transposed_ptr1, size_t dimensionality) {
@@ -460,6 +513,23 @@ class DenseManyToManyTransposed final
   SCANN_SIMD_OUTLINE void MidLevelBatch(size_t first_q_idx, size_t num_queries,
                                         size_t first_dp_idx,
                                         size_t num_datapoints) final {
+#if defined(__aarch64__)
+    if constexpr (std::is_same_v<FloatT, float>) {
+      if (RuntimeSupportsNeon()) {
+        MidLevelBatchNeon(first_q_idx, num_queries, first_dp_idx,
+                          num_datapoints);
+        return;
+      }
+    }
+#endif
+    MidLevelBatchHighway(first_q_idx, num_queries, first_dp_idx,
+                         num_datapoints);
+  }
+
+  SCANN_SIMD_OUTLINE void MidLevelBatchHighway(size_t first_q_idx,
+                                               size_t num_queries,
+                                               size_t first_dp_idx,
+                                               size_t num_datapoints) {
     const size_t dimensionality = this->dimensionality_;
     const size_t q_idx_end = first_q_idx + num_queries;
 
@@ -472,11 +542,11 @@ class DenseManyToManyTransposed final
 
     Transposer* transposer = transposer_storage.get();
     if constexpr (kIsPretransposedFixed8) {
-      transposer->ExpandPretransposedFP8Block(*this->database_, first_dp_idx,
-                                              num_datapoints);
+      transposer->ExpandPretransposedFP8BlockHighway(
+          *this->database_, first_dp_idx, num_datapoints);
     } else {
-      transposer->TransposeDatabaseBlock(dimensionality, this->database_,
-                                         first_dp_idx, num_datapoints);
+      transposer->TransposeDatabaseBlockHighway(dimensionality, this->database_,
+                                                first_dp_idx, num_datapoints);
     }
 
     BottomLevelBatchArgs args;
@@ -494,7 +564,7 @@ class DenseManyToManyTransposed final
     args.callback = &this->callback_;
 
     while (args.first_q_idx + kSmallQueryStride <= q_idx_end) {
-      BottomLevelBatch<kSmallQueryStride>(args);
+      BottomLevelBatchHighway<kSmallQueryStride>(args);
       args.first_q_idx += kSmallQueryStride;
       if (kIsSquaredL2) {
         args.query_norms += kSmallQueryStride;
@@ -504,7 +574,7 @@ class DenseManyToManyTransposed final
 
     const size_t final_batch_size = q_idx_end - args.first_q_idx;
     SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE(kSmallQueryStride, final_batch_size,
-                                         BottomLevelBatch, args);
+                                         BottomLevelBatchHighway, args);
   }
 
   struct BottomLevelBatchArgs {
@@ -520,6 +590,12 @@ class DenseManyToManyTransposed final
 
   template <size_t kNumQueries>
   SCANN_SIMD_INLINE static void BottomLevelBatch(BottomLevelBatchArgs args) {
+    BottomLevelBatchHighway<kNumQueries>(args);
+  }
+
+  template <size_t kNumQueries>
+  SCANN_SIMD_INLINE static void BottomLevelBatchHighway(
+      BottomLevelBatchArgs args) {
     const size_t dimensionality = args.dimensionality;
     const FloatT* queries = args.queries;
     const FloatT* query_norms = args.query_norms;
@@ -547,6 +623,24 @@ class DenseManyToManyTransposed final
     Base::template PassResultsToCallback<kNumQueries>(
         accumulators, callback, first_q_idx, first_dp_idx, num_datapoints);
   }
+
+#if defined(__aarch64__)
+  SCANN_SIMD_OUTLINE void MidLevelBatchNeon(size_t first_q_idx,
+                                            size_t num_queries,
+                                            size_t first_dp_idx,
+                                            size_t num_datapoints);
+
+  template <size_t kNumQueries>
+  SCANN_SIMD_INLINE static void BottomLevelBatchNeon(BottomLevelBatchArgs args);
+
+  template <size_t kNumQueries>
+  SCANN_SIMD_INLINE static Simd<FloatT, kNumQueries, 2>
+  DoAccumulationTransposedTemplateNeon(const FloatT* transposed_block0,
+                                       const FloatT* transposed_block1,
+                                       const FloatT** query_ptrs,
+                                       const FloatT* query_norms,
+                                       size_t dimensionality);
+#endif
 
   template <size_t kNumQueries>
   SCANN_SIMD_INLINE static Simd<FloatT, kNumQueries, 2>
@@ -594,6 +688,10 @@ class DenseManyToManyTransposed final
 
   unique_ptr<FloatT[]> query_norms_;
 };
+
+#if defined(__aarch64__)
+#include "scann/distance_measures/many_to_many/many_to_many_impl_neon.inc"
+#endif
 
 template <bool kIsSquaredL2, typename CallbackT, typename FloatT>
 SCANN_INLINE void DenseManyToManyTransposedImpl(
