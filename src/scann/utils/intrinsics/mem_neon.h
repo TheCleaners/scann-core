@@ -32,6 +32,18 @@ static inline int8x8_t load_s8_4x1(const int8_t* p) {
   return ret;
 }
 
+static inline void load_f32_4x4(const float* s, ptrdiff_t src_stride,
+                                float32x4_t& s0, float32x4_t& s1,
+                                float32x4_t& s2, float32x4_t& s3) {
+  s0 = vld1q_f32(s);
+  s += src_stride;
+  s1 = vld1q_f32(s);
+  s += src_stride;
+  s2 = vld1q_f32(s);
+  s += src_stride;
+  s3 = vld1q_f32(s);
+}
+
 static inline void store_f32_4x4(float* s, ptrdiff_t dst_stride,
                                  const float32x4_t s0, const float32x4_t s1,
                                  const float32x4_t s2, const float32x4_t s3) {

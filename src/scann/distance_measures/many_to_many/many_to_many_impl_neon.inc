@@ -4,19 +4,17 @@ SCANN_SIMD_INLINE void M2MTransposer<kIsSquaredL2, FloatT>::
                                const FloatT* database, size_t first_dp_idx,
                                size_t n_to_transpose) {
   static_assert(std::is_same_v<FloatT, float>);
+  if (ABSL_PREDICT_FALSE(n_to_transpose != kElementsPerRegister ||
+                         dimensionality == 1 || dimensionality > 4)) {
+    TransposeDatabaseBlockHighway(dimensionality, database, first_dp_idx,
+                                  n_to_transpose);
+    return;
+  }
   FloatT* __restrict__ transposed_ptr0 = GetTransposedPtr0(dimensionality);
   FloatT* __restrict__ transposed_ptr1 = GetTransposedPtr1(dimensionality);
 
-  if (ABSL_PREDICT_FALSE(n_to_transpose <= kElementsPerRegister)) {
-    TransposeDatabaseBlockImplNeon(dimensionality, database, first_dp_idx,
-                                   n_to_transpose, transposed_ptr0);
-  } else {
-    TransposeDatabaseBlockImplNeon(dimensionality, database, first_dp_idx,
-                                   kElementsPerRegister, transposed_ptr0);
-    TransposeDatabaseBlockImplNeon(
-        dimensionality, database, first_dp_idx + kElementsPerRegister,
-        n_to_transpose - kElementsPerRegister, transposed_ptr1);
-  }
+  TransposeDatabaseBlockImplNeon(dimensionality, database, first_dp_idx,
+                                 kElementsPerRegister, transposed_ptr0);
   if constexpr (kIsSquaredL2) {
     AugmentWithL2Norms(transposed_ptr0, transposed_ptr1, dimensionality);
   }
@@ -28,38 +26,29 @@ SCANN_SIMD_INLINE void M2MTransposer<kIsSquaredL2, FloatT>::
                                    const float* database, size_t first_dp_idx,
                                    size_t n_to_transpose,
                                    float* __restrict__ transposed_storage) {
-  DCHECK_LE(n_to_transpose, kElementsPerRegister);
-  size_t j = 0;
-  for (; j + 4 <= n_to_transpose; j += 4) {
-    const float* database_ptr = database + (first_dp_idx + j) * dimensionality;
-    float* __restrict__ dest = transposed_storage + j;
+  const float* __restrict__ src = database + first_dp_idx * dimensionality;
 
-    constexpr size_t kCacheLineElements = 64 / sizeof(float);
-    const float* prefetch = database_ptr + 0 * dimensionality;
-    const float* prefetch_end = database_ptr + 4 * dimensionality;
-    for (; prefetch < prefetch_end; prefetch += kCacheLineElements) {
-      absl::PrefetchToLocalCache(prefetch);
-    }
+  if (dimensionality == 4) {
+    float32x4_t s0, s1, s2, s3;
+    ::research_scann::neon::load_f32_4x4(src, dimensionality, s0, s1, s2, s3);
 
-    const float* ptr_begin = database_ptr + 1 * dimensionality;
-    const float* ptr_end = database_ptr + 2 * dimensionality;
-    for (const float* ptr = ptr_begin; ptr != ptr_end;
-         ++ptr, dest += kElementsPerRegister) {
-      dest[0] = *(ptr - dimensionality);
-      dest[1] = ptr[0 * dimensionality];
-      dest[2] = ptr[1 * dimensionality];
-      dest[3] = ptr[2 * dimensionality];
-    }
+    float32x4_t d0, d1, d2, d3;
+    ::research_scann::neon::transpose_f32_4x4(s0, s1, s2, s3, &d0, &d1, &d2,
+                                              &d3);
+
+    ::research_scann::neon::store_f32_4x4(transposed_storage, 4, d0, d1, d2,
+                                          d3);
+
+    return;
   }
-  for (; j < n_to_transpose; ++j) {
-    const float* untransposed0 = database + (first_dp_idx + j) * dimensionality;
-    float* dest = transposed_storage + j;
-    for (size_t dim_idx = 0; dim_idx < dimensionality;
-         ++dim_idx, dest += kElementsPerRegister) {
-      dest[0] = untransposed0[dim_idx];
+
+  for (size_t i = 0; i < dimensionality; ++i) {
+    for (size_t j = 0; j < 4; ++j) {
+      transposed_storage[j] = src[j * dimensionality];
     }
+    transposed_storage += 4;
+    src++;
   }
-  DCHECK_EQ(j, n_to_transpose);
 }
 
 template <bool kIsSquaredL2, typename FloatT>
