@@ -15,8 +15,8 @@
 #include "scann/hashes/internal/asymmetric_hashing_impl_neon.h"
 
 #include <arm_neon.h>
+#include <float.h>
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -85,10 +85,20 @@ SubspaceResidualStats ComputeResidualStatsForCluster(
   return result;
 }
 
-StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
-    DatapointPtr<float> maybe_residual_dptr,
-    DatapointPtr<float> original_dptr, ConstSpan<DenseDataset<float>> centers,
-    const ChunkingProjection<float>& projection) {
+static inline void UpdateMinResidualIdx(float64x2_t cur_val, uint64x2_t cur_idx,
+                                        float64x2_t* best_val,
+                                        uint64x2_t* best_idx) {
+  const uint64x2_t best_mask = vcltq_f64(cur_val, *best_val);
+  *best_idx = vbslq_u64(best_mask, cur_idx, *best_idx);
+  *best_val = vminq_f64(cur_val, *best_val);
+}
+
+StatusOr<vector<std::vector<SubspaceResidualStats>>>
+ComputeResidualStatsAndInitialize(DatapointPtr<float> maybe_residual_dptr,
+                                  DatapointPtr<float> original_dptr,
+                                  ConstSpan<DenseDataset<float>> centers,
+                                  const ChunkingProjection<float>& projection,
+                                  MutableSpan<uint8_t> result) {
   const size_t num_subspaces = centers.size();
   DCHECK_GE(num_subspaces, 1);
   vector<std::vector<SubspaceResidualStats>> residual_stats(num_subspaces);
@@ -158,6 +168,8 @@ StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
         maybe_residual_dptr_chunked[subspace_idx].values_span();
     ConstSpan<float> original_dptr_span =
         original_dptr_chunked[subspace_idx].values_span();
+    double best_norm = DBL_MAX;
+    uint8_t best_idx = 0;
 
     if (cur_dims == 1) {
       const double maybe_val = static_cast<double>(maybe_residual_dptr_span[0]);
@@ -168,6 +180,15 @@ StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
       const float64x2_t original = vdupq_n_f64(original_val);
       const float64x2_t inv_norm = vdupq_n_f64(inverse_chunked_norm);
       const float64x2_t orig_inv_norm = vmulq_f64(original, inv_norm);
+
+      float64x2_t best_norm_v0 = vdupq_n_f64(DBL_MAX);
+      float64x2_t best_norm_v1 = vdupq_n_f64(DBL_MAX);
+      uint64x2_t best_idx_v0 = vdupq_n_u64(0);
+      uint64x2_t best_idx_v1 = vdupq_n_u64(0);
+
+      uint64x2_t idx0 = vcombine_u64(vcreate_u64(0), vcreate_u64(1));
+      uint64x2_t idx1 = vcombine_u64(vcreate_u64(2), vcreate_u64(3));
+      const uint64x2_t idx_step = vdupq_n_u64(4);
 
       size_t cluster_idx = 0;
       for (; cluster_idx + 4 <= num_clusters_per_block; cluster_idx += 4) {
@@ -190,11 +211,45 @@ StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
         const float64x2x2_t results_hi = {norm_hi, parallel_hi};
         vst2q_f64(&stats[cluster_idx + 0].residual_norm, results_lo);
         vst2q_f64(&stats[cluster_idx + 2].residual_norm, results_hi);
+
+        UpdateMinResidualIdx(norm_lo, idx0, &best_norm_v0, &best_idx_v0);
+        UpdateMinResidualIdx(norm_hi, idx1, &best_norm_v1, &best_idx_v1);
+
+        idx0 = vaddq_u64(idx0, idx_step);
+        idx1 = vaddq_u64(idx1, idx_step);
       }
+
+      if (cluster_idx > 0) {
+        UpdateMinResidualIdx(best_norm_v1, best_idx_v1, &best_norm_v0,
+                             &best_idx_v0);
+
+        const double norm0 = vgetq_lane_f64(best_norm_v0, 0);
+        const double norm1 = vgetq_lane_f64(best_norm_v0, 1);
+
+        if (norm0 == norm1) {
+          const uint64_t idx0 = vgetq_lane_u64(best_idx_v0, 0);
+          const uint64_t idx1 = vgetq_lane_u64(best_idx_v0, 1);
+
+          best_norm = norm0;
+          best_idx = idx0 < idx1 ? idx0 : idx1;
+        } else {
+          const bool is_lane1_best = norm1 < norm0;
+
+          best_norm = is_lane1_best ? norm1 : norm0;
+          best_idx = static_cast<uint8_t>(is_lane1_best
+                                              ? vgetq_lane_u64(best_idx_v0, 1)
+                                              : vgetq_lane_u64(best_idx_v0, 0));
+        }
+      }
+
       for (; cluster_idx < num_clusters_per_block; ++cluster_idx) {
         stats[cluster_idx] = ComputeResidualStatsForCluster(
             maybe_residual_dptr_span, original_dptr_span, inverse_chunked_norm,
             cur_subspace_centers[cluster_idx].values_span());
+        if (stats[cluster_idx].residual_norm < best_norm) {
+          best_norm = stats[cluster_idx].residual_norm;
+          best_idx = static_cast<uint8_t>(cluster_idx);
+        }
       }
     } else if (cur_dims == 2) {
       const double maybe_val0 =
@@ -212,7 +267,16 @@ StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
       const float64x2_t original1 = vdupq_n_f64(original_val1);
       const float64x2_t inv_norm = vdupq_n_f64(inverse_chunked_norm);
 
-      int cluster_idx = 0;
+      float64x2_t best_norm_v0 = vdupq_n_f64(DBL_MAX);
+      float64x2_t best_norm_v1 = vdupq_n_f64(DBL_MAX);
+      uint64x2_t best_idx_v0 = vdupq_n_u64(0);
+      uint64x2_t best_idx_v1 = vdupq_n_u64(0);
+
+      uint64x2_t idx0 = vcombine_u64(vcreate_u64(0), vcreate_u64(1));
+      uint64x2_t idx1 = vcombine_u64(vcreate_u64(2), vcreate_u64(3));
+      const uint64x2_t idx_step = vdupq_n_u64(4);
+
+      size_t cluster_idx = 0;
       for (; cluster_idx + 4 <= num_clusters_per_block; cluster_idx += 4) {
         const float32x4x2_t quantized_f32 =
             vld2q_f32(center_raw + cluster_idx * 2);
@@ -249,11 +313,45 @@ StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
 
         vst2q_f64(&stats[cluster_idx + 0].residual_norm, results_lo);
         vst2q_f64(&stats[cluster_idx + 2].residual_norm, results_hi);
+
+        UpdateMinResidualIdx(norm_lo, idx0, &best_norm_v0, &best_idx_v0);
+        UpdateMinResidualIdx(norm_hi, idx1, &best_norm_v1, &best_idx_v1);
+
+        idx0 = vaddq_u64(idx0, idx_step);
+        idx1 = vaddq_u64(idx1, idx_step);
       }
+
+      if (cluster_idx > 0) {
+        UpdateMinResidualIdx(best_norm_v1, best_idx_v1, &best_norm_v0,
+                             &best_idx_v0);
+
+        const double norm0 = vgetq_lane_f64(best_norm_v0, 0);
+        const double norm1 = vgetq_lane_f64(best_norm_v0, 1);
+
+        if (norm0 == norm1) {
+          const uint64_t idx0 = vgetq_lane_u64(best_idx_v0, 0);
+          const uint64_t idx1 = vgetq_lane_u64(best_idx_v0, 1);
+
+          best_norm = norm0;
+          best_idx = idx0 < idx1 ? idx0 : idx1;
+        } else {
+          const bool is_lane1_best = norm1 < norm0;
+
+          best_norm = is_lane1_best ? norm1 : norm0;
+          best_idx = static_cast<uint8_t>(is_lane1_best
+                                              ? vgetq_lane_u64(best_idx_v0, 1)
+                                              : vgetq_lane_u64(best_idx_v0, 0));
+        }
+      }
+
       for (; cluster_idx < num_clusters_per_block; ++cluster_idx) {
         stats[cluster_idx] = ComputeResidualStatsForCluster(
             maybe_residual_dptr_span, original_dptr_span, inverse_chunked_norm,
             cur_subspace_centers[cluster_idx].values_span());
+        if (stats[cluster_idx].residual_norm < best_norm) {
+          best_norm = stats[cluster_idx].residual_norm;
+          best_idx = static_cast<uint8_t>(cluster_idx);
+        }
       }
     } else {
       for (size_t cluster_idx : Seq(num_clusters_per_block)) {
@@ -263,25 +361,16 @@ StatusOr<vector<std::vector<SubspaceResidualStats>>> ComputeResidualStats(
             ComputeResidualStatsForCluster(maybe_residual_dptr_span,
                                            original_dptr_span,
                                            inverse_chunked_norm, center);
+        const auto& stats = cur_subspace_residual_stats[cluster_idx];
+        if (stats.residual_norm < best_norm) {
+          best_norm = stats.residual_norm;
+          best_idx = static_cast<uint8_t>(cluster_idx);
+        }
       }
     }
+    result[subspace_idx] = best_idx;
   }
   return residual_stats;
-}
-
-void InitializeToMinResidualNorm(
-    ConstSpan<std::vector<SubspaceResidualStats>> residual_stats,
-    MutableSpan<uint8_t> result) {
-  DCHECK_EQ(result.size(), residual_stats.size());
-  for (size_t subspace_idx : IndicesOf(residual_stats)) {
-    auto it = std::min_element(
-        residual_stats[subspace_idx].begin(),
-        residual_stats[subspace_idx].end(),
-        [](const SubspaceResidualStats& a, const SubspaceResidualStats& b) {
-          return a.residual_norm < b.residual_norm;
-        });
-    result[subspace_idx] = it - residual_stats[subspace_idx].begin();
-  }
 }
 
 }  // namespace
@@ -299,15 +388,14 @@ Status IndexDatapointNoiseShaped<float>(
   SCANN_RETURN_IF_ERROR(ValidateNoiseShapingParams(threshold, eta));
   SCANN_ASSIGN_OR_RETURN(
       auto residual_stats,
-      ComputeResidualStats(maybe_residual_dptr, original_dptr, centers,
-                           projection));
+      ComputeResidualStatsAndInitialize(maybe_residual_dptr, original_dptr,
+                                        centers, projection, result));
 
   const double parallel_cost_multiplier =
       std::isnan(eta) ? ComputeParallelCostMultiplier(
                             threshold, SquaredL2Norm(original_dptr),
                             original_dptr.dimensionality())
                       : eta;
-  InitializeToMinResidualNorm(residual_stats, result);
   double parallel_residual_component =
       ComputeParallelResidualComponent(result, residual_stats);
 
