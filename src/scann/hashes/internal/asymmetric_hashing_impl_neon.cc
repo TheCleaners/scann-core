@@ -98,7 +98,8 @@ ComputeResidualStatsAndInitialize(DatapointPtr<float> maybe_residual_dptr,
                                   DatapointPtr<float> original_dptr,
                                   ConstSpan<DenseDataset<float>> centers,
                                   const ChunkingProjection<float>& projection,
-                                  MutableSpan<uint8_t> result) {
+                                  MutableSpan<uint8_t> result,
+                                  vector<double>& subspace_residual_norms) {
   const size_t num_subspaces = centers.size();
   DCHECK_GE(num_subspaces, 1);
   vector<std::vector<SubspaceResidualStats>> residual_stats(num_subspaces);
@@ -369,6 +370,7 @@ ComputeResidualStatsAndInitialize(DatapointPtr<float> maybe_residual_dptr,
       }
     }
     result[subspace_idx] = best_idx;
+    subspace_residual_norms[subspace_idx] = best_norm;
   }
   return residual_stats;
 }
@@ -386,10 +388,11 @@ Status IndexDatapointNoiseShaped<float>(
   SCANN_RET_CHECK_EQ(maybe_residual_dptr.dimensionality(),
                      original_dptr.dimensionality());
   SCANN_RETURN_IF_ERROR(ValidateNoiseShapingParams(threshold, eta));
-  SCANN_ASSIGN_OR_RETURN(
-      auto residual_stats,
-      ComputeResidualStatsAndInitialize(maybe_residual_dptr, original_dptr,
-                                        centers, projection, result));
+  vector<double> subspace_residual_norms(result.size());
+  SCANN_ASSIGN_OR_RETURN(auto residual_stats,
+                         ComputeResidualStatsAndInitialize(
+                             maybe_residual_dptr, original_dptr, centers,
+                             projection, result, subspace_residual_norms));
 
   const double parallel_cost_multiplier =
       std::isnan(eta) ? ComputeParallelCostMultiplier(
@@ -401,12 +404,6 @@ Status IndexDatapointNoiseShaped<float>(
 
   vector<uint16_t> subspace_idxs(result.size());
   std::iota(subspace_idxs.begin(), subspace_idxs.end(), 0U);
-  vector<double> subspace_residual_norms(result.size());
-  for (size_t subspace_idx : IndicesOf(result)) {
-    const uint8_t cluster_idx = result[subspace_idx];
-    subspace_residual_norms[subspace_idx] =
-        residual_stats[subspace_idx][cluster_idx].residual_norm;
-  }
   std::vector<uint8_t> result_sorted(result.begin(), result.end());
   ZipSortBranchOptimized(
       std::greater<double>(), subspace_residual_norms.begin(),
