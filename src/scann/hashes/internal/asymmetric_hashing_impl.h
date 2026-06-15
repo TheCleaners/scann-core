@@ -76,6 +76,15 @@ inline std::vector<DenseDataset<double>> ConvertCentersIfNecessary<double>(
 }
 
 template <typename T>
+Status IndexDatapointNoiseShapedFallback(
+    const DatapointPtr<T>& maybe_residual_dptr,
+    const DatapointPtr<T>& original_dptr,
+    const ChunkingProjection<T>& projection,
+    ConstSpan<DenseDataset<FloatingTypeFor<T>>> centers, double threshold,
+    double eta, MutableSpan<uint8_t> result);
+
+
+template <typename T>
 struct AhImpl {
   using FloatT = FloatingTypeFor<T>;
   using TrainingOptionsT = asymmetric_hashing2::TrainingOptionsTyped<T>;
@@ -101,7 +110,11 @@ struct AhImpl {
       const DatapointPtr<T>& original_dptr,
       const ChunkingProjection<T>& projection,
       ConstSpan<DenseDataset<FloatingTypeFor<T>>> centers, double threshold,
-      double eta, MutableSpan<uint8_t> result);
+      double eta, MutableSpan<uint8_t> result) {
+    return IndexDatapointNoiseShapedFallback(maybe_residual_dptr, original_dptr,
+                                             projection, centers, threshold,
+                                             eta, result);
+  }
 
   static StatusOr<std::vector<float>> CreateRawFloatLookupTable(
       const DatapointPtr<T>& query, const ChunkingProjection<T>& projection,

@@ -432,7 +432,7 @@ Status ValidateNoiseShapingParams(double threshold, double eta) {
 }  // namespace
 
 template <typename T>
-Status AhImpl<T>::IndexDatapointNoiseShaped(
+Status IndexDatapointNoiseShapedFallback(
     const DatapointPtr<T>& maybe_residual_dptr,
     const DatapointPtr<T>& original_dptr,
     const ChunkingProjection<T>& projection,
