@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numeric>
+#include <type_traits>
 #include <utility>
 
 #include "absl/random/distributions.h"
@@ -26,12 +27,14 @@
 #include "scann/data_format/dataset.h"
 #include "scann/distance_measures/one_to_many/one_to_many.h"
 #include "scann/distance_measures/one_to_many/one_to_many_symmetric.h"
+#include "scann/hashes/internal/asymmetric_hashing_impl_neon.h"
 #include "scann/hashes/internal/asymmetric_hashing_postprocess.h"
 #include "scann/oss_wrappers/scann_random.h"
 #include "scann/oss_wrappers/scann_status.h"
 #include "scann/projection/chunking_projection.h"
 #include "scann/utils/common.h"
 #include "scann/utils/gmm_utils.h"
+#include "scann/utils/intrinsics/flags.h"
 #include "scann/utils/top_n_amortized_constant.h"
 #include "scann/utils/types.h"
 
@@ -258,7 +261,78 @@ Status AhImpl<T>::IndexDatapoint(const DatapointPtr<T>& input,
                                    centers, result->mutable_values_span());
 }
 
+namespace fallback {
+
+double ComputeParallelResidualComponent(
+    ConstSpan<uint8_t> quantized,
+    ConstSpan<std::vector<SubspaceResidualStats>> residual_stats) {
+  double result = 0.0;
+  for (size_t subspace_idx : IndicesOf(quantized)) {
+    const uint8_t cluster_idx = quantized[subspace_idx];
+    result +=
+        residual_stats[subspace_idx][cluster_idx].parallel_residual_component;
+  }
+  return result;
+}
+
+CoordinateDescentResult OptimizeSingleSubspace(
+    ConstSpan<SubspaceResidualStats> cur_subspace_residual_stats,
+    const uint8_t cur_center_idx, const double parallel_residual_component,
+    const double parallel_cost_multiplier) {
+  CoordinateDescentResult result;
+  result.new_center_idx = cur_center_idx;
+  result.new_parallel_residual_component = parallel_residual_component;
+  const double old_subspace_residual_norm =
+      cur_subspace_residual_stats[cur_center_idx].residual_norm;
+  const double old_subspace_parallel_component =
+      cur_subspace_residual_stats[cur_center_idx].parallel_residual_component;
+  for (size_t new_center_idx : IndicesOf(cur_subspace_residual_stats)) {
+    if (new_center_idx == cur_center_idx) continue;
+    const SubspaceResidualStats& rs =
+        cur_subspace_residual_stats[new_center_idx];
+    const double new_parallel_residual_component =
+        parallel_residual_component - old_subspace_parallel_component +
+        rs.parallel_residual_component;
+    const double parallel_norm_delta = Square(new_parallel_residual_component) -
+                                       Square(parallel_residual_component);
+    if (parallel_norm_delta > 0.0) continue;
+    const double residual_norm_delta =
+        rs.residual_norm - old_subspace_residual_norm;
+    const double perpendicular_norm_delta =
+        residual_norm_delta - parallel_norm_delta;
+    const double cost_delta = parallel_cost_multiplier * parallel_norm_delta +
+                              perpendicular_norm_delta;
+    if (cost_delta < result.cost_delta) {
+      result.new_center_idx = new_center_idx;
+      result.cost_delta = cost_delta;
+      result.new_parallel_residual_component = new_parallel_residual_component;
+    }
+  }
+  return result;
+}
+
+Status ValidateNoiseShapingParams(double threshold, double eta) {
+  if (std::isnan(eta) && std::isnan(threshold)) {
+    return InvalidArgumentError(
+        "Either threshold or eta must be specified for noise-shaped AH "
+        "indexing.");
+  }
+  if (!std::isnan(eta) && !std::isnan(threshold)) {
+    return InvalidArgumentError(
+        "Threshold and eta may not both be specified for noise-shaped AH "
+        "indexing.");
+  }
+  return OkStatus();
+}
+
+}  // namespace fallback
+
 namespace {
+
+using fallback::ComputeParallelResidualComponent;
+using fallback::OptimizeSingleSubspace;
+using fallback::SubspaceResidualStats;
+using fallback::ValidateNoiseShapingParams;
 
 template <typename T>
 T Square(T x) {
@@ -272,12 +346,6 @@ double ComputeParallelCostMultiplier(double t, double squared_l2_norm,
       (1.0 - Square(t) / squared_l2_norm) / (dims - 1.0);
   return parallel_cost / perpendicular_cost;
 }
-
-struct SubspaceResidualStats {
-  double residual_norm = 0.0;
-
-  double parallel_residual_component = 0.0;
-};
 
 template <typename T>
 SubspaceResidualStats ComputeResidualStatsForCluster(
@@ -361,74 +429,6 @@ void InitializeToMinResidualNorm(
   }
 }
 
-double ComputeParallelResidualComponent(
-    ConstSpan<uint8_t> quantized,
-    ConstSpan<std::vector<SubspaceResidualStats>> residual_stats) {
-  double result = 0.0;
-  for (size_t subspace_idx : IndicesOf(quantized)) {
-    const uint8_t cluster_idx = quantized[subspace_idx];
-    result +=
-        residual_stats[subspace_idx][cluster_idx].parallel_residual_component;
-  }
-  return result;
-}
-
-struct CoordinateDescentResult {
-  uint8_t new_center_idx = 0;
-  double cost_delta = 0.0;
-  double new_parallel_residual_component = 0.0;
-};
-
-CoordinateDescentResult OptimizeSingleSubspace(
-    ConstSpan<SubspaceResidualStats> cur_subspace_residual_stats,
-    const uint8_t cur_center_idx, const double parallel_residual_component,
-    const double parallel_cost_multiplier) {
-  CoordinateDescentResult result;
-  result.new_center_idx = cur_center_idx;
-  result.new_parallel_residual_component = parallel_residual_component;
-  const double old_subspace_residual_norm =
-      cur_subspace_residual_stats[cur_center_idx].residual_norm;
-  const double old_subspace_parallel_component =
-      cur_subspace_residual_stats[cur_center_idx].parallel_residual_component;
-  for (size_t new_center_idx : IndicesOf(cur_subspace_residual_stats)) {
-    if (new_center_idx == cur_center_idx) continue;
-    const SubspaceResidualStats& rs =
-        cur_subspace_residual_stats[new_center_idx];
-    const double new_parallel_residual_component =
-        parallel_residual_component - old_subspace_parallel_component +
-        rs.parallel_residual_component;
-    const double parallel_norm_delta = Square(new_parallel_residual_component) -
-                                       Square(parallel_residual_component);
-    if (parallel_norm_delta > 0.0) continue;
-    const double residual_norm_delta =
-        rs.residual_norm - old_subspace_residual_norm;
-    const double perpendicular_norm_delta =
-        residual_norm_delta - parallel_norm_delta;
-    const double cost_delta = parallel_cost_multiplier * parallel_norm_delta +
-                              perpendicular_norm_delta;
-    if (cost_delta < result.cost_delta) {
-      result.new_center_idx = new_center_idx;
-      result.cost_delta = cost_delta;
-      result.new_parallel_residual_component = new_parallel_residual_component;
-    }
-  }
-  return result;
-}
-
-Status ValidateNoiseShapingParams(double threshold, double eta) {
-  if (std::isnan(eta) && std::isnan(threshold)) {
-    return InvalidArgumentError(
-        "Either threshold or eta must be specified for noise-shaped AH "
-        "indexing.");
-  }
-  if (!std::isnan(eta) && !std::isnan(threshold)) {
-    return InvalidArgumentError(
-        "Threshold and eta may not both be specified for noise-shaped AH "
-        "indexing.");
-  }
-  return OkStatus();
-}
-
 }  // namespace
 
 template <typename T>
@@ -506,6 +506,27 @@ Status IndexDatapointNoiseShapedFallback(
         residual_stats[subspace_idx][center_idx].residual_norm;
   }
   return OkStatus();
+}
+
+template <typename T>
+Status AhImpl<T>::IndexDatapointNoiseShaped(
+    const DatapointPtr<T>& maybe_residual_dptr,
+    const DatapointPtr<T>& original_dptr,
+    const ChunkingProjection<T>& projection,
+    ConstSpan<DenseDataset<FloatingTypeFor<T>>> centers, double threshold,
+    double eta, MutableSpan<uint8_t> result) {
+#ifdef __aarch64__
+  if constexpr (std::is_same_v<T, float>) {
+    if (RuntimeSupportsNeon()) {
+      return neon::IndexDatapointNoiseShaped(maybe_residual_dptr, original_dptr,
+                                             projection, centers, threshold,
+                                             eta, result);
+    }
+  }
+#endif
+  return IndexDatapointNoiseShapedFallback(maybe_residual_dptr, original_dptr,
+                                           projection, centers, threshold, eta,
+                                           result);
 }
 
 template <typename T>
