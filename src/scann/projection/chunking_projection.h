@@ -54,6 +54,8 @@ class ChunkedDatapoint {
 
   size_t size() const { return num_blocks(); }
 
+  ConstSpan<T> storage() const { return ConstSpan<T>(storage_); }
+
  private:
   ChunkedDatapoint(std::vector<T> storage,
                    shared_ptr<const uint32_t> boundaries, uint32_t num_blocks)
@@ -107,6 +109,8 @@ class ChunkingProjection : public ChunkingProjectionUntyped {
                       ChunkedDatapoint<double>* chunked) const;
 
   int32_t num_blocks() const { return num_blocks_; }
+
+  bool is_identity_chunk_impl() const { return is_identity_chunk_impl_; }
 
   DimensionIndex input_dim() const {
     return (cum_dims_per_block_ == nullptr)
