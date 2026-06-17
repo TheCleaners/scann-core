@@ -34,11 +34,148 @@ namespace asymmetric_hashing_internal {
 namespace neon {
 
 using fallback::ComputeParallelResidualComponent;
-using fallback::OptimizeSingleSubspace;
+using fallback::CoordinateDescentResult;
 using fallback::SubspaceResidualStats;
 using fallback::ValidateNoiseShapingParams;
 
 namespace {
+
+CoordinateDescentResult OptimizeSingleSubspace(
+    ConstSpan<SubspaceResidualStats> cur_subspace_residual_stats,
+    uint8_t cur_center_idx, double parallel_residual_component,
+    double parallel_cost_multiplier) {
+  CoordinateDescentResult result;
+  result.new_center_idx = cur_center_idx;
+  result.new_parallel_residual_component = parallel_residual_component;
+
+  const double old_subspace_residual_norm =
+      cur_subspace_residual_stats[cur_center_idx].residual_norm;
+  const double old_subspace_parallel_component =
+      cur_subspace_residual_stats[cur_center_idx].parallel_residual_component;
+
+  const float64x2_t parallel_sq_const =
+      vdupq_n_f64(-parallel_residual_component * parallel_residual_component);
+  const float64x2_t parallel_const = vdupq_n_f64(
+      parallel_residual_component - old_subspace_parallel_component);
+  const float64x2_t cost_const = vdupq_n_f64(parallel_cost_multiplier - 1.0);
+  const float64x2_t residual_const =
+      vdupq_n_f64(cur_subspace_residual_stats[cur_center_idx].residual_norm);
+  const float64x2_t max_cost = vdupq_n_f64(DBL_MAX);
+  const uint64x2_t cur_center_idx_v = vdupq_n_u64(cur_center_idx);
+
+  const size_t num_clusters = cur_subspace_residual_stats.size();
+  const SubspaceResidualStats* stats = cur_subspace_residual_stats.data();
+
+  uint64x2_t idx01 = vcombine_u64(vcreate_u64(0), vcreate_u64(1));
+  uint64x2_t idx23 = vcombine_u64(vcreate_u64(2), vcreate_u64(3));
+  const uint64x2_t idx_step = vdupq_n_u64(4);
+
+  float64x2_t best_cost01 = vdupq_n_f64(result.cost_delta);
+  float64x2_t best_cost23 = vdupq_n_f64(result.cost_delta);
+  uint64x2_t best_idx01 = vdupq_n_u64(result.new_center_idx);
+  uint64x2_t best_idx23 = vdupq_n_u64(result.new_center_idx);
+  float64x2_t best_parallel01 =
+      vdupq_n_f64(result.new_parallel_residual_component);
+  float64x2_t best_parallel23 =
+      vdupq_n_f64(result.new_parallel_residual_component);
+
+  size_t new_center_idx = 0;
+  for (; new_center_idx + 3 < num_clusters; new_center_idx += 4) {
+    float64x2x2_t rs01 = vld2q_f64(&stats[new_center_idx + 0].residual_norm);
+    float64x2x2_t rs23 = vld2q_f64(&stats[new_center_idx + 2].residual_norm);
+
+    float64x2_t rs01_residual = vsubq_f64(rs01.val[0], residual_const);
+    float64x2_t rs23_residual = vsubq_f64(rs23.val[0], residual_const);
+
+    float64x2_t parallel01 = vaddq_f64(rs01.val[1], parallel_const);
+    float64x2_t parallel23 = vaddq_f64(rs23.val[1], parallel_const);
+
+    float64x2_t p01_delta =
+        vfmaq_f64(parallel_sq_const, parallel01, parallel01);
+    float64x2_t cost01 = vfmaq_f64(rs01_residual, p01_delta, cost_const);
+    uint64x2_t invalid01_mask = vcgtzq_f64(p01_delta);
+
+    float64x2_t p23_delta =
+        vfmaq_f64(parallel_sq_const, parallel23, parallel23);
+    float64x2_t cost23 = vfmaq_f64(rs23_residual, p23_delta, cost_const);
+    uint64x2_t invalid23_mask = vcgtzq_f64(p23_delta);
+
+    invalid01_mask =
+        vorrq_u64(invalid01_mask, vceqq_u64(idx01, cur_center_idx_v));
+    invalid23_mask =
+        vorrq_u64(invalid23_mask, vceqq_u64(idx23, cur_center_idx_v));
+    cost01 = vbslq_f64(invalid01_mask, max_cost, cost01);
+    cost23 = vbslq_f64(invalid23_mask, max_cost, cost23);
+
+    const uint64x2_t better01_mask = vcltq_f64(cost01, best_cost01);
+    best_cost01 = vbslq_f64(better01_mask, cost01, best_cost01);
+    best_parallel01 = vbslq_f64(better01_mask, parallel01, best_parallel01);
+    best_idx01 = vbslq_u64(better01_mask, idx01, best_idx01);
+
+    const uint64x2_t better23_mask = vcltq_f64(cost23, best_cost23);
+    best_cost23 = vbslq_f64(better23_mask, cost23, best_cost23);
+    best_parallel23 = vbslq_f64(better23_mask, parallel23, best_parallel23);
+    best_idx23 = vbslq_u64(better23_mask, idx23, best_idx23);
+
+    idx01 = vaddq_u64(idx01, idx_step);
+    idx23 = vaddq_u64(idx23, idx_step);
+  }
+
+  const uint64x2_t use23_mask =
+      vorrq_u64(vcltq_f64(best_cost23, best_cost01),
+                vandq_u64(vceqq_f64(best_cost23, best_cost01),
+                          vcgtq_u64(best_idx01, best_idx23)));
+  const float64x2_t best_cost = vbslq_f64(use23_mask, best_cost23, best_cost01);
+  const uint64x2_t best_idx = vbslq_u64(use23_mask, best_idx23, best_idx01);
+  const float64x2_t best_parallel =
+      vbslq_f64(use23_mask, best_parallel23, best_parallel01);
+
+  const double best_cost0 = vgetq_lane_f64(best_cost, 0);
+  const uint64_t best_idx0 = vgetq_lane_u64(best_idx, 0);
+  if (best_cost0 < result.cost_delta ||
+      (best_cost0 == result.cost_delta && best_idx0 < result.new_center_idx)) {
+    result.new_center_idx = static_cast<uint8_t>(best_idx0);
+    result.cost_delta = best_cost0;
+    result.new_parallel_residual_component = vgetq_lane_f64(best_parallel, 0);
+  }
+  const double best_cost1 = vgetq_lane_f64(best_cost, 1);
+  const uint64_t best_idx1 = vgetq_lane_u64(best_idx, 1);
+  if (best_cost1 < result.cost_delta ||
+      (best_cost1 == result.cost_delta && best_idx1 < result.new_center_idx)) {
+    result.new_center_idx = static_cast<uint8_t>(best_idx1);
+    result.cost_delta = best_cost1;
+    result.new_parallel_residual_component = vgetq_lane_f64(best_parallel, 1);
+  }
+
+  for (; new_center_idx < num_clusters; ++new_center_idx) {
+    if (new_center_idx == cur_center_idx) {
+      continue;
+    }
+    const SubspaceResidualStats& rs = stats[new_center_idx];
+    const double new_parallel_residual_component =
+        parallel_residual_component - old_subspace_parallel_component +
+        rs.parallel_residual_component;
+    const double parallel_norm_delta =
+        new_parallel_residual_component * new_parallel_residual_component -
+        parallel_residual_component * parallel_residual_component;
+    if (parallel_norm_delta > 0.0) {
+      continue;
+    }
+    const double residual_norm_delta =
+        rs.residual_norm - old_subspace_residual_norm;
+    const double perpendicular_norm_delta =
+        residual_norm_delta - parallel_norm_delta;
+    const double cost_delta = parallel_cost_multiplier * parallel_norm_delta +
+                              perpendicular_norm_delta;
+    if (cost_delta < result.cost_delta) {
+      result.new_center_idx = static_cast<uint8_t>(new_center_idx);
+      result.cost_delta = cost_delta;
+      result.new_parallel_residual_component = new_parallel_residual_component;
+    }
+  }
+
+  return result;
+}
 
 SubspaceResidualStats ComputeResidualStatsForCluster(
     ConstSpan<float> maybe_residual_dptr, ConstSpan<float> original_dptr,

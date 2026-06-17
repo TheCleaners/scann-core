@@ -97,10 +97,6 @@ struct CoordinateDescentResult {
   double new_parallel_residual_component = 0.0;
 };
 
-CoordinateDescentResult OptimizeSingleSubspace(
-    ConstSpan<SubspaceResidualStats> cur_subspace_residual_stats,
-    const uint8_t cur_center_idx, const double parallel_residual_component,
-    const double parallel_cost_multiplier);
 
 Status ValidateNoiseShapingParams(double threshold, double eta);
 
