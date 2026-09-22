@@ -31,9 +31,10 @@ searcher = (
 neighbors, distances = searcher.search_batched(queries)
 ```
 
-For anything past a few tens of thousands of points, see upstream's
-[example notebook](https://github.com/google-research/google-research/blob/master/scann/docs/example.ipynb)
-for a full tree + AH + reorder example.
+For anything past a few tens of thousands of points, you want the full
+tree + AH + reorder pipeline. The [tutorial](tutorial/README.md) builds it up
+step by step on a million-vector dataset, measures each stage, tunes it, and
+then serves it from Python, C++ and Rust.
 
 ## The builder entry point
 

@@ -14,3 +14,8 @@ cxx = "1"
 
 [build-dependencies]
 cxx-build = "1"
+
+# The tutorial's Rust program (docs/tutorial/07-cpp-and-rust.md).
+[[example]]
+name = "tutorial_glove"
+path = "../docs/tutorial/code/rust/glove.rs"

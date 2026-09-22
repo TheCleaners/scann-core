@@ -30,7 +30,7 @@ scann-core/
 ├── rust/                 the Rust crate (cxx bridge, safe API, tests, examples)
 ├── examples/cpp/         C++ example
 ├── tests/                C++ tests, Python/Rust equivalence harness
-└── docs/                 API reference, algorithms, AVQ explainer
+└── docs/                 tutorial, API reference, algorithms, AVQ explainer
 ```
 
 ## Building
@@ -256,6 +256,11 @@ pointing at the wrong vectors.
 
 ## Documentation
 
+* [`docs/tutorial/`](docs/tutorial/README.md): a seven-part, hands-on
+  tutorial on a real million-vector dataset. It covers measuring recall
+  and speed, the partition/score/reorder pipeline, tuning, serving,
+  updating, and C++ and Rust. Every number in it comes from running the
+  scripts included with it.
 * [`docs/api_reference.md`](docs/api_reference.md): the config options and
   search parameters, and what they mean.
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
