@@ -1,13 +1,11 @@
 # Vendors scann-core's dependencies via FetchContent.
 #
-# Each dependency is pinned to the *exact source archive* the upstream
-# Bazel build resolved through the Bazel Central Registry (same URL, same
-# SHA-256 as the registry's `integrity` field), so the C++ sources compiled
-# here are byte-identical to the ones the reference wheel was built from.
-# The registry-side patches/overlays for these modules only touch Bazel
-# BUILD/MODULE files, and so do the ones in ../build_deps/patches/, so
-# there is nothing to re-apply here. cnpy has no registry entry; it is
-# pinned to the same git commit the Bazel build uses.
+# Each dependency is pinned to an exact release archive and its SHA-256:
+# the latest release of each as of 2026-09-22. (The initial import commit
+# pinned instead the exact archives upstream's Bazel build resolved, to
+# prove the extraction equivalent to the upstream wheel; see git history
+# and tests/equivalence/.) cnpy has no releases; it is pinned to a commit,
+# which is also its current HEAD.
 #
 # Offline / reproducible builds -- see README.md "Dependencies":
 #   * -DFETCHCONTENT_SOURCE_DIR_<NAME>=/path   use an existing source tree
@@ -66,8 +64,8 @@ set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 
 # --- Declarations ----------------------------------------------------------
 FetchContent_Declare(absl
-  URL https://github.com/abseil/abseil-cpp/releases/download/20260526.0/abseil-cpp-20260526.0.tar.gz
-  URL_HASH SHA256=6e1aee535473414164bf83e4ebc40240dec71a4701f8a642d906e95bea1aea0c
+  URL https://github.com/abseil/abseil-cpp/releases/download/20260817.0/abseil-cpp-20260817.0.tar.gz
+  URL_HASH SHA256=f7e05179df39c45434cad433f5783840bb3788ef322976f9138bc6b72b3a107d
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS CONFIG)
 
@@ -78,17 +76,15 @@ FetchContent_Declare(zlib
   FIND_PACKAGE_ARGS NAMES ZLIB)
 
 FetchContent_Declare(protobuf
-  URL https://github.com/protocolbuffers/protobuf/releases/download/v31.1/protobuf-31.1.zip
-  URL_HASH SHA256=554e847e46c705bfc44fb2d0ae5bf78f34395fcbfd86ba747338b570eef26771
+  URL https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protobuf-36.2.tar.gz
+  URL_HASH SHA256=3d9642a662d10e68ebae5e53f14dcce5105684212d5078f8e0d47d1ab3ae6b64
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS CONFIG)
 
-# 1.4.0 rather than upstream's 1.3.0: with clang 23, highway 1.3.0 cannot
-# compile vqsort for any SIMD target above the baseline ISA (always_inline
-# intrinsics rejected inside its per-target pragma regions), so no portable
-# build was possible. 1.4.0 compiles with any baseline and needs no
-# HWY_DISABLED_TARGETS workaround. The reference wheel was rebuilt with
-# 1.4.0 too, so the equivalence tests compare like with like.
+# Upstream used 1.3.0, which clang 23 cannot compile for any SIMD target
+# above the baseline ISA (always_inline intrinsics rejected inside its
+# per-target pragma regions); 1.4.0 compiles with any baseline and needs no
+# HWY_DISABLED_TARGETS workaround.
 FetchContent_Declare(highway
   URL https://github.com/google/highway/releases/download/1.4.0/highway-1.4.0.tar.gz
   URL_HASH SHA256=36f672ab48ddb3c8555e9e89e16fe400cd7d16c6eb455a1a3d0c146a63ababdc
@@ -110,8 +106,7 @@ FetchContent_Declare(cnpy
   # cnpy ships an ancient CMakeLists.txt (cmake_minimum_required 2.x, which
   # CMake >= 4 rejects outright). Pointing SOURCE_SUBDIR at a path that
   # doesn't exist makes FetchContent populate the source without
-  # add_subdirectory()-ing it; the `cnpy` target is defined below instead,
-  # the same way ../build_deps/cnpy/BUILD.bazel defines it for Bazel.
+  # add_subdirectory()-ing it; the `cnpy` target is defined below instead.
   SOURCE_SUBDIR "no-such-dir-skip-cnpy-cmakelists")
 
 FetchContent_MakeAvailable(absl zlib protobuf highway eigen cnpy)
@@ -121,8 +116,8 @@ if(SCANN_BUILD_PYTHON)
   set(PYBIND11_INSTALL OFF CACHE BOOL "" FORCE)
   set(PYBIND11_TEST OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(pybind11
-    URL https://github.com/pybind/pybind11/archive/refs/tags/v3.0.1.tar.gz
-    URL_HASH SHA256=741633da746b7c738bb71f1854f957b9da660bcd2dce68d71949037f0969d0ca
+    URL https://github.com/pybind/pybind11/archive/refs/tags/v3.1.0.tar.gz
+    URL_HASH SHA256=ef712655692a2e9bf7bb7874c022564a45f91d847ddee987e720cd9e28849665
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     FIND_PACKAGE_ARGS CONFIG)
   FetchContent_MakeAvailable(pybind11)
@@ -152,15 +147,15 @@ function(_scann_require_exact name found_version)
 endfunction()
 
 if(SCANN_USE_SYSTEM_DEPS)
-  _scann_require_exact(absl "${absl_VERSION}" 20260526)
+  _scann_require_exact(absl "${absl_VERSION}" 20260817)
   _scann_require_exact(zlib "${ZLIB_VERSION}${ZLIB_VERSION_STRING}" 1.3.2)
   # protobuf's package version is the release number; its C++ runtime
-  # reports 6.31.1 for the same release.
-  _scann_require_exact(protobuf "${protobuf_VERSION}" 31.1 6.31.1)
+  # reports 7.36.2 for the same release.
+  _scann_require_exact(protobuf "${protobuf_VERSION}" 36.2 7.36.2)
   _scann_require_exact(highway "${hwy_VERSION}" 1.4.0)
   _scann_require_exact(eigen "${Eigen3_VERSION}" 5.0.1)
   if(SCANN_BUILD_PYTHON)
-    _scann_require_exact(pybind11 "${pybind11_VERSION}" 3.0.1)
+    _scann_require_exact(pybind11 "${pybind11_VERSION}" 3.1.0)
   endif()
 endif()
 
@@ -195,7 +190,7 @@ else()
 endif()
 
 # --- cnpy --------------------------------------------------------------------
-# Same sources and flags as ../build_deps/cnpy/BUILD.bazel.
+# The one source file ScaNN needs, with the flags cnpy requires.
 FetchContent_GetProperties(cnpy)
 add_library(cnpy STATIC "${cnpy_SOURCE_DIR}/cnpy/cnpy.cpp")
 target_include_directories(cnpy PUBLIC "${cnpy_SOURCE_DIR}")

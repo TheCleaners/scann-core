@@ -213,6 +213,9 @@ def main():
   p.add_argument("--build-dir")
   p.add_argument("--python", default=sys.executable,
                  help="interpreter with the reference wheel installed")
+  p.add_argument("--core-python",
+                 help="interpreter for scann-core (default: --python); needs numpy and a "
+                      "protobuf runtime at least as new as scann-core's protoc")
   p.add_argument("--out")
   p.add_argument("--worker")
   p.add_argument("--workdir")
@@ -225,6 +228,9 @@ def main():
     return
 
   out = os.path.abspath(args.out)
+  # Workers run with cwd = a temp dir, so resolve interpreters now.
+  args.python = os.path.abspath(args.python)
+  args.core_python = os.path.abspath(args.core_python or args.python)
   os.makedirs(out, exist_ok=True)
   workdir = tempfile.mkdtemp(prefix="scann-equiv-")
   rng = np.random.default_rng(SEED)
@@ -238,7 +244,7 @@ def main():
   infos = {
       "ref": run_worker(args.python, workdir, "ref", None),
       "ref2": run_worker(args.python, workdir, "ref2", None),
-      "core": run_worker(args.python, workdir, "core", candidate_path,
+      "core": run_worker(args.core_python, workdir, "core", candidate_path,
                          ref_configs=os.path.join(workdir, "ref__configs.json")),
   }
   assert "site-packages" in infos["ref"]["scann_file"], infos["ref"]

@@ -12,7 +12,9 @@ Version 2.0 (see LICENSE).
 The following files are unmodified copies of upstream files at that commit:
   src/**                                  (from scann/scann/..., same paths)
   python/scann/scann_ops/py/*.py          (from scann/scann/scann_ops/py/)
-Everything else (build system, Rust bindings, tests, examples,
+docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
+explanation of asymmetric hashing and anisotropic quantization, and links).
+Everything else (build system, Rust bindings, tests, examples, other docs,
 python/scann/__init__.py and the empty python/scann/**/__init__.py files)
 is new in scann-core. Upstream's own repository has no NOTICE file.
 

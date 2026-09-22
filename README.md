@@ -78,7 +78,7 @@ Rust binding currently covers construction and single-query search.
 
 For what the underlying config/search API actually means (distance
 measures, partitioning, quantization, the config string these bindings
-take), see [`../docs/api_reference.md`](../docs/api_reference.md) and
-[`../docs/algorithms.md`](../docs/algorithms.md) in the parent tree — the
+take), see [`docs/api_reference.md`](docs/api_reference.md) and
+[`docs/algorithms.md`](docs/algorithms.md) — the
 core library here implements exactly that API, just without the Python
 wrapper layer.
