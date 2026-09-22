@@ -1,0 +1,30 @@
+scann-core
+==========
+
+This product includes software from ScaNN (Scalable Nearest Neighbors),
+Copyright The Google Research Authors, licensed under the Apache License,
+Version 2.0 (see LICENSE).
+
+  Upstream:     https://github.com/google-research/google-research/tree/master/scann
+  Extracted at: google-research commit 758b894eb02dc2a7097068031089a2803be147c6
+                (2026-09-21), subdirectory scann/
+
+The following files are unmodified copies of upstream files at that commit:
+  src/**                                  (from scann/scann/..., same paths)
+  python/scann/scann_ops/py/*.py          (from scann/scann/scann_ops/py/)
+Everything else (build system, Rust bindings, tests, examples,
+python/scann/__init__.py and the empty python/scann/**/__init__.py files)
+is new in scann-core. Upstream's own repository has no NOTICE file.
+
+Third-party dependencies are not vendored in this repository; they are
+downloaded at configure time (see cmake/Dependencies.cmake) and are
+distributed under their own licenses:
+  abseil-cpp   Apache License 2.0
+  protobuf     BSD 3-Clause
+  highway      Apache License 2.0 or BSD 3-Clause (dual-licensed)
+  Eigen        MPL 2.0 (some files BSD/Apache/MINPACK; see its COPYING.README)
+  cnpy         MIT
+  zlib         zlib license
+  pybind11     BSD 3-Clause         (Python bindings only)
+  cxx          MIT or Apache 2.0    (Rust bindings only, via crates.io)
+Binaries that statically link these carry their license obligations.

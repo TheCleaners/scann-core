@@ -1,0 +1,62 @@
+# Global compile flags, applied to scann-core *and* every FetchContent
+# dependency (the equivalent of Bazel's --copt, which reaches external
+# repositories too). Each flag below is carried over from the Bazel build
+# the reference wheel was produced with; see README.md "Compile flags" for
+# the ones that were deliberately not carried over.
+#
+# Include this before cmake/Dependencies.cmake: directory-scoped options
+# only reach subdirectories (i.e. FetchContent deps) added afterwards.
+
+# --- Instruction set -------------------------------------------------------
+# Upstream's documented x86 build uses -mavx -mfma (and its PyPI wheels
+# require AVX+FMA); the ARM build uses -march=armv8-a+simd. That is the
+# portable default here. The equivalence tests in tests/ are run with
+# -DSCANN_ARCH_FLAGS="-march=native;-mtune=native" because that is what
+# the reference wheel on this machine was built with -- the ISA baseline
+# changes which code paths are compiled in (and FMA availability changes
+# floating-point contraction), so comparisons are only meaningful between
+# builds with the same value.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  set(_scann_default_arch "-mavx;-mfma")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(_scann_default_arch "-march=armv8-a+simd")
+else()
+  set(_scann_default_arch "")
+endif()
+set(SCANN_ARCH_FLAGS "${_scann_default_arch}" CACHE STRING
+  "Instruction-set flags applied to scann-core and all dependencies (;-separated)")
+
+# --- Highway dispatch targets --------------------------------------------
+# The upstream Bazel build used to pass
+# HWY_DISABLED_TARGETS=(HWY_AVX3_SPR|HWY_AVX10_2) because highway 1.3.0's
+# vqsort float16 kernels fail to compile for those targets with clang 23.
+# With highway 1.4.0 (see Dependencies.cmake) that is no longer needed, so
+# the default is empty -- Highway's own target set -- in both builds. If you
+# set it, it is applied globally, to highway's own library and to every
+# ScaNN translation unit including hwy headers; a per-TU value would make
+# the dispatch tables disagree across TUs.
+set(SCANN_HWY_DISABLED_TARGETS "" CACHE STRING
+  "Value of HWY_DISABLED_TARGETS (empty: Highway's defaults)")
+
+set(SCANN_GLOBAL_COMPILE_OPTIONS
+  ${SCANN_ARCH_FLAGS}
+  # Carried over from upstream's documented build. Default-on for C++14+
+  # in GCC and in clang >= 19, so a no-op with the toolchains this was
+  # validated on, but it keeps older clang ABI-compatible with the rest.
+  -fsized-deallocation
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  # Bazel passes --copt=-w: third-party warning noise only.
+  list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS -w)
+endif()
+
+set(SCANN_GLOBAL_COMPILE_DEFINITIONS "")
+if(NOT SCANN_HWY_DISABLED_TARGETS STREQUAL "")
+  list(APPEND SCANN_GLOBAL_COMPILE_DEFINITIONS "HWY_DISABLED_TARGETS=${SCANN_HWY_DISABLED_TARGETS}")
+endif()
+
+add_compile_options(${SCANN_GLOBAL_COMPILE_OPTIONS})
+add_compile_definitions(${SCANN_GLOBAL_COMPILE_DEFINITIONS})
+
+message(STATUS "scann-core: arch flags: ${SCANN_ARCH_FLAGS}")
+message(STATUS "scann-core: HWY_DISABLED_TARGETS=${SCANN_HWY_DISABLED_TARGETS}")

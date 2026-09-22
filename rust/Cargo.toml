@@ -1,0 +1,16 @@
+[package]
+name = "scann-core"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings for scann-core, the TensorFlow/Python-independent core of ScaNN"
+license = "Apache-2.0"
+
+[lib]
+name = "scann_core"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+cxx = "1"
+
+[build-dependencies]
+cxx-build = "1"
