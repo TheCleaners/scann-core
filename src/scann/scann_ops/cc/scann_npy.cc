@@ -74,6 +74,8 @@ ScannNumpy::ScannNumpy(const np_row_major_arr<float>& np_dataset,
 vector<DatapointIndex> ScannNumpy::Upsert(
     vector<std::optional<DatapointIndex>> indices,
     vector<np_row_major_arr<float>>& vecs, int batch_size) {
+  if (batch_size < 1)
+    throw std::invalid_argument("Upsert batch_size must be >= 1.");
   auto mutator =
       ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
   if (batch_size > 1)
@@ -119,7 +121,8 @@ vector<DatapointIndex> ScannNumpy::Upsert(
       Rebalance();
       mutator =
           ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
-      mutator->set_mutation_threadpool(scann_.parallel_query_pool());
+      if (batch_size > 1)
+        mutator->set_mutation_threadpool(scann_.parallel_query_pool());
     }
   }
   return result;
@@ -140,6 +143,7 @@ vector<DatapointIndex> ScannNumpy::Delete(vector<DatapointIndex> indices) {
       Rebalance();
       mutator =
           ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
+      mutator->set_mutation_threadpool(scann_.parallel_query_pool());
     }
     result.push_back(scann_.n_points());
   }

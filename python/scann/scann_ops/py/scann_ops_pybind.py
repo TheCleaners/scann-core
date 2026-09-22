@@ -133,6 +133,10 @@ class ScannSearcher(object):
       raise ValueError("Cannot upsert because docids have not been specified "
                        "when initializing.")
     indices = [self.docid_to_id.get(docid) for docid in docids]
+    # scann-core: update the docid bookkeeping only once the index has
+    # accepted the vectors; upstream updated it first, so a failed upsert
+    # left docids out of sync with the index.
+    _ = self.searcher.upsert(indices, database, batch_size)
 
     for idx, docid in zip(indices, docids):
       if idx is not None:
@@ -140,16 +144,21 @@ class ScannSearcher(object):
       else:
         self.docids.append(docid)
         self.docid_to_id[docid] = len(self.docids) - 1
-    _ = self.searcher.upsert(indices, database, batch_size)
 
   def delete(self, docids):
     """Delete datapoints from searcher."""
     if not isinstance(docids, list):
       docids = [docids]
-    indices = []
+    # scann-core: validate before changing anything; upstream raised midway
+    # through the loop below, after updating the bookkeeping for earlier
+    # docids that were then never deleted from the index.
     for docid in docids:
       if docid not in self.docid_to_id:
         raise KeyError(f"Docid not found: {docid} ")
+    if len(set(docids)) != len(docids):
+      raise KeyError(f"Docids to delete are not unique: {docids}")
+    indices = []
+    for docid in docids:
       idx = self.docid_to_id[docid]
       indices.append(idx)
       old_idx = len(self.docids) - 1  # pyrefly: ignore[bad-argument-type]

@@ -29,6 +29,8 @@ option(SCANN_BUILD_STATIC "Build the static (.a) scann_core library" ON)
 option(SCANN_BUILD_SHARED "Build the shared (.so/.dylib) scann_core library" ON)
 option(SCANN_BUILD_PYTHON "Build the pybind11 Python module and package" ON)
 option(SCANN_BUILD_RUST_BINDINGS "Build the Rust bindings (via cxx)" ON)
+option(SCANN_BUILD_TESTS "Build the C++ tests" ON)
+option(SCANN_BUILD_EXAMPLES "Build the C++ examples" ON)
 option(SCANN_USE_SYSTEM_DEPS
   "Try find_package() for each dependency before fetching it (versions are still required to match the pins exactly)" OFF)
 option(SCANN_ENABLE_LTO "Build scann_core with link-time optimization (see README before enabling)" OFF)
@@ -77,12 +79,18 @@ list(FILTER SCANN_CORE_SRCS EXCLUDE REGEX "\\.tpl\\.cc$")
 list(FILTER SCANN_CORE_SRCS EXCLUDE REGEX "/scann_ops/cc/python/scann_pybind\\.cc$")
 list(FILTER SCANN_CORE_SRCS EXCLUDE REGEX "/scann_ops/cc/scann_npy\\.cc$")
 
+# scann-core's own additions (the C++ config builder), kept outside src/ so
+# src/ stays a faithful copy of upstream plus documented fixes.
+set(SCANN_EXTRA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core")
+file(GLOB_RECURSE SCANN_EXTRA_SRCS CONFIGURE_DEPENDS "${SCANN_EXTRA_DIR}/*.cc")
+
 scann_apply_bazel_source_flags("${SCANN_SRC_DIR}" ${SCANN_LUT16_SRCS})
 
 # Usage requirements, shared by every target built from the core objects.
 add_library(scann_core_deps INTERFACE)
 target_include_directories(scann_core_deps INTERFACE
   "$<BUILD_INTERFACE:${SCANN_SRC_DIR}>"
+  "$<BUILD_INTERFACE:${SCANN_EXTRA_DIR}>"
   "$<BUILD_INTERFACE:${SCANN_GEN_DIR}>"
 )
 # The abseil list is exactly the set of @com_google_absl labels referenced
@@ -131,7 +139,7 @@ target_link_libraries(scann_core_deps INTERFACE
 
 # Compiled exactly once; the static and shared libraries both relink these
 # objects, so building both is not twice the compile time.
-add_library(scann_core_objects OBJECT ${SCANN_CORE_SRCS} ${SCANN_LUT16_SRCS} ${SCANN_PROTO_SRCS})
+add_library(scann_core_objects OBJECT ${SCANN_CORE_SRCS} ${SCANN_EXTRA_SRCS} ${SCANN_LUT16_SRCS} ${SCANN_PROTO_SRCS})
 target_link_libraries(scann_core_objects PUBLIC scann_core_deps)
 
 if(SCANN_ENABLE_LTO)
@@ -190,6 +198,15 @@ if(SCANN_BUILD_STATIC)
   add_library(scann::core ALIAS scann_core_static_whole)
 else()
   add_library(scann::core ALIAS scann_core_shared)
+endif()
+
+if(SCANN_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
+if(SCANN_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()
 
 if(SCANN_BUILD_PYTHON)

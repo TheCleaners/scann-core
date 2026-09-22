@@ -2,3 +2,4 @@
 /rust/target/
 __pycache__/
 *.pyc
+/compile_commands.json

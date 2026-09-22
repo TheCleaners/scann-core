@@ -9,12 +9,39 @@ Version 2.0 (see LICENSE).
   Extracted at: google-research commit 758b894eb02dc2a7097068031089a2803be147c6
                 (2026-09-21), subdirectory scann/
 
-The following files are unmodified copies of upstream files at that commit:
+The following files are copies of upstream files at that commit:
   src/**                                  (from scann/scann/..., same paths)
   python/scann/scann_ops/py/*.py          (from scann/scann/scann_ops/py/)
+They are unmodified except for these changes (each marked with a
+"scann-core:" comment where it isn't a one-line change):
+  src/scann/scann_ops/cc/scann.h
+      ParseTextProto reports text-format parse errors (upstream ignored
+      them, so misspelled or malformed configs were accepted); the
+      ReshapeNNResult / ReshapeBatchedNNResult templates are const.
+  src/scann/scann_ops/cc/scann.cc
+      Initialize() validates dataset shapes (n_points == 0 divided by zero;
+      a size that isn't a multiple of n_points silently produced a wrong
+      dimensionality); RetrainAndReindex() unlocks the mutex it hands to
+      RetrainAndReindexSearcher (upstream destroyed it locked);
+      SearchBatchedParallel() rejects batch_size < 1 (division by zero) and
+      works without a thread pool (null dereference after SetNumThreads(0)
+      or on single-CPU machines).
+  src/scann/scann_ops/cc/scann_npy.cc
+      Upsert() rejects batch_size < 1 (division by zero); Delete()
+      re-attaches the mutation thread pool after a retrain, like Upsert().
+  src/scann/utils/memory_logging.cc
+      No longer dereferences empty std::optionals.
+  src/scann/data_format/docid_collection.h
+      MemoryUsage() counts sizeof(*this), not sizeof(this).
+  python/scann/scann_ops/py/scann_ops_pybind.py
+      upsert() updates the docid bookkeeping only after the index accepted
+      the vectors, and delete() validates all docids before changing
+      anything (upstream left docids out of sync with the index when either
+      raised).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
-Everything else (build system, Rust bindings, tests, examples, other docs,
+Everything else (build system, the C++ config builder in core/, Rust
+bindings, tests, examples, other docs,
 python/scann/__init__.py and the empty python/scann/**/__init__.py files)
 is new in scann-core. Upstream's own repository has no NOTICE file.
 

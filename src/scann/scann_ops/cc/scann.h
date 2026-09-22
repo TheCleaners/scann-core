@@ -23,9 +23,11 @@
 
 #include "absl/memory/memory.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/text_format.h"
 #include "scann/base/search_parameters.h"
 #include "scann/base/single_machine_base.h"
@@ -87,10 +89,10 @@ class ScannInterface {
 
   template <typename T_idx>
   void ReshapeNNResult(const NNResultsVector& res, T_idx* indices,
-                       float* distances);
+                       float* distances) const;
   template <typename T_idx>
   void ReshapeBatchedNNResult(ConstSpan<NNResultsVector> res, T_idx* indices,
-                              float* distances, int neighbors_per_query);
+                              float* distances, int neighbors_per_query) const;
 
   StatusOr<shared_ptr<const DenseDataset<float>>> Float32DatasetIfNeeded() {
     return scann_->SharedFloatDatasetIfNeeded();
@@ -134,7 +136,7 @@ class ScannInterface {
 
 template <typename T_idx>
 void ScannInterface::ReshapeNNResult(const NNResultsVector& res, T_idx* indices,
-                                     float* distances) {
+                                     float* distances) const {
   for (const auto& p : res) {
     *(indices++) = static_cast<T_idx>(p.first);
     *(distances++) = result_multiplier_ * p.second;
@@ -144,7 +146,7 @@ void ScannInterface::ReshapeNNResult(const NNResultsVector& res, T_idx* indices,
 template <typename T_idx>
 void ScannInterface::ReshapeBatchedNNResult(ConstSpan<NNResultsVector> res,
                                             T_idx* indices, float* distances,
-                                            int neighbors_per_query) {
+                                            int neighbors_per_query) const {
   for (const auto& result_vec : res) {
     DCHECK_LE(result_vec.size(), neighbors_per_query);
     for (const auto& pair : result_vec) {
@@ -159,9 +161,32 @@ void ScannInterface::ReshapeBatchedNNResult(ConstSpan<NNResultsVector> res,
   }
 }
 
+// scann-core: upstream discarded ParseFromString's result, so a malformed or
+// misspelled config (or scann_assets.pbtxt) was reported as OK and ScaNN ran
+// with whatever part of it had parsed before the error.
+class TextProtoErrorCollector : public ::google::protobuf::io::ErrorCollector {
+ public:
+  void RecordError(int line, ::google::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {
+    if (!errors_.empty()) errors_ += "; ";
+    absl::StrAppend(&errors_, line + 1, ":", column + 1, ": ", message);
+  }
+  const std::string& errors() const { return errors_; }
+
+ private:
+  std::string errors_;
+};
+
 template <typename T>
 Status ParseTextProto(T* proto, absl::string_view proto_str) {
-  ::google::protobuf::TextFormat::ParseFromString(proto_str, proto);
+  TextProtoErrorCollector errors;
+  ::google::protobuf::TextFormat::Parser parser;
+  parser.RecordErrorsTo(&errors);
+  if (!parser.ParseFromString(proto_str, proto)) {
+    return InvalidArgumentError(absl::StrCat("Failed to parse ",
+                                             proto->GetTypeName(),
+                                             " text proto: ", errors.errors()));
+  }
   return OkStatus();
 }
 

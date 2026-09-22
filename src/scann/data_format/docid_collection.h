@@ -88,7 +88,7 @@ class VariableLengthDocidCollection final : public DocidCollectionInterface {
   size_t capacity() const final { return impl_ ? impl_->capacity() : 0; }
 
   size_t MemoryUsage() const final {
-    return sizeof(this) + (impl_ ? (impl_->MemoryUsage()) : 0);
+    return sizeof(*this) + (impl_ ? (impl_->MemoryUsage()) : 0);
   }
 
   void Reserve(DatapointIndex n_elements) final;

@@ -55,6 +55,17 @@ if(NOT SCANN_HWY_DISABLED_TARGETS STREQUAL "")
   list(APPEND SCANN_GLOBAL_COMPILE_DEFINITIONS "HWY_DISABLED_TARGETS=${SCANN_HWY_DISABLED_TARGETS}")
 endif()
 
+# --- Sanitizers ------------------------------------------------------------
+# e.g. -DSCANN_SANITIZE=address,undefined or -DSCANN_SANITIZE=thread.
+# Applied globally: dependencies are instrumented too (required for TSan,
+# and ASan's container-overflow checks need consistent instrumentation).
+set(SCANN_SANITIZE "" CACHE STRING "Comma-separated -fsanitize= value (empty: none)")
+if(SCANN_SANITIZE)
+  list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS
+    "-fsanitize=${SCANN_SANITIZE}" -fno-omit-frame-pointer -fno-sanitize-merge -g)
+  add_link_options("-fsanitize=${SCANN_SANITIZE}")
+endif()
+
 add_compile_options(${SCANN_GLOBAL_COMPILE_OPTIONS})
 add_compile_definitions(${SCANN_GLOBAL_COMPILE_DEFINITIONS})
 

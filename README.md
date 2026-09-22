@@ -1,84 +1,269 @@
 # scann-core
 
-A standalone, TensorFlow- and Python-independent extraction of ScaNN's
-search core, plus first-class Rust bindings. Built with CMake instead of
-the parent `scann/` tree's Bazel workspace, and with all dependencies
-vendored via `FetchContent` rather than assumed to be system-installed.
+[ScaNN](https://github.com/google-research/google-research/tree/master/scann)'s
+nearest-neighbour search core without TensorFlow, as a CMake project with
+C++, Python and Rust APIs:
 
-## Why this exists
+* **C++**: `libscann_core` (static and/or shared), with ScaNN's pybind-free
+  facade `research_scann::ScannInterface` and a C++ port of Python's
+  `ScannBuilder` (`scann_core::ConfigBuilder`).
+* **Python**: the same `scann_pybind` module and `scann.scann_ops_pybind` API
+  as the upstream wheel, from upstream's Python sources (with one bug fix, see
+  NOTICE); `scann/__init__.py` doesn't import the TensorFlow op.
+* **Rust**: the `scann-core` crate, a safe API over the C++ library via
+  [cxx](https://cxx.rs).
 
-The parent `scann/` package couples two things that don't need to be
-coupled: the actual nearest-neighbor search implementation, and a
-TensorFlow custom-op wrapper around it. The Python bindings
-(`scann_ops_pybind`) never touch TensorFlow at all — confirmed by tracing
-the Bazel dependency graph, not by inspection alone (`_scann_ops.so`, the
-TF custom op, and `scann_pybind.so`, the pybind11 module, are separate
-Bazel targets with no shared TF dependency). `scann-core` is that
-TF-free/Python-optional slice, pulled out into its own buildable tree:
-`src/` mirrors the relevant parts of `scann/`'s package layout (`base`,
-`data_format`, `distance_measures`, `hashes`, `partitioning`,
-`projection`, `proto`, `tree_x_hybrid`, `trees`, `utils`, `oss_wrappers`
-minus its TF glue, and just the pybind-free half of `scann_ops/cc`:
-`scann.h`/`scann.cc`, i.e. `ScannInterface`).
+Extracted from google-research commit `758b894e` (`scann/` subdirectory);
+see [NOTICE](NOTICE) for provenance and the list of upstream files that were
+changed.
 
 ## Layout
 
 ```
 scann-core/
-├── CMakeLists.txt      # options, the core library targets
-├── cmake/
-│   ├── Dependencies.cmake  # FetchContent-vendored deps, pinned versions
-│   └── Proto.cmake         # protoc codegen helper
-├── src/                 # the core C++ source tree (see above)
-├── python/               # pybind11 module (ScannNumpy + scann_pybind.cc)
-└── rust/                 # Rust crate: cxx bridge over ScannInterface
-    ├── Cargo.toml
-    ├── build.rs
-    └── src/
-        ├── bridge.rs      # #[cxx::bridge] FFI declarations
-        ├── shim.h/.cc     # C++ adapter: absl types -> cxx-bridgeable types
-        └── lib.rs         # safe Rust wrapper (ScannIndex, ScannError)
+├── CMakeLists.txt        options and library targets
+├── cmake/                Flags, Dependencies (pinned FetchContent), Proto,
+│                         SourceFlags (per-file copts), BundleStatic
+├── src/scann/            upstream C++ sources (see NOTICE for the fixes)
+├── core/scann_core/      scann-core additions: ConfigBuilder
+├── python/               pybind11 module + upstream Python package
+├── rust/                 the Rust crate (cxx bridge, safe API, tests, examples)
+├── examples/cpp/         C++ example
+├── tests/                C++ tests, Python/Rust equivalence harness
+└── docs/                 API reference, algorithms, AVQ explainer
 ```
 
 ## Building
 
+Requirements: CMake ≥ 3.27 and a C++17 compiler (clang or GCC); for the
+optional parts, Python with numpy and a Rust toolchain.
+
 ```sh
-cmake -S scann-core -B build
+cmake -S . -B build -G Ninja
 cmake --build build
 ```
 
-CMake options (all default `ON`):
+| Option | Default | Effect |
+|---|---|---|
+| `SCANN_BUILD_STATIC` | ON | `libscann_core.a`, CMake target `scann::core_static` (linked whole-archive for you) |
+| `SCANN_BUILD_SHARED` | ON | `libscann_core.so`, target `scann::core_shared` |
+| `SCANN_BUILD_PYTHON` | ON | the Python package in `build/python/` |
+| `SCANN_BUILD_RUST_BINDINGS` | ON | the Rust crate, via cargo (needs `SCANN_BUILD_STATIC`) |
+| `SCANN_BUILD_TESTS` | ON | C++ tests |
+| `SCANN_BUILD_EXAMPLES` | ON | C++ example |
+| `SCANN_ARCH_FLAGS` | `-mavx;-mfma` (x86-64), `-march=armv8-a+simd` (arm64) | ISA flags for scann-core **and** all dependencies |
+| `SCANN_SANITIZE` | empty | e.g. `address,undefined` or `thread`; instruments dependencies too |
+| `SCANN_USE_SYSTEM_DEPS` | OFF | try `find_package` first (versions must match the pins exactly) |
+| `SCANN_ENABLE_LTO` | OFF | IPO for scann-core's own objects |
+| `SCANN_HWY_DISABLED_TARGETS` | empty | `HWY_DISABLED_TARGETS`, applied globally |
 
-| Option | Effect |
+The static and shared libraries are linked from the same object files, so
+building both costs no extra compilation. `scann::core` is the static library
+if it's built, otherwise the shared one.
+
+**Static linking needs whole-archive.** Distance measures register
+themselves from static initializers (Bazel's `alwayslink`), so without it a
+linker drops them and configs fail at runtime with an unknown distance
+measure. `scann::core_static` does this for CMake consumers. Outside CMake,
+link `libscann_core.a` whole-archive plus `libscann_core_deps.a` (every
+transitive static dependency merged into one archive):
+
+```sh
+c++ app.o -Wl,--whole-archive build/libscann_core.a -Wl,--no-whole-archive \
+    build/libscann_core_deps.a -lpthread -lrt -lm
+```
+
+### Dependencies
+
+All fetched with `FetchContent`, pinned by URL and SHA-256 in
+[`cmake/Dependencies.cmake`](cmake/Dependencies.cmake) (latest releases as
+of 2026-09-22):
+
+| | version |
 |---|---|
-| `SCANN_BUILD_STATIC` | Build `libscann_core.a` |
-| `SCANN_BUILD_SHARED` | Build `libscann_core.so`/`.dylib` |
-| `SCANN_BUILD_PYTHON` | Build the pybind11 module (needs a Python + pybind11) |
-| `SCANN_BUILD_RUST_BINDINGS` | Build the Rust crate (needs `cargo` on `PATH`) |
+| abseil-cpp | 20260817.0 |
+| protobuf | 36.2 (Python runtime ≥ 7.36.2 for the generated `_pb2` modules) |
+| highway | 1.4.0 |
+| Eigen | 5.0.1 |
+| zlib | 1.3.2 (static, only for cnpy) |
+| cnpy | commit `57184ee0` |
+| pybind11 | 3.1.0 (Python only) |
+| cxx | 1.x (Rust only, from crates.io) |
 
-Both static and shared are built from the same compiled objects (a shared
-`OBJECT` library target), so enabling both isn't 2x compile time.
-`SCANN_BUILD_RUST_BINDINGS` requires `SCANN_BUILD_STATIC` — the Rust crate
-links against the static archive, not the shared library.
+**Offline / reproducible builds.** Point FetchContent at local sources and
+forbid network access:
 
-All C++ dependencies (abseil-cpp, protobuf, highway, eigen, cnpy, zlib,
-and pybind11 when `SCANN_BUILD_PYTHON=ON`) are fetched and built from
-source by CMake's `FetchContent` — nothing needs to be pre-installed on
-the build machine beyond a C++17 compiler, CMake ≥3.24, and (for the Rust
-crate) a Rust toolchain. Versions are pinned in `cmake/Dependencies.cmake`
-to match what the parent `scann/` Bazel build already validated.
+```sh
+cmake -S . -B build -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DFETCHCONTENT_SOURCE_DIR_ABSL=/src/abseil-cpp-20260817.0 \
+  -DFETCHCONTENT_SOURCE_DIR_PROTOBUF=/src/protobuf-36.2 \
+  -DFETCHCONTENT_SOURCE_DIR_HIGHWAY=/src/highway-1.4.0 \
+  -DFETCHCONTENT_SOURCE_DIR_EIGEN=/src/eigen-5.0.1 \
+  -DFETCHCONTENT_SOURCE_DIR_ZLIB=/src/zlib-1.3.2 \
+  -DFETCHCONTENT_SOURCE_DIR_CNPY=/src/cnpy \
+  -DFETCHCONTENT_SOURCE_DIR_PYBIND11=/src/pybind11-3.1.0
+```
 
-## Status
+(an existing build's `_deps/*-src` directories work), or use
+`-DSCANN_USE_SYSTEM_DEPS=ON` to take installed packages when their versions
+match.
 
-Builds end to end (static + shared library, Python package, Rust crate)
-and is verified equivalent to the Bazel-built upstream wheel by
-`tests/equivalence/run.py`: bit-identical neighbour lists and distances on
-every deterministic config, for Python and for Rust (`cargo test`). The
-Rust binding currently covers construction and single-query search.
+### Compile flags
 
-For what the underlying config/search API actually means (distance
-measures, partitioning, quantization, the config string these bindings
-take), see [`docs/api_reference.md`](docs/api_reference.md) and
-[`docs/algorithms.md`](docs/algorithms.md) — the
-core library here implements exactly that API, just without the Python
-wrapper layer.
+Carried over from the Bazel build:
+
+* **Global** (reach every dependency too, like `--copt`): the ISA flags
+  (`SCANN_ARCH_FLAGS`), `-fsized-deallocation`, `-w`, `-std=c++17` (not
+  `gnu++17`: under GCC that also changes `-ffp-contract`, i.e. distances),
+  and `-O2` as the release baseline (not CMake's `-O3`).
+* **Per file** ([`cmake/SourceFlags.cmake`](cmake/SourceFlags.cmake)), as in
+  the Bazel `copts`: `-O3` on the LUT16 kernels and on many-to-many
+  distances; `-mtune=generic` on the many-to-many fixed8/sfp8/orthogonality
+  files (upstream's workaround for an AMX codegen problem);
+  `-fno-tree-vectorize` on `limited_inner_product`; `-fomit-frame-pointer`
+  on `asymmetric_hashing_impl_omit_frame_pointer`.
+* The LUT16 template sharding (`{BATCH_SIZE}` = 1..9) of Bazel's
+  `batch_size_sharder`.
+
+Not carried over: `HWY_DISABLED_TARGETS=(HWY_AVX3_SPR|HWY_AVX10_2)`. It
+worked around highway 1.3.0 failing to compile vqsort with clang 23, and
+isn't needed with highway 1.4.0. Thin LTO isn't on by default
+(`SCANN_ENABLE_LTO`).
+
+## Using it
+
+### C++
+
+```cpp
+#include "scann/scann_ops/cc/scann.h"
+#include "scann_core/config_builder.h"
+
+scann_core::TreeOptions tree;
+tree.num_leaves = 200;
+tree.num_leaves_to_search = 20;
+scann_core::AhOptions ah;
+ah.anisotropic_quantization_threshold = 0.2;
+auto config = scann_core::ConfigBuilder(10, scann_core::DistanceMeasure::kDotProduct, dim)
+                  .Tree(tree).ScoreAh(ah).Reorder({100})
+                  .BuildText(n);
+
+research_scann::ScannInterface index;
+absl::Status s = index.Initialize(dataset /* n*dim floats */, n, *config, 0);
+research_scann::NNResultsVector res;
+s = index.Search(query_ptr, &res, /*final_nn=*/-1, /*pre_reorder_nn=*/-1, /*leaves=*/-1);
+```
+
+Full program: [`examples/cpp/quickstart.cc`](examples/cpp/quickstart.cc)
+(`cmake --build build --target scann_core_example_quickstart`).
+`ConfigBuilder` produces the same configs as the Python builder, except that
+it returns an error where Python silently drops or ignores an option. See
+the header for the full list.
+
+### Python
+
+`build/python/` is an importable package with upstream's API:
+
+```sh
+PYTHONPATH=build/python python -c "import scann; print(scann.scann_ops_pybind.builder)"
+```
+
+`scann.scann_ops` (the TensorFlow op) is not included.
+
+### Rust
+
+```rust
+use scann_core::{AhOptions, ConfigBuilder, DistanceMeasure, ReorderOptions,
+                 SearchOptions, TreeOptions};
+
+let index = ConfigBuilder::new(10, DistanceMeasure::DotProduct, dim)
+    .tree(TreeOptions::new(200, 20))
+    .score_ah(AhOptions::new(2).anisotropic_quantization_threshold(0.2))
+    .reorder(ReorderOptions::new(100))
+    .build_index(&dataset)?;
+let nn = index.search(query, SearchOptions::default())?;   // nn.indices, nn.distances
+```
+
+`ScannIndex` covers single, batched and parallel batched search,
+`add`/`upsert`/`delete`/`reserve`/`rebalance`, `serialize`/`load` (the
+on-disk format is shared with Python), `set_num_threads`, `config` and health
+stats. It is `Send + Sync`: search takes `&self` and can run from many
+threads, and mutation takes `&mut self`. Shapes are validated before
+anything reaches C++, and every C++ error becomes a `ScannError`.
+
+Full program: [`rust/examples/quickstart.rs`](rust/examples/quickstart.rs).
+CMake builds the crate and its examples with the `scann_core_rust` target.
+For plain `cargo` (and rust-analyzer), export
+`SCANN_CORE_BUILD_ENV=<build>/rust/scann_core_rust_build.env`. build.rs
+compiles only the small bridge shim and links the CMake-built archives.
+
+## Testing
+
+| | what | how |
+|---|---|---|
+| Equivalence | Python and Rust results vs. the upstream Bazel-built wheel | `tests/equivalence/run.py --build-dir build --python <wheel venv python> --core-python <python with numpy/protobuf>`, then `cmake --build build --target scann_core_rust_test` |
+| C++ API | build, all search modes, serialize round trip, mutation, bad input | `scann_core_api_exercise <fixtures dir> [training threads]` (ctest with `-DSCANN_TEST_FIXTURES=`) |
+| ConfigBuilder | 75 option sets vs. the Python builder's output | `tests/config_builder/make_expected.py --out D`, then `scann_core_config_builder_test D` |
+| Rust API | exactness vs. naive search, mode agreement, round trip, mutation, concurrency, errors | `cargo test` (part of `scann_core_rust_test`) |
+| Python docids | a failed `upsert`/`delete` leaves docids in sync with the index | `PYTHONPATH=build/python python tests/python/test_docid_bookkeeping.py` |
+
+### Equivalence with upstream
+
+On a fixed seed with two datasets (5000×128 and 4000×768), every
+**deterministic** config gives bit-identical neighbour lists and distances
+to the upstream wheel, for single and batched search from Python and from
+Rust. The configs are brute force, AH + int8 reorder, autopilot, and
+tree + AH + reorder with k-means++ initialization, for dot product and
+squared L2. Indexes serialized by either build load in the other.
+
+Upstream's default `tree(random_init=True)` is **not reproducible even
+against itself**. The initial centers go into an `absl::flat_hash_set`,
+whose iteration order is randomized per process. For those configs the
+harness compares recall distributions over 8 trainings per build, and they
+agree within noise.
+
+### Sanitizers and static analysis
+
+The C++ API test (every fixture config, all search modes, serialization,
+mutation, retraining, bad input) runs clean under ASan + UBSan and under
+TSan (threaded training and parallel search). Valgrind memcheck on the
+portable (`-mavx -mfma`) build reports no leaks and no errors in ScaNN
+code. Its only reports are uninitialised-value warnings inside protobuf's
+descriptor/reflection code; these look like the known false positive with
+clang's combined bitfield loads, but that hasn't been confirmed.
+clang-tidy (`bugprone-*`, `clang-analyzer-*` and a few others) was run
+over all sources and its findings triaged.
+
+Bugs found and fixed this way are listed in [NOTICE](NOTICE). Among them:
+configs with parse errors were silently accepted; `n_points == 0` divided by
+zero; `RetrainAndReindex` destroyed a locked mutex; parallel batched search
+crashed with `batch_size = 0` (SIGFPE) or without a thread pool (null
+dereference; the default pool is `GetNumCPUs() - 1` threads, so this hit
+every single-CPU machine); a failed Python `upsert`/`delete` left docids
+pointing at the wrong vectors.
+
+## Intentional differences from upstream
+
+* No TensorFlow op (`scann.scann_ops`); `scann/__init__.py` doesn't import
+  TensorFlow.
+* CMake instead of Bazel; dependencies are upgraded to current releases.
+* The bug fixes above: some inputs upstream accepted (bad configs,
+  inconsistent shapes, `batch_size = 0`) are now errors.
+* Rust batched search returns exactly the neighbours found per query. The
+  Python API pads short rows with index 0 and NaN distance.
+* `ConfigBuilder` (C++/Rust) returns errors where Python's builder silently
+  ignores options, and keeps `upper_tree(soar_lambda=0)` (Python turns it
+  into 1.5).
+
+## Documentation
+
+* [`docs/api_reference.md`](docs/api_reference.md): the config options and
+  search parameters, and what they mean.
+* [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
+  hashing, anisotropic quantization, reordering.
+* [`docs/anisotropic_quantization_explained.md`](docs/anisotropic_quantization_explained.md):
+  a plain-language walkthrough of the paper.
+
+## License
+
+Apache 2.0 (see [LICENSE](LICENSE)); dependencies carry their own licenses
+(see [NOTICE](NOTICE)).

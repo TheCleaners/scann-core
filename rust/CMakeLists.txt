@@ -53,7 +53,7 @@ set(_cargo_args
   --release)
 
 add_custom_target(scann_core_rust ALL
-  COMMAND ${_cargo_env} "${CARGO_EXECUTABLE}" build ${_cargo_args}
+  COMMAND ${_cargo_env} "${CARGO_EXECUTABLE}" build --lib --examples ${_cargo_args}
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   COMMENT "cargo build (scann-core Rust bindings)"
   VERBATIM)

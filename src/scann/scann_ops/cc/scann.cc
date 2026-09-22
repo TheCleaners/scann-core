@@ -72,6 +72,25 @@ unique_ptr<DenseDataset<float>> InitDataset(
   return ds;
 }
 
+// scann-core: DenseDataset infers dimensionality as size / n_points. With
+// n_points == 0 that divides by zero, and a size that isn't a multiple of
+// n_points silently yields the wrong dimensionality (misaligning every row)
+// -- only a DCHECK catches it, in debug builds, by aborting. Both are
+// reachable through the C++ and Rust APIs and via truncated artifact files.
+template <typename T>
+Status CheckDenseShape(ConstSpan<T> data, DatapointIndex n_points,
+                       absl::string_view what) {
+  if (data.empty()) return OkStatus();
+  if (n_points == 0)
+    return InvalidArgumentError(absl::StrCat(
+        what, " has ", data.size(), " values but n_points is 0"));
+  if (data.size() % n_points != 0)
+    return InvalidArgumentError(absl::StrCat(
+        what, " has ", data.size(), " values, which is not a multiple of ",
+        "n_points (", n_points, ")"));
+  return OkStatus();
+}
+
 Status AddTokenizationToOptions(SingleMachineFactoryOptions& opts,
                                 ConstSpan<int32_t> tokenization,
                                 const int spilling_mult = 1) {
@@ -276,7 +295,12 @@ Status ScannInterface::Initialize(
     ConstSpan<float> int8_multipliers, ConstSpan<float> dp_norms,
     DatapointIndex n_points) {
   config_ = config;
+  SCANN_RETURN_IF_ERROR(CheckDenseShape(dataset, n_points, "dataset"));
+  SCANN_RETURN_IF_ERROR(CheckDenseShape(int8_dataset, n_points, "int8 dataset"));
   if (opts.ah_codebook != nullptr) {
+    if (hashed_dataset.empty())
+      return InvalidArgumentError("AH codebook present but hashed dataset is empty");
+    SCANN_RETURN_IF_ERROR(CheckDenseShape(hashed_dataset, n_points, "hashed dataset"));
     vector<uint8_t> hashed_db(hashed_dataset.data(),
                               hashed_dataset.data() + hashed_dataset.size());
     opts.hashed_dataset =
@@ -314,6 +338,7 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
   SCANN_RETURN_IF_ERROR(ParseTextProto(&config_, config));
   if (training_threads < 0)
     return InvalidArgumentError("training_threads must be non-negative");
+  SCANN_RETURN_IF_ERROR(CheckDenseShape(dataset, n_points, "dataset"));
   if (training_threads == 0) training_threads = GetNumCPUs();
   SingleMachineFactoryOptions opts;
 
@@ -411,8 +436,13 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   auto status_or = RetrainAndReindexSearcher(scann_.get(), &mu, new_config,
                                              parallel_query_pool_);
   if (!status_or.ok()) return status_or.status();
+  // scann-core: on success RetrainAndReindexSearcher returns with `mu`
+  // write-locked so the caller can swap the searcher pointer under it.
+  // Upstream never unlocked, destroying a held absl::Mutex (reported by
+  // TSan as "destroy of a locked mutex").
   scann_.reset(static_cast<SingleMachineSearcherBase<float>*>(
       std::move(status_or.value().release())));
+  mu.WriterUnlock();
   if (scann_->config().has_value()) config_ = scann_->config().value();
   scann_->MaybeReleaseDataset();
   SCANN_RETURN_IF_ERROR(scann_->InitializeHealthStats());
@@ -449,8 +479,14 @@ Status ScannInterface::SearchBatchedParallel(const DenseDataset<float>& queries,
                                              int final_nn, int pre_reorder_nn,
                                              int leaves, int batch_size) const {
   SCANN_RET_CHECK_EQ(queries.dimensionality(), dimensionality_);
+  if (batch_size < 1)
+    return InvalidArgumentError(
+        absl::StrCat("batch_size must be >= 1, got ", batch_size));
   const size_t numQueries = queries.size();
-  const size_t numCPUs = parallel_query_pool_->NumThreads();
+  // No pool when num_threads <= 0 (SetNumThreads(0), or the default of
+  // GetNumCPUs() - 1 on a single-CPU machine); ParallelFor then runs inline.
+  const size_t numCPUs =
+      parallel_query_pool_ ? parallel_query_pool_->NumThreads() : 1;
 
   const size_t kBatchSize =
       std::min(std::max(min_batch_size_, DivRoundUp(numQueries, numCPUs)),
