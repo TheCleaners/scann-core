@@ -14,7 +14,9 @@
 
 #include "scann/hashes/internal/asymmetric_hashing_impl_neon.h"
 
+#if defined(__aarch64__)
 #include <arm_neon.h>
+#endif
 #include <float.h>
 
 #include <cmath>
