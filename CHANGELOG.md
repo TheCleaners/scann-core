@@ -3,7 +3,7 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-26)
 
 First release. scann-core is ScaNN's search core, extracted from
 google-research commit `758b894e` (`scann/`), without TensorFlow.
