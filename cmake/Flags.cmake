@@ -67,8 +67,10 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   # GCC >= 14 type-checks template bodies before instantiation; some ScaNN
   # templates are only ever instantiated under clang (e.g. AMX tile code).
   # This defers those diagnostics to instantiation, where they still apply.
-  list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS
-    $<$<COMPILE_LANGUAGE:CXX>:-Wno-template-body>)
+  # (Plain flag, not a $<COMPILE_LANGUAGE:CXX> genex: rust/CMakeLists.txt
+  # writes these options to a file, which must be language-independent. GCC
+  # accepts it for C files too.)
+  list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS -Wno-template-body)
 endif()
 
 set(SCANN_GLOBAL_COMPILE_DEFINITIONS "")
