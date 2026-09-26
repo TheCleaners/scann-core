@@ -29,6 +29,9 @@
 #     package is only accepted if its version matches the pin exactly.
 
 include(FetchContent)
+# Every download below has INACTIVITY_TIMEOUT: without it a stalled
+# connection hangs the configure step forever; with it, the stall fails and
+# CMake's download script retries (up to 5 attempts).
 
 # abseil and protobuf link Threads::Threads, but imported targets are
 # directory-scoped: import it here too so the top level can resolve it (see
@@ -79,18 +82,21 @@ set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(absl
   URL https://github.com/abseil/abseil-cpp/releases/download/20260817.0/abseil-cpp-20260817.0.tar.gz
   URL_HASH SHA256=f7e05179df39c45434cad433f5783840bb3788ef322976f9138bc6b72b3a107d
+  INACTIVITY_TIMEOUT 60
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS CONFIG)
 
 FetchContent_Declare(zlib
   URL https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
   URL_HASH SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+  INACTIVITY_TIMEOUT 60
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS NAMES ZLIB)
 
 FetchContent_Declare(protobuf
   URL https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protobuf-36.2.tar.gz
   URL_HASH SHA256=3d9642a662d10e68ebae5e53f14dcce5105684212d5078f8e0d47d1ab3ae6b64
+  INACTIVITY_TIMEOUT 60
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS CONFIG)
 
@@ -101,6 +107,7 @@ FetchContent_Declare(protobuf
 FetchContent_Declare(highway
   URL https://github.com/google/highway/releases/download/1.4.0/highway-1.4.0.tar.gz
   URL_HASH SHA256=36f672ab48ddb3c8555e9e89e16fe400cd7d16c6eb455a1a3d0c146a63ababdc
+  INACTIVITY_TIMEOUT 60
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS NAMES hwy CONFIG)
 
@@ -109,6 +116,7 @@ FetchContent_Declare(eigen
       https://github.com/eigen-mirror/eigen/archive/refs/tags/5.0.1.tar.gz
       https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz
   URL_HASH SHA256=e9c326dc8c05cd1e044c71f30f1b2e34a6161a3b6ecf445d56b53ff1669e3dec
+  INACTIVITY_TIMEOUT 60
   DOWNLOAD_NAME eigen-5.0.1.tar.gz
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS NAMES Eigen3 CONFIG)
@@ -133,6 +141,7 @@ if(SCANN_BUILD_PYTHON)
   FetchContent_Declare(pybind11
     URL https://github.com/pybind/pybind11/archive/refs/tags/v3.1.0.tar.gz
     URL_HASH SHA256=ef712655692a2e9bf7bb7874c022564a45f91d847ddee987e720cd9e28849665
+    INACTIVITY_TIMEOUT 60
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     FIND_PACKAGE_ARGS CONFIG)
   FetchContent_MakeAvailable(pybind11)
