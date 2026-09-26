@@ -17,6 +17,9 @@ Extracted from google-research commit `758b894e` (`scann/` subdirectory);
 see [NOTICE](NOTICE) for provenance and the list of upstream files that were
 changed.
 
+> **scann-core is a derived work of ScaNN. It is not an official Google
+> product and is not affiliated with or endorsed by Google.**
+
 ## Layout
 
 ```
@@ -270,5 +273,12 @@ pointing at the wrong vectors.
 
 ## License
 
-Apache 2.0 (see [LICENSE](LICENSE)); dependencies carry their own licenses
-(see [NOTICE](NOTICE)).
+Apache 2.0 (see [LICENSE](LICENSE)).
+
+* ScaNN: Copyright The Google Research Authors.
+* scann-core's additions and modifications: Copyright 2026 ebenali and
+  TheCleaners.
+
+Dependencies carry their own licenses (see [NOTICE](NOTICE)). scann-core is
+not an official Google product and is not affiliated with or endorsed by
+Google.

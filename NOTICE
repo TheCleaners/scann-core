@@ -1,9 +1,15 @@
 scann-core
-==========
+Copyright 2026 ebenali and TheCleaners.
 
-This product includes software from ScaNN (Scalable Nearest Neighbors),
-Copyright The Google Research Authors, licensed under the Apache License,
-Version 2.0 (see LICENSE).
+scann-core is a derived work of ScaNN (Scalable Nearest Neighbors). It is
+not an official Google product and is not affiliated with, sponsored by or
+endorsed by Google. "ScaNN" is used only to identify the software this work
+is derived from.
+
+This product includes software from ScaNN, Copyright The Google Research
+Authors, licensed under the Apache License, Version 2.0 (see LICENSE).
+scann-core's own additions and modifications are Copyright ebenali and
+TheCleaners and are licensed under the same Apache License, Version 2.0.
 
   Upstream:     https://github.com/google-research/google-research/tree/master/scann
   Extracted at: google-research commit 758b894eb02dc2a7097068031089a2803be147c6
@@ -12,8 +18,9 @@ Version 2.0 (see LICENSE).
 The following files are copies of upstream files at that commit:
   src/**                                  (from scann/scann/..., same paths)
   python/scann/scann_ops/py/*.py          (from scann/scann/scann_ops/py/)
-They are unmodified except for these changes (each marked with a
-"scann-core:" comment where it isn't a one-line change):
+They are unmodified except for these changes. Each modified file says so in
+its license header, and each change is marked with a "scann-core:" comment
+where it isn't a one-line change:
   src/scann/scann_ops/cc/scann.h
       ParseTextProto reports text-format parse errors (upstream ignored
       them, so misspelled or malformed configs were accepted); the
