@@ -26,7 +26,8 @@ if(NOT DEFINED CMAKE_C_FLAGS_RELEASE)
 endif()
 
 # Prefer clang when no compiler was chosen (CC/CXX or -DCMAKE_<LANG>_COMPILER):
-# scann-core needs it (see below), and the platform default is often GCC.
+# it's upstream's compiler, and the one results are verified against
+# upstream with. GCC >= 13 works too (see below).
 if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
   find_program(_scann_clangxx clang++ NO_CACHE)
   find_program(_scann_clang clang NO_CACHE)
@@ -46,17 +47,25 @@ if(NOT _scann_cargo_version MATCHES "^version = \"${SCANN_CORE_VERSION}\"")
   message(FATAL_ERROR "Cargo.toml (${_scann_cargo_version}) doesn't match VERSION (${SCANN_CORE_VERSION})")
 endif()
 
-# ScaNN is written for clang (as is upstream's build): GCC rejects parts of it
-# (-Wtemplate-body errors in utils/intrinsics, always_inline on functions it
-# cannot inline), and MSVC lacks the GNU vector extensions it uses.
+# Supported compilers: clang >= 19 (upstream's compiler, and the one results
+# are verified bit-identical to upstream with) and GCC >= 13. Older versions
+# are untested; MSVC lacks the GNU vector extensions ScaNN uses.
 option(SCANN_ALLOW_UNSUPPORTED_COMPILER
-  "Configure even with a compiler other than clang (expect build errors)" OFF)
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT SCANN_ALLOW_UNSUPPORTED_COMPILER)
+  "Configure even with a compiler other than clang or GCC (expect build errors)" OFF)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19)
+    message(WARNING "scann-core is tested with clang >= 19; this is clang ${CMAKE_CXX_COMPILER_VERSION}.")
+  endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+    message(WARNING "scann-core is tested with GCC >= 13; this is GCC ${CMAKE_CXX_COMPILER_VERSION}.")
+  endif()
+elseif(NOT SCANN_ALLOW_UNSUPPORTED_COMPILER)
   message(FATAL_ERROR
-    "scann-core requires clang; the C++ compiler is ${CMAKE_CXX_COMPILER_ID} "
-    "${CMAKE_CXX_COMPILER_VERSION}. Configure with "
-    "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ (or set CC/CXX), "
-    "or pass -DSCANN_ALLOW_UNSUPPORTED_COMPILER=ON to try anyway.")
+    "scann-core builds with clang (>= 19) or GCC (>= 13); the C++ compiler is "
+    "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}. Set CC/CXX (or "
+    "-DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER), or pass "
+    "-DSCANN_ALLOW_UNSUPPORTED_COMPILER=ON to try anyway.")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)

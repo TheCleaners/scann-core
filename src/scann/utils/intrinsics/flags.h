@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #ifndef SCANN_UTILS_INTRINSICS_FLAGS_H_
 #define SCANN_UTILS_INTRINSICS_FLAGS_H_
@@ -48,7 +51,10 @@ inline bool RuntimeSupportsAvx512Vnni() {
   return flags_internal::should_use_avx512_vnni;
 }
 
-#if (defined(__clang__) && __clang_major__ < 20) || defined(MEMORY_SANITIZER)
+// scann-core: the AMX kernels use clang's tile builtins (__tile1024i, ...),
+// which other compilers don't have; upstream assumed any non-clang compiler
+// could build them.
+#if !defined(__clang__) || __clang_major__ < 20 || defined(MEMORY_SANITIZER)
 
 inline bool RuntimeSupportsAmx() { return false; }
 

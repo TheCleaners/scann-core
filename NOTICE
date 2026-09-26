@@ -19,8 +19,9 @@ The following files are copies of upstream files at that commit:
   src/**                                  (from scann/scann/..., same paths)
   python/scann/scann_ops/py/*.py          (from scann/scann/scann_ops/py/)
 They are unmodified except for these changes. Each modified file says so in
-its license header, and each change is marked with a "scann-core:" comment
-where it isn't a one-line change:
+its license header (or, for .inc fragments, which have none, in a first-line
+comment), and each change is marked with a "scann-core:" comment where it
+isn't a one-line change:
   src/scann/scann_ops/cc/scann.h
       ParseTextProto reports text-format parse errors (upstream ignored
       them, so misspelled or malformed configs were accepted); the
@@ -50,6 +51,30 @@ where it isn't a one-line change:
   src/scann/utils/bfloat16_helpers.h
       Bfloat16Decompress() shifts as unsigned; left-shifting a negative
       int16 is undefined behavior in C++17.
+  GCC portability (upstream built only with clang, which accepts these as
+  extensions or never checks them; GCC >= 13 rejects them). None changes
+  clang's results (verified: still bit-identical to upstream):
+    src/scann/utils/intrinsics/sse4.h,
+    src/scann/distance_measures/many_to_many/many_to_many_impl.inc,
+    src/scann/distance_measures/one_to_many/one_to_many_asymmetric_impl.inc,
+    src/scann/tree_x_hybrid/internal/utils.cc
+      Explicit bit casts between integer and float SIMD vectors (same bits)
+      instead of implicit vector conversions or static_cast; in sse4.h the
+      vectors were also declared with the wrong type.
+    src/scann/distance_measures/one_to_many/one_to_many_symmetric.h,
+    src/scann/distance_measures/one_to_many/one_to_many_impl_highway.inc,
+    src/scann/base/single_machine_base.h
+      Declarations before use, namespace qualification, and `typename` where
+      C++17 requires them.
+    src/scann/utils/common.h, src/scann/data_format/dataset.h
+      SCANN_INLINE_FORWARDING: four virtual methods that forward to the same
+      method on another view are not force-inlined under GCC (it rejects
+      always_inline on what it sees as recursion).
+    src/scann/utils/intrinsics/flags.h,
+    src/scann/distance_measures/many_to_many/int8_tile.h,
+    src/scann/distance_measures/many_to_many/many_to_many_templates.h
+      The AMX kernels (clang's tile builtins) are compiled with clang only;
+      upstream assumed any non-clang compiler had them.
   python/scann/scann_ops/py/scann_ops_pybind.py
       upsert() updates the docid bookkeeping only after the index accepted
       the vectors, and delete() validates all docids before changing

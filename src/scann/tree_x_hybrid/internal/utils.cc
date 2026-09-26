@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #include "scann/tree_x_hybrid/internal/utils.h"
 
@@ -49,7 +52,9 @@ SCANN_AVX2_OUTLINE size_t Avx2GatherCreateLeafLocalAllowlist(
         reinterpret_cast<const int*>(global_allowlist.data()), uint32_idxs, 4);
     __m256i shifted = _mm256_srlv_epi32(uint32s, bit_idxs);
     __m256i mask = _mm256_slli_epi32(shifted, 31);
-    size_t bitmask_bits = _mm256_movemask_ps(static_cast<__m256>(mask));
+    // scann-core: explicit bit cast; static_cast between vector types is a
+    // clang extension that GCC rejects. Same bits.
+    size_t bitmask_bits = _mm256_movemask_ps(_mm256_castsi256_ps(mask));
     leaf_view.data()[start_idx / kSizetBits] |= bitmask_bits
                                                 << (start_idx % kSizetBits);
   }

@@ -83,8 +83,9 @@ fn build_with_cmake() -> String {
         .define("SCANN_BUILD_EXAMPLES", "OFF")
         .define("SCANN_BUILD_SHARED", "OFF")
         .build_target("scann_core_rust_inputs");
-    // scann-core needs clang; the cmake crate would otherwise pass the
-    // platform default compiler (often GCC) explicitly.
+    // Prefer clang (upstream's compiler, which results are verified
+    // against) when CXX isn't set; the cmake crate would otherwise pass the
+    // platform default compiler explicitly. GCC >= 13 works too.
     if env::var_os("CXX").is_none() {
         if let (Some(cc), Some(cxx)) = (find_on_path("clang"), find_on_path("clang++")) {
             cfg.define("CMAKE_C_COMPILER", cc).define("CMAKE_CXX_COMPILER", cxx);

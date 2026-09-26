@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 
 
@@ -198,6 +201,25 @@ void DenseGeneralHammingDistanceOneToMany(const DatapointPtr<T>& query,
                                           ThreadPool* pool);
 
 namespace one_to_many_low_level {
+
+// scann-core: declared before their first use (below) so that
+// `DenseAccumulatingDistanceMeasureOneToManyInternal<...>(...)` parses as a
+// template call. Upstream relied on clang accepting it undeclared (a C++20
+// rule); GCC in C++17 mode parses the `<` and `>` as comparisons.
+template <typename T, typename DatasetView, typename Lambdas,
+          typename ResultElem, bool kShouldPrefetch, typename CallbackFunctor>
+enable_if_t<std::is_same_v<T, float>, void>
+DenseAccumulatingDistanceMeasureOneToManyInternal(
+    const DatapointPtr<T>& query, const DatasetView* __restrict__ database,
+    const Lambdas& lambdas, MutableSpan<ResultElem> result,
+    CallbackFunctor* __restrict__ callback, ThreadPool* pool);
+template <typename T, typename DatasetView, typename Lambdas,
+          typename ResultElem, bool kShouldPrefetch, typename CallbackFunctor>
+enable_if_t<std::is_same_v<T, double>, void>
+DenseAccumulatingDistanceMeasureOneToManyInternal(
+    const DatapointPtr<T>& query, const DatasetView* __restrict__ database,
+    const Lambdas& lambdas, MutableSpan<ResultElem> result,
+    CallbackFunctor* __restrict__ callback, ThreadPool* pool);
 
 template <typename T, typename DatasetView, typename Lambdas,
           typename ResultElem, typename CallbackFunctor>
@@ -1565,11 +1587,11 @@ void DenseLimitedInnerProductDistanceOneToMany(
 
     if (database->dimensionality() <= kMaxPrefetchAheadDims &&
         database->dimensionality() >= kMinPrefetchAheadDims) {
-      return DenseAccumulatingDistanceMeasureOneToManyInternal<
+      return one_to_many_low_level::DenseAccumulatingDistanceMeasureOneToManyInternal<
           T, DatasetView, Lambdas, ResultElem, true>(query, database, lambdas,
                                                      result, callback, nullptr);
     } else {
-      return DenseAccumulatingDistanceMeasureOneToManyInternal<
+      return one_to_many_low_level::DenseAccumulatingDistanceMeasureOneToManyInternal<
           T, DatasetView, Lambdas, ResultElem, false>(
           query, database, lambdas, result, callback, nullptr);
     }

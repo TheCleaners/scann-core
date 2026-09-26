@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 
 
@@ -158,6 +161,8 @@ class Int8DatabaseTile;
 
 #ifdef __x86_64__
 
+// scann-core: clang-only (see SCANN_HAVE_AMX in utils/intrinsics/flags.h).
+#ifdef __clang__
 namespace amx {
 #define SCANN_SIMD_ATTRIBUTE SCANN_AMX
 
@@ -205,6 +210,7 @@ class Int32AccumulatorTile {
 #include "scann/distance_measures/many_to_many/int8_tile_codec.inc"
 #undef SCANN_SIMD_ATTRIBUTE
 }  // namespace amx
+#endif  // __clang__
 
 namespace avx512_vnni {
 #define SCANN_SIMD_ATTRIBUTE SCANN_AVX512_VNNI

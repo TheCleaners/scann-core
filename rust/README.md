@@ -31,8 +31,8 @@ Python package). It is `Send + Sync`: search from as many threads as you like.
 The crate builds the C++ library with CMake the first time it compiles, so
 you need:
 
-* **CMake ≥ 3.27** and **clang ≥ 19** (picked automatically when `CXX`
-  isn't set; GCC can't build ScaNN);
+* **CMake ≥ 3.27** and **clang ≥ 19** or **GCC ≥ 13** (clang is preferred
+  when `CXX` isn't set);
 * **Linux x86-64** (the only platform tested so far);
 * **network access** to download the C++ dependencies (abseil, protobuf,
   highway, Eigen, zlib). To build offline, point CMake at local copies:

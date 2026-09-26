@@ -1,3 +1,5 @@
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived work
+// of ScaNN, not an official Google product); see NOTICE.
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -1142,20 +1144,22 @@ SCANN_HIGHWAY_OUTLINE void OneToManyInt8Int8Impl(
                                        kHasIndices, 8, 0>;
 
   size_t dims = dataset_view.dimensionality();
+  // scann-core: `typename` below is required in C++17 (clang accepts it
+  // missing, a C++20 rule; GCC doesn't).
   if (dims == 512) {
-    using Config512D = GenericConfig::template WithDimensionality<512>;
+    using Config512D = typename GenericConfig::template WithDimensionality<512>;
     HWY_DISPATCH(ComputeOneToManyInt8Int8<Config512D>::Run)
     (query, std::move(dataset_view), indices, result, std::move(callback));
   } else if (dims == 256) {
-    using Config256D = GenericConfig::template WithDimensionality<256>;
+    using Config256D = typename GenericConfig::template WithDimensionality<256>;
     HWY_DISPATCH(ComputeOneToManyInt8Int8<Config256D>::Run)
     (query, std::move(dataset_view), indices, result, std::move(callback));
   } else if (dims == 128) {
-    using Config128D = GenericConfig::template WithDimensionality<128>;
+    using Config128D = typename GenericConfig::template WithDimensionality<128>;
     HWY_DISPATCH(ComputeOneToManyInt8Int8<Config128D>::Run)
     (query, std::move(dataset_view), indices, result, std::move(callback));
   } else if (dims == 64) {
-    using Config64D = GenericConfig::template WithDimensionality<64>;
+    using Config64D = typename GenericConfig::template WithDimensionality<64>;
     HWY_DISPATCH(ComputeOneToManyInt8Int8<Config64D>::Run)
     (query, std::move(dataset_view), indices, result, std::move(callback));
   } else {

@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #ifndef SCANN_UTILS_INTRINSICS_SSE4_H_
 #define SCANN_UTILS_INTRINSICS_SSE4_H_
@@ -818,16 +821,19 @@ class Sse4<T, kNumRegistersInferred> {
 
   static SCANN_SSE4_INLINE pair<ExpansionIntelType, ExpansionIntelType>
   ExpandOneRegister(IntelType x) {
+    // scann-core: upstream declared the vectors below with the wrong type
+    // (__m128 for integer data; an integer shift on a float vector), which
+    // GCC rejects (-Wtemplate-body). Same bits, correct types.
     if constexpr (IsSame<T, float>()) {
-      __m128 hi = _mm_srli_si128(x, 8);
+      __m128 hi = _mm_castsi128_ps(_mm_srli_si128(_mm_castps_si128(x), 8));
       __m128 lo = x;
       return std::make_pair(_mm_cvtps_pd(lo), _mm_cvtps_pd(hi));
     }
     static_assert(!IsSame<T, double>(), "Nothing to expand to");
 
     if constexpr (!IsSameAny<T, float, double>()) {
-      __m128 hi = _mm_srli_si128(x, 8);
-      __m128 lo = x;
+      __m128i hi = _mm_srli_si128(x, 8);
+      __m128i lo = x;
 
       if constexpr (IsSame<T, int8_t>()) {
         return std::make_pair(_mm_cvtepi8_epi16(lo), _mm_cvtepi8_epi16(hi));

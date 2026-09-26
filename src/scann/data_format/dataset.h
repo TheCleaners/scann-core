@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 
 
@@ -598,11 +601,11 @@ class DenseDatasetSubView : public DenseDatasetView<T> {
                       size_t size)
       : parent_view_(parent), offset_(offset), size_(size) {}
 
-  SCANN_INLINE const T* GetPtr(size_t i) const final {
+  SCANN_INLINE_FORWARDING const T* GetPtr(size_t i) const final {
     return parent_view_->GetPtr(offset_ + i);
   }
 
-  SCANN_INLINE DimensionIndex dimensionality() const final {
+  SCANN_INLINE_FORWARDING DimensionIndex dimensionality() const final {
     return parent_view_->dimensionality();
   };
 
@@ -631,11 +634,11 @@ class RandomDatapointsSubView : public DenseDatasetView<T> {
                           ConstSpan<DatapointIndex> dp_idxs)
       : parent_view_(parent), dp_idxs_(dp_idxs.begin(), dp_idxs.end()) {}
 
-  SCANN_INLINE const T* GetPtr(size_t i) const final {
+  SCANN_INLINE_FORWARDING const T* GetPtr(size_t i) const final {
     return parent_view_->GetPtr(dp_idxs_[i]);
   }
 
-  SCANN_INLINE DimensionIndex dimensionality() const final {
+  SCANN_INLINE_FORWARDING DimensionIndex dimensionality() const final {
     return parent_view_->dimensionality();
   };
 

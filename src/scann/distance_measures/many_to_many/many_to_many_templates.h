@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #ifndef SCANN_DISTANCE_MEASURES_MANY_TO_MANY_MANY_TO_MANY_TEMPLATES_H_
 #define SCANN_DISTANCE_MEASURES_MANY_TO_MANY_MANY_TO_MANY_TEMPLATES_H_
@@ -127,12 +130,15 @@ namespace avx512_vnni {
 #undef SCANN_SIMD_ATTRIBUTE
 }  // namespace avx512_vnni
 
+// scann-core: clang-only, like the AMX tiles in int8_tile.h.
+#ifdef __clang__
 namespace amx {
 #define SCANN_SIMD_ATTRIBUTE SCANN_AMX
 #include "scann/distance_measures/many_to_many/many_to_many_impl.inc"
 #include "scann/distance_measures/many_to_many/many_to_many_sfp8_impl.inc"
 #undef SCANN_SIMD_ATTRIBUTE
 }  // namespace amx
+#endif  // __clang__
 
 #elif HWY_HAVE_CONSTEXPR_LANES
 

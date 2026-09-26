@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #ifndef SCANN_UTILS_COMMON_H_
 #define SCANN_UTILS_COMMON_H_
@@ -132,6 +135,17 @@ enum : uint64_t {
 #define SCANN_INLINE inline
 #define SCANN_INLINE_LAMBDA
 
+#endif
+
+// scann-core: for virtual methods that forward to the same method on another
+// view (e.g. DenseDatasetSubView::GetPtr calls parent_view_->GetPtr). GCC
+// speculatively devirtualizes that call, sees an always_inline function
+// calling itself, and fails the build ("inlining failed in call to
+// always_inline"). Clang keeps SCANN_INLINE, so its code is unchanged.
+#if defined(__clang__)
+#define SCANN_INLINE_FORWARDING SCANN_INLINE
+#else
+#define SCANN_INLINE_FORWARDING inline
 #endif
 
 #define SCANN_OUTLINE ABSL_ATTRIBUTE_NOINLINE

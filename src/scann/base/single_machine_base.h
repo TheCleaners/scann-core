@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 
 
@@ -63,6 +66,16 @@ template <typename T>
 void RetrainAndReindexFixup(UntypedSingleMachineSearcherBase* result,
                             const shared_ptr<Dataset>& dataset,
                             bool retraining_requires_dataset = false);
+
+// scann-core: declared here so SingleMachineSearcherBase can befriend its
+// specialization (friend ... RetrainAndReindexSearcherImpl<T>), which
+// requires a prior declaration; GCC rejects it without one. Defined in
+// utils/single_machine_retraining.cc.
+template <typename T>
+StatusOrSearcherUntyped RetrainAndReindexSearcherImpl(
+    UntypedSingleMachineSearcherBase* untyped_searcher,
+    absl::Mutex* searcher_pointer_mutex, ScannConfig config,
+    shared_ptr<ThreadPool> parallelization_pool);
 
 class UntypedSingleMachineSearcherBase {
  public:

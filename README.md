@@ -33,9 +33,13 @@ All three build the C++ library from source, which needs:
 * **Linux on x86-64.** That's the only platform built and tested so far. The
   arm64 and macOS code paths exist, inherited from upstream, but are
   untested.
-* **clang ≥ 19.** Tested with 19, 21, 23 and 24 (CI adds 20). GCC can't build ScaNN,
-  and configuring with it stops with an explanation. When no compiler is
-  chosen, clang is picked automatically if it's on PATH.
+* **clang ≥ 19 or GCC ≥ 13.** Tested with clang 19, 21, 23 and 24 and
+  GCC 13, 14 and 16 (CI runs clang 19 and 20, GCC 13 and 14). clang is
+  upstream's compiler and the one results are verified bit-identical to
+  upstream with; GCC builds give the same recall (checked on GloVe-100) with
+  last-bit differences in distances. When no compiler is chosen, clang is
+  picked if it's on PATH. The AMX kernels (Sapphire Rapids and later) need
+  clang ≥ 20.
 * **CMake ≥ 3.27**, and network access to download the C++ dependencies
   (or local copies; see [Dependencies](#dependencies)).
 * For Python: Python ≥ 3.10 with numpy and protobuf ≥ 7.36.2 (pip installs
@@ -85,7 +89,7 @@ cmake --build build
 | `SCANN_USE_SYSTEM_DEPS` | OFF | try `find_package` first (versions must match the pins exactly) |
 | `SCANN_ENABLE_LTO` | OFF | IPO for scann-core's own objects |
 | `SCANN_HWY_DISABLED_TARGETS` | empty | `HWY_DISABLED_TARGETS`, applied globally |
-| `SCANN_ALLOW_UNSUPPORTED_COMPILER` | OFF | configure with a non-clang compiler anyway (expect errors) |
+| `SCANN_ALLOW_UNSUPPORTED_COMPILER` | OFF | configure with a compiler other than clang or GCC anyway (expect errors) |
 
 \* ON when scann-core is the top-level project, OFF when it's pulled into
 another one with FetchContent or `add_subdirectory`.

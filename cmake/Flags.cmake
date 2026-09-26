@@ -63,6 +63,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   # Bazel passes --copt=-w: third-party warning noise only.
   list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS -w)
 endif()
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # GCC >= 14 type-checks template bodies before instantiation; some ScaNN
+  # templates are only ever instantiated under clang (e.g. AMX tile code).
+  # This defers those diagnostics to instantiation, where they still apply.
+  list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-template-body>)
+endif()
 
 set(SCANN_GLOBAL_COMPILE_DEFINITIONS "")
 if(NOT SCANN_HWY_DISABLED_TARGETS STREQUAL "")
@@ -76,7 +83,11 @@ endif()
 set(SCANN_SANITIZE "" CACHE STRING "Comma-separated -fsanitize= value (empty: none)")
 if(SCANN_SANITIZE)
   list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS
-    "-fsanitize=${SCANN_SANITIZE}" -fno-omit-frame-pointer -fno-sanitize-merge -g)
+    "-fsanitize=${SCANN_SANITIZE}" -fno-omit-frame-pointer -g)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # One report per check site instead of merged ones (clang only).
+    list(APPEND SCANN_GLOBAL_COMPILE_OPTIONS -fno-sanitize-merge)
+  endif()
   add_link_options("-fsanitize=${SCANN_SANITIZE}")
 endif()
 

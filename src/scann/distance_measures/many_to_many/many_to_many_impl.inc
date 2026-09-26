@@ -1,3 +1,5 @@
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived work
+// of ScaNN, not an official Google product); see NOTICE.
 
 
 #ifdef __aarch64__
@@ -48,8 +50,10 @@ SCANN_SIMD_INLINE void ExpandPretransposedFP8BlockImpl(
         __m256 inv_multiplier_simd = _mm256_broadcast_ss((
 
             inverse_multipliers_or_null + dim_idx));
-        __m128i int8s = _mm_loadl_pi(_mm_setzero_si128(),
-                                     reinterpret_cast<const __m64*>(src));
+        // scann-core: upstream loaded through _mm_loadl_pi (a float
+        // intrinsic) on integer vectors; GCC rejects the implicit vector
+        // conversions. Same load, same bits, integer types.
+        __m128i int8s = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(src));
         __m256i int32s = _mm256_cvtepi8_epi32(int8s);
         __m256 floats = _mm256_cvtepi32_ps(int32s) * inv_multiplier_simd;
 

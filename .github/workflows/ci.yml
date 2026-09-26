@@ -20,22 +20,26 @@ jobs:
   # Build, every test (C++, Python, Rust), the FetchContent consumer example,
   # and `pip install .` -- all in scripts/ci.sh, which runs the same locally.
   linux:
-    name: linux / clang-${{ matrix.clang }}
+    name: linux / ${{ matrix.cc }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        clang: [19, 20]
+        include:
+          - { cc: clang-19, cxx: clang++-19, package: clang-19 }
+          - { cc: clang-20, cxx: clang++-20, package: clang-20 }
+          - { cc: gcc-13, cxx: g++-13, package: g++-13 }
+          - { cc: gcc-14, cxx: g++-14, package: g++-14 }
     steps:
       - uses: actions/checkout@v5
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-${{ matrix.clang }} ninja-build python3-dev python3-venv
+          sudo apt-get install -y -qq ${{ matrix.package }} ninja-build python3-dev python3-venv
       - name: scripts/ci.sh
         env:
-          CC: clang-${{ matrix.clang }}
-          CXX: clang++-${{ matrix.clang }}
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
         run: scripts/ci.sh
 
   # The API exercise under AddressSanitizer + UndefinedBehaviorSanitizer and

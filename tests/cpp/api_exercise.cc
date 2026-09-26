@@ -147,12 +147,15 @@ void ExpectSame(const std::vector<NNResultsVector>& a,
 //   * A neighbour both results contain must have the same distance (within
 //     `tol`, relative): the final scores agree.
 //   * Exact configs must return the same neighbours. Approximate configs
-//     may differ in which candidates survive the AH stage, so they only
-//     have to share `min_overlap` of their neighbours overall.
+//     may differ in which partitions and candidates the two modes select
+//     (their kernels round differently, and near-ties flip), so they only
+//     have to share `min_overlap` of their neighbours overall. Measured
+//     legitimate overlaps go down to ~0.95 (it depends on the trained tree,
+//     so on compiler and data); a broken mode lands far lower.
 void ExpectEquivalent(const std::vector<NNResultsVector>& a,
                       const std::vector<NNResultsVector>& b,
                       const std::string& what, bool exact,
-                      float tol = 1e-5f, double min_overlap = 0.95) {
+                      float tol = 1e-5f, double min_overlap = 0.90) {
   if (a.size() != b.size()) return Fail(absl::StrCat(what, ": size differs"));
   size_t shared = 0, total = 0, score_mismatches = 0;
   float worst = 0;
@@ -169,6 +172,8 @@ void ExpectEquivalent(const std::vector<NNResultsVector>& a,
     }
   }
   const double overlap = total ? static_cast<double>(shared) / total : 1.0;
+  if (getenv("SCANN_PRINT_OVERLAP"))
+    std::printf("   overlap %.4f  %s\n", overlap, what.c_str());
   if (score_mismatches)
     Fail(absl::StrCat(what, ": ", score_mismatches, " shared neighbours have "
                       "different distances (worst rel ", worst, ")"));

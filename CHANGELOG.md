@@ -19,9 +19,12 @@ google-research commit `758b894e` (`scann/`), without TensorFlow.
 - Python package (`pip install .`, scikit-build-core) with upstream's
   `scann.scann_ops_pybind` API.
 - Rust crate `scann-core` (cxx bindings) that builds the C++ library itself.
-- clang ≥ 19 required (tested 19, 21, 23, 24); configure stops with an
-  explanation on GCC.
-- CI (clang 19 and 20, ASan/UBSan, TSan, clippy, MSRV 1.88) and a release
+- Builds with clang ≥ 19 (tested 19, 21, 23, 24) and GCC ≥ 13 (tested
+  13, 14, 16). Upstream only ever built with clang; making GCC work fixed
+  type errors, missing declarations and C++17 violations that clang let
+  through (see NOTICE).
+- CI (clang 19 and 20, GCC 13 and 14, ASan/UBSan, TSan, clippy, MSRV
+  1.88) and a release
   workflow for manylinux wheels, PyPI and crates.io.
 
 ### Added

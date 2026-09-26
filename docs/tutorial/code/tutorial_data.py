@@ -24,6 +24,7 @@ The file (~485 MB) is downloaded once into $SCANN_TUTORIAL_DATA (default
 """
 
 import os
+import shutil
 import time
 import urllib.request
 
@@ -46,7 +47,12 @@ def load_glove():
   path = os.path.join(data_dir(), "glove-100-angular.hdf5")
   if not os.path.exists(path):
     print(f"downloading {URL} -> {path} (~485 MB)")
-    urllib.request.urlretrieve(URL, path + ".part")
+    # ann-benchmarks.com answers Python's default User-Agent with 403.
+    request = urllib.request.Request(
+        URL, headers={"User-Agent": "scann-core-tutorial"})
+    with urllib.request.urlopen(request, timeout=60) as response, \
+         open(path + ".part", "wb") as out:
+      shutil.copyfileobj(response, out, length=1 << 20)
     os.rename(path + ".part", path)
   with h5py.File(path, "r") as f:
     dataset = f["train"][:]

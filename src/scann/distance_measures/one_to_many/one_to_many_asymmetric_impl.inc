@@ -1,3 +1,8 @@
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived work
+// of ScaNN, not an official Google product); see NOTICE.
+// scann-core: the bfloat16 -> float conversions below bit-cast integer
+// vectors to float explicitly (_mm*_cast*); upstream relied on clang's
+// implicit vector conversions, which GCC rejects. Same bits.
 
 
 template <int kRegisterIdx, typename T = Simd<float>>
@@ -24,8 +29,8 @@ template <int kRegisterIdx, typename T = Simd<float>>
 SCANN_SIMD_INLINE auto ExpandToFp32(Sse4<int16_t> bf16_vals) {
   if constexpr (IsSame<T, Avx2<float>>()) {
     static_assert(kRegisterIdx == 0);
-    return Avx2<float>{
-        _mm256_slli_epi32(_mm256_cvtepu16_epi32(*bf16_vals), 16)};
+    return Avx2<float>{_mm256_castsi256_ps(
+        _mm256_slli_epi32(_mm256_cvtepu16_epi32(*bf16_vals), 16))};
   }
   if constexpr (IsSame<T, Avx1<float>>()) {
     static_assert(kRegisterIdx == 0);
@@ -37,10 +42,10 @@ SCANN_SIMD_INLINE auto ExpandToFp32(Sse4<int16_t> bf16_vals) {
   if constexpr (IsSame<T, Sse4<float>>()) {
     __m128i zeros = _mm_setzero_si128();
     if constexpr (kRegisterIdx == 0) {
-      return Sse4<float>{_mm_unpacklo_epi16(zeros, *bf16_vals)};
+      return Sse4<float>{_mm_castsi128_ps(_mm_unpacklo_epi16(zeros, *bf16_vals))};
     } else {
       static_assert(kRegisterIdx == 1);
-      return Sse4<float>{_mm_unpackhi_epi16(zeros, *bf16_vals)};
+      return Sse4<float>{_mm_castsi128_ps(_mm_unpackhi_epi16(zeros, *bf16_vals))};
     }
   }
   LOG(FATAL) << "Unhandled: " << SimdName();
@@ -57,10 +62,10 @@ SCANN_SIMD_INLINE auto ExpandToFp32(Avx2<int16_t> bf16_vals) {
     __m256i zeros = _mm256_setzero_si256();
     __m256i permed = _mm256_permute4x64_epi64(*bf16_vals, 0b11'01'10'00);
     if constexpr (kRegisterIdx == 0) {
-      return Avx2<float>{_mm256_unpacklo_epi16(zeros, permed)};
+      return Avx2<float>{_mm256_castsi256_ps(_mm256_unpacklo_epi16(zeros, permed))};
     } else {
       static_assert(kRegisterIdx == 1);
-      return Avx2<float>{_mm256_unpackhi_epi16(zeros, permed)};
+      return Avx2<float>{_mm256_castsi256_ps(_mm256_unpackhi_epi16(zeros, permed))};
     }
   }
   LOG(FATAL) << "Unhandled: " << SimdName();
