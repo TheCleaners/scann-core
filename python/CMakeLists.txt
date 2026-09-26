@@ -27,7 +27,7 @@
 # not build the TF custom op, and importing TensorFlow just to discover
 # that would defeat the point of decoupling).
 
-set(SCANN_PY_OUT "${CMAKE_BINARY_DIR}/python")
+set(SCANN_PY_OUT "${PROJECT_BINARY_DIR}/python")
 
 # scann_npy.cc (the ScannNumpy facade) and scann_pybind.cc link the core's
 # object files directly -- all of them, so the static-initializer distance

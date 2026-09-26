@@ -45,7 +45,7 @@ if(SCANN_CONFIG_BUILDER_EXPECTED)
 elseif(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   set(_expected "${CMAKE_CURRENT_BINARY_DIR}/config_builder_expected")
   add_test(NAME config_builder_expected
-           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${CMAKE_BINARY_DIR}/python"
+           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
                    "${Python_EXECUTABLE}"
                    "${CMAKE_CURRENT_SOURCE_DIR}/config_builder/make_expected.py"
                    --out "${_expected}")
@@ -61,7 +61,7 @@ endif()
 
 if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   add_test(NAME python_docid_bookkeeping
-           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${CMAKE_BINARY_DIR}/python"
+           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
                    "${Python_EXECUTABLE}"
                    "${CMAKE_CURRENT_SOURCE_DIR}/python/test_docid_bookkeeping.py")
 endif()

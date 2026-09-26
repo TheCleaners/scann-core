@@ -63,14 +63,16 @@ python/scann/__init__.py and the empty python/scann/**/__init__.py files)
 is new in scann-core. Upstream's own repository has no NOTICE file.
 
 Third-party dependencies are downloaded at configure time (see
-cmake/Dependencies.cmake), except cnpy, which is vendored in third_party/cnpy
-with its MIT license (Copyright (c) Carl Rogers, 2011). All are distributed
+cmake/Dependencies.cmake), except two vendored in third_party/ with their
+licenses: cnpy (MIT, Copyright (c) Carl Rogers, 2011) and googletest's
+gtest_prod.h (BSD 3-Clause, Copyright 2008 Google Inc.). All are distributed
 under their own licenses:
   abseil-cpp   Apache License 2.0
   protobuf     BSD 3-Clause
   highway      Apache License 2.0 or BSD 3-Clause (dual-licensed)
   Eigen        MPL 2.0 (some files BSD/Apache/MINPACK; see its COPYING.README)
   cnpy         MIT
+  googletest   BSD 3-Clause         (gtest_prod.h only)
   zlib         zlib license
   pybind11     BSD 3-Clause         (Python bindings only)
   cxx          MIT or Apache 2.0    (Rust bindings only, via crates.io)

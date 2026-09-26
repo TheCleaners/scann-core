@@ -1,0 +1,100 @@
+# Copyright 2026 ebenali and TheCleaners.
+# SPDX-License-Identifier: Apache-2.0
+
+# On a v* tag: build Linux wheels (manylinux, x86-64) and the sdist, create a
+# GitHub release with them, and publish to PyPI and crates.io.
+#
+# Publishing needs one-time setup, and each publish job waits for approval
+# in its environment:
+#   * PyPI: add this repository as a trusted publisher of `scann-core`
+#     (workflow release.yml, environment `pypi`); no token needed.
+#   * crates.io: an API token as the secret CARGO_REGISTRY_TOKEN in the
+#     environment `crates-io`.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pypa/cibuildwheel@v3.2
+        env:
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_SKIP: "*-musllinux_*"
+          # AlmaLinux 9: packages clang >= 19 (scann-core needs clang).
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
+          CIBW_BEFORE_ALL_LINUX: dnf install -y clang
+          CIBW_ENVIRONMENT_LINUX: CC=clang CXX=clang++
+          CIBW_TEST_COMMAND: >-
+            python -c "import numpy as np, scann;
+            db = np.random.default_rng(0).standard_normal((2000, 16)).astype(np.float32);
+            s = scann.scann_ops_pybind.builder(db, 5, 'squared_l2').tree(20, 5).score_ah(2).reorder(50).build();
+            assert s.search(db[3])[0][0] == 3; print(scann.__version__)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: wheelhouse/*.whl
+
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  github-release:
+    needs: [wheels, sdist]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY"
+          --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md."
+
+  pypi:
+    needs: [wheels, sdist]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  crates-io:
+    needs: [wheels, sdist]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
+      - env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CC: clang-20
+          CXX: clang++-20
+        run: cargo publish --locked

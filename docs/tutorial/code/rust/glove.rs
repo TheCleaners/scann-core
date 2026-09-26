@@ -56,11 +56,11 @@ impl Npy {
     }
 
     fn f32s(&self) -> Vec<f32> {
-        self.bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
+        self.bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
     }
 
     fn u32s(&self) -> Vec<u32> {
-        self.bytes.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect()
+        self.bytes.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes(*b)).collect()
     }
 }
 

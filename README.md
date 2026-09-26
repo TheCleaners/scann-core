@@ -20,6 +20,29 @@ changed.
 > **scann-core is a derived work of ScaNN. It is not an official Google
 > product and is not affiliated with or endorsed by Google.**
 
+## Install
+
+| | |
+|---|---|
+| Python | `pip install .` from a checkout (PyPI: `pip install scann-core`, once published) |
+| Rust | `cargo add scann-core` (once published), or a git/path dependency on this repository |
+| C++ | CMake `FetchContent`/`add_subdirectory`, linking `scann::core`; see [`examples/fetchcontent`](examples/fetchcontent) |
+
+All three build the C++ library from source, which needs:
+
+* **Linux on x86-64.** That's the only platform built and tested so far. The
+  arm64 and macOS code paths exist, inherited from upstream, but are
+  untested.
+* **clang ≥ 19.** Tested with 19, 21, 23 and 24 (CI adds 20). GCC can't build ScaNN,
+  and configuring with it stops with an explanation. When no compiler is
+  chosen, clang is picked automatically if it's on PATH.
+* **CMake ≥ 3.27**, and network access to download the C++ dependencies
+  (or local copies; see [Dependencies](#dependencies)).
+* For Python: Python ≥ 3.10 with numpy and protobuf ≥ 7.36.2 (pip installs
+  them). For Rust: Rust ≥ 1.88.
+
+The version is in [`VERSION`](VERSION); see [CHANGELOG.md](CHANGELOG.md).
+
 ## Layout
 
 ```
@@ -31,15 +54,18 @@ scann-core/
 ├── core/scann_core/      scann-core additions: ConfigBuilder
 ├── python/               pybind11 module + upstream Python package
 ├── rust/                 the Rust crate (cxx bridge, safe API, tests, examples)
-├── examples/cpp/         C++ example
-├── tests/                C++ tests, Python/Rust equivalence harness
+├── examples/             C++ example, FetchContent consumer template
+├── third_party/          vendored: cnpy, googletest's gtest_prod.h
+├── tests/                C++/Python tests, upstream-equivalence harness
+├── scripts/ci.sh         what CI runs (also runnable locally)
+├── Cargo.toml            the Rust crate (sources in rust/)
+├── pyproject.toml        the Python package (scikit-build-core)
 └── docs/                 tutorial, API reference, algorithms, AVQ explainer
 ```
 
 ## Building
 
-Requirements: CMake ≥ 3.27 and a C++17 compiler (clang or GCC); for the
-optional parts, Python with numpy and a Rust toolchain.
+Requirements as under [Install](#install).
 
 ```sh
 cmake -S . -B build -G Ninja
@@ -49,16 +75,20 @@ cmake --build build
 | Option | Default | Effect |
 |---|---|---|
 | `SCANN_BUILD_STATIC` | ON | `libscann_core.a`, CMake target `scann::core_static` (linked whole-archive for you) |
-| `SCANN_BUILD_SHARED` | ON | `libscann_core.so`, target `scann::core_shared` |
-| `SCANN_BUILD_PYTHON` | ON | the Python package in `build/python/` |
-| `SCANN_BUILD_RUST_BINDINGS` | ON | the Rust crate, via cargo (needs `SCANN_BUILD_STATIC`) |
-| `SCANN_BUILD_TESTS` | ON | C++ tests |
-| `SCANN_BUILD_EXAMPLES` | ON | C++ example |
+| `SCANN_BUILD_SHARED` | ON\* | `libscann_core.so`, target `scann::core_shared` |
+| `SCANN_BUILD_PYTHON` | ON\* | the Python package in `build/python/` (for `python3` on PATH, or `-DPython_EXECUTABLE=`) |
+| `SCANN_BUILD_RUST_BINDINGS` | ON\* | the Rust crate, via cargo (needs `SCANN_BUILD_STATIC`) |
+| `SCANN_BUILD_TESTS` | ON\* | tests, run with `ctest` |
+| `SCANN_BUILD_EXAMPLES` | ON\* | C++ examples |
 | `SCANN_ARCH_FLAGS` | `-mavx;-mfma` (x86-64), `-march=armv8-a+simd` (arm64) | ISA flags for scann-core **and** all dependencies |
 | `SCANN_SANITIZE` | empty | e.g. `address,undefined` or `thread`; instruments dependencies too |
 | `SCANN_USE_SYSTEM_DEPS` | OFF | try `find_package` first (versions must match the pins exactly) |
 | `SCANN_ENABLE_LTO` | OFF | IPO for scann-core's own objects |
 | `SCANN_HWY_DISABLED_TARGETS` | empty | `HWY_DISABLED_TARGETS`, applied globally |
+| `SCANN_ALLOW_UNSUPPORTED_COMPILER` | OFF | configure with a non-clang compiler anyway (expect errors) |
+
+\* ON when scann-core is the top-level project, OFF when it's pulled into
+another one with FetchContent or `add_subdirectory`.
 
 The static and shared libraries are linked from the same object files, so
 building both costs no extra compilation. `scann::core` is the static library
@@ -90,6 +120,7 @@ of 2026-09-22):
 | Eigen | 5.0.1 |
 | zlib | 1.3.2 (static, only for cnpy) |
 | cnpy | commit `57184ee0`, vendored in [`third_party/cnpy`](third_party/cnpy) (not downloaded) |
+| googletest | `gtest_prod.h` only, v1.18.0, vendored in [`third_party/googletest`](third_party/googletest) |
 | pybind11 | 3.1.0 (Python only) |
 | cxx | 1.x (Rust only, from crates.io) |
 
@@ -116,8 +147,7 @@ Carried over from the Bazel build:
 
 * **Global** (reach every dependency too, like `--copt`): the ISA flags
   (`SCANN_ARCH_FLAGS`), `-fsized-deallocation`, `-w`, `-std=c++17` (not
-  `gnu++17`: under GCC that also changes `-ffp-contract`, i.e. distances),
-  and `-O2` as the release baseline (not CMake's `-O3`).
+  `gnu++17`, as in the Bazel build), and `-O2` as the release baseline (not CMake's `-O3`).
 * **Per file** ([`cmake/SourceFlags.cmake`](cmake/SourceFlags.cmake)), as in
   the Bazel `copts`: `-O3` on the LUT16 kernels and on many-to-many
   distances; `-mtune=generic` on the many-to-many fixed8/sfp8/orthogonality
@@ -163,10 +193,12 @@ the header for the full list.
 
 ### Python
 
-`build/python/` is an importable package with upstream's API:
+`pip install .` builds and installs the `scann` package (same import name
+and API as upstream's wheel, so don't install both in one environment). In a
+CMake build, `build/python/` is the same package, importable directly:
 
 ```sh
-PYTHONPATH=build/python python -c "import scann; print(scann.scann_ops_pybind.builder)"
+PYTHONPATH=build/python python -c "import scann; print(scann.__version__)"
 ```
 
 `scann.scann_ops` (the TensorFlow op) is not included.
@@ -193,10 +225,14 @@ threads, and mutation takes `&mut self`. Shapes are validated before
 anything reaches C++, and every C++ error becomes a `ScannError`.
 
 Full program: [`rust/examples/quickstart.rs`](rust/examples/quickstart.rs).
-CMake builds the crate and its examples with the `scann_core_rust` target.
-For plain `cargo` (and rust-analyzer), export
-`SCANN_CORE_BUILD_ENV=<build>/rust/scann_core_rust_build.env`. build.rs
-compiles only the small bridge shim and links the CMake-built archives.
+
+The crate's manifest is the repository root's `Cargo.toml`. Built on its own
+(`cargo build`, or as a dependency), its build script builds the C++ library
+with CMake; `SCANN_CORE_CMAKE_ARGS` passes extra `-D` options, such as local
+dependency sources for offline builds. Inside a CMake build, the
+`scann_core_rust` target builds the crate against the CMake-built libraries
+instead; for plain `cargo` or rust-analyzer to do the same, export
+`SCANN_CORE_BUILD_ENV=<build>/rust/scann_core_rust_build.env`.
 
 ## Testing
 

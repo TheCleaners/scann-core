@@ -28,16 +28,20 @@ use std::path::{Path, PathBuf};
 fn read_f32(path: &Path) -> Vec<f32> {
     fs::read(path)
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 
 fn read_u32(path: &Path) -> Vec<u32> {
     fs::read(path)
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-        .chunks_exact(4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
         .collect()
 }
 

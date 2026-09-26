@@ -72,11 +72,14 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(SCANN_BUILD_STATIC "Build the static (.a) scann_core library" ON)
-option(SCANN_BUILD_SHARED "Build the shared (.so/.dylib) scann_core library" ON)
-option(SCANN_BUILD_PYTHON "Build the pybind11 Python module and package" ON)
-option(SCANN_BUILD_RUST_BINDINGS "Build the Rust bindings (via cxx)" ON)
-option(SCANN_BUILD_TESTS "Build the C++ tests" ON)
-option(SCANN_BUILD_EXAMPLES "Build the C++ examples" ON)
+option(SCANN_BUILD_SHARED "Build the shared (.so/.dylib) scann_core library" ${PROJECT_IS_TOP_LEVEL})
+# Bindings, tests and examples default to ON only when scann-core is the
+# top-level project; pulled in with FetchContent/add_subdirectory, it builds
+# just the library unless asked for more.
+option(SCANN_BUILD_PYTHON "Build the pybind11 Python module and package" ${PROJECT_IS_TOP_LEVEL})
+option(SCANN_BUILD_RUST_BINDINGS "Build the Rust bindings (via cxx)" ${PROJECT_IS_TOP_LEVEL})
+option(SCANN_BUILD_TESTS "Build the C++ tests" ${PROJECT_IS_TOP_LEVEL})
+option(SCANN_BUILD_EXAMPLES "Build the C++ examples" ${PROJECT_IS_TOP_LEVEL})
 option(SCANN_USE_SYSTEM_DEPS
   "Try find_package() for each dependency before fetching it (versions are still required to match the pins exactly)" OFF)
 option(SCANN_RUST_BUILD_ENV_ONLY
@@ -137,10 +140,13 @@ scann_apply_bazel_source_flags("${SCANN_SRC_DIR}" ${SCANN_LUT16_SRCS})
 
 # Usage requirements, shared by every target built from the core objects.
 add_library(scann_core_deps INTERFACE)
-target_include_directories(scann_core_deps INTERFACE
+# SYSTEM: code using scann-core shouldn't get warnings from ScaNN's headers.
+target_include_directories(scann_core_deps SYSTEM INTERFACE
   "$<BUILD_INTERFACE:${SCANN_SRC_DIR}>"
   "$<BUILD_INTERFACE:${SCANN_EXTRA_DIR}>"
   "$<BUILD_INTERFACE:${SCANN_GEN_DIR}>"
+  # gtest/gtest_prod.h, included by several ScaNN headers (FRIEND_TEST).
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest/include>"
 )
 # The abseil list is exactly the set of @com_google_absl labels referenced
 # by the Bazel packages this tree was extracted from, mapped to abseil's

@@ -28,7 +28,7 @@
 
 set(SCANN_RUST_ENV_FILE "${CMAKE_CURRENT_BINARY_DIR}/scann_core_rust_build.env")
 set(SCANN_RUST_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/target")
-set(SCANN_EQUIV_FIXTURES "${CMAKE_BINARY_DIR}/equivalence/fixtures" CACHE PATH
+set(SCANN_EQUIV_FIXTURES "${PROJECT_BINARY_DIR}/equivalence/fixtures" CACHE PATH
   "Fixture directory produced by tests/equivalence/run.py, consumed by the Rust equivalence test")
 
 set(_objs scann_core_objects)
@@ -40,7 +40,7 @@ endforeach()
 file(GENERATE OUTPUT "${SCANN_RUST_ENV_FILE}" CONTENT
 "cxx=${CMAKE_CXX_COMPILER}
 lib_dir=$<TARGET_FILE_DIR:scann_core_static>
-deps_archive=${CMAKE_BINARY_DIR}/libscann_core_deps.a
+deps_archive=${PROJECT_BINARY_DIR}/libscann_core_deps.a
 include=$<JOIN:$<REMOVE_DUPLICATES:$<TARGET_PROPERTY:${_objs},INCLUDE_DIRECTORIES>>,
 include=>
 flag=$<JOIN:$<REMOVE_DUPLICATES:$<TARGET_PROPERTY:${_objs},COMPILE_OPTIONS>>,
