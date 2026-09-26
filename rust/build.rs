@@ -182,5 +182,23 @@ fn main() {
         Ok("macos") | Ok("ios") => "c++",
         _ => "stdc++",
     };
+    // Link the runtime of the compiler that built the C++ code. Rust links
+    // through the default `cc`, which may belong to another GCC version that
+    // doesn't search this compiler's library directory (e.g. cc = gcc-13
+    // while the code was built with g++-14).
+    if let Some(cxx) = &benv.cxx {
+        if let Ok(out) = std::process::Command::new(cxx)
+            .arg(format!("-print-file-name=lib{cxx_runtime}.so"))
+            .output()
+        {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let path = Path::new(&path);
+            if path.is_absolute() && path.exists() {
+                if let Some(dir) = path.parent() {
+                    println!("cargo:rustc-link-search=native={}", dir.display());
+                }
+            }
+        }
+    }
     println!("cargo:rustc-link-lib=dylib={cxx_runtime}");
 }
