@@ -469,3 +469,13 @@ you want cosine similarity, L2-normalize your vectors and use
 | `ValueError: reduction_dim must be less than {dim}` | `.truncate(reduction_dim=...)` with `reduction_dim >= db.shape[1]`. |
 | `KeyError` from `searcher.delete(docids)` | Deleting a docid that doesn't exist in the index. |
 | `ValueError` from `searcher.upsert(...)` | Called without `docids` having been set at build time — mutation requires docids. |
+| `RuntimeError: ... Failed to parse research_scann.ScannConfig text proto: <line>:<col>: ...` | The config text (from `create_config()` edits, or a hand-written config) doesn't parse, e.g. a misspelled field name. scann-core reports this; upstream silently ran with the part of the config that parsed before the error. |
+| `RuntimeError: ... Query has dimensionality X, but the dataset has Y` | A query passed to `search`/`search_batched*` has the wrong number of dimensions. |
+| `ValueError: Upsert vector has dimensionality X, but the dataset has Y` | A vector passed to `upsert` has the wrong number of dimensions. Nothing is changed. |
+| `ValueError: Upsert batch_size must be >= 1.` / `RuntimeError: ... batch_size must be >= 1` | `batch_size=0` (or negative) passed to `upsert` / `search_batched_parallel`. Upstream crashed the process with a division by zero. |
+| `KeyError: Docids to delete are not unique: [...]` | The same docid appears twice in one `delete` call. Nothing is deleted. |
+
+An `upsert` or `delete` rejected with one of the errors above leaves the
+searcher unchanged, docids included: they are checked before anything is
+modified. (In upstream ScaNN either could leave the docid mapping out of sync
+with the index.)

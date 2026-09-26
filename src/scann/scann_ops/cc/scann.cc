@@ -453,7 +453,9 @@ Status ScannInterface::Search(const DatapointPtr<float> query,
                               NNResultsVector* res, int final_nn,
                               int pre_reorder_nn, int leaves) const {
   if (query.dimensionality() != dimensionality_)
-    return InvalidArgumentError("Query doesn't match dataset dimsensionality");
+    return InvalidArgumentError(
+        absl::StrCat("Query has dimensionality ", query.dimensionality(),
+                     ", but the dataset has ", dimensionality_));
   SearchParameters params =
       GetSearchParameters(final_nn, pre_reorder_nn, leaves);
   scann_->SetUnspecifiedParametersToDefaults(&params);
@@ -465,7 +467,9 @@ Status ScannInterface::SearchBatched(const DenseDataset<float>& queries,
                                      int final_nn, int pre_reorder_nn,
                                      int leaves) const {
   if (queries.dimensionality() != dimensionality_)
-    return InvalidArgumentError("Query doesn't match dataset dimsensionality");
+    return InvalidArgumentError(
+        absl::StrCat("Queries have dimensionality ", queries.dimensionality(),
+                     ", but the dataset has ", dimensionality_));
   if (!std::isinf(scann_->default_pre_reordering_epsilon()) ||
       !std::isinf(scann_->default_post_reordering_epsilon()))
     return InvalidArgumentError("Batch querying isn't supported with epsilon");

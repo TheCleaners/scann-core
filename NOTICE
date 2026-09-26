@@ -25,9 +25,11 @@ They are unmodified except for these changes (each marked with a
       RetrainAndReindexSearcher (upstream destroyed it locked);
       SearchBatchedParallel() rejects batch_size < 1 (division by zero) and
       works without a thread pool (null dereference after SetNumThreads(0)
-      or on single-CPU machines).
+      or on single-CPU machines); query dimension errors state both
+      dimensionalities.
   src/scann/scann_ops/cc/scann_npy.cc
-      Upsert() rejects batch_size < 1 (division by zero); Delete()
+      Upsert() rejects batch_size < 1 (division by zero) and wrong-sized
+      vectors (upstream failed with an uninformative RET_CHECK); Delete()
       re-attaches the mutation thread pool after a retrain, like Upsert().
   src/scann/utils/memory_logging.cc
       No longer dereferences empty std::optionals.

@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/strings/str_cat.h"
 #include "pybind11/gil.h"
 #include "pybind11/pytypes.h"
 #include "scann/base/single_machine_base.h"
@@ -76,6 +77,13 @@ vector<DatapointIndex> ScannNumpy::Upsert(
     vector<np_row_major_arr<float>>& vecs, int batch_size) {
   if (batch_size < 1)
     throw std::invalid_argument("Upsert batch_size must be >= 1.");
+  // scann-core: reject wrong-sized vectors up front; upstream failed deep in
+  // the mutator with an uninformative "SCANN_RET_CHECK failure".
+  for (const auto& vec : vecs)
+    if (vec.size() != scann_.dimensionality())
+      throw std::invalid_argument(absl::StrCat(
+          "Upsert vector has dimensionality ", vec.size(),
+          ", but the dataset has ", scann_.dimensionality()));
   auto mutator =
       ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
   if (batch_size > 1)
