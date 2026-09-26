@@ -42,6 +42,14 @@ where it isn't a one-line change:
       No longer dereferences empty std::optionals.
   src/scann/data_format/docid_collection.h
       MemoryUsage() counts sizeof(*this), not sizeof(this).
+  src/scann/tree_x_hybrid/mutator.h
+      UpdateDatapoint() and RemoveDatapoint() skip unused (kInvalidToken)
+      assignment slots. With spilling (SOAR) upstream passed them to the
+      health-stats collector, which indexed its arrays at -1: heap
+      corruption when updating or deleting points in a SOAR index.
+  src/scann/utils/bfloat16_helpers.h
+      Bfloat16Decompress() shifts as unsigned; left-shifting a negative
+      int16 is undefined behavior in C++17.
   python/scann/scann_ops/py/scann_ops_pybind.py
       upsert() updates the docid bookkeeping only after the index accepted
       the vectors, and delete() validates all docids before changing
@@ -54,9 +62,10 @@ bindings, tests, examples, other docs,
 python/scann/__init__.py and the empty python/scann/**/__init__.py files)
 is new in scann-core. Upstream's own repository has no NOTICE file.
 
-Third-party dependencies are not vendored in this repository; they are
-downloaded at configure time (see cmake/Dependencies.cmake) and are
-distributed under their own licenses:
+Third-party dependencies are downloaded at configure time (see
+cmake/Dependencies.cmake), except cnpy, which is vendored in third_party/cnpy
+with its MIT license (Copyright (c) Carl Rogers, 2011). All are distributed
+under their own licenses:
   abseil-cpp   Apache License 2.0
   protobuf     BSD 3-Clause
   highway      Apache License 2.0 or BSD 3-Clause (dual-licensed)

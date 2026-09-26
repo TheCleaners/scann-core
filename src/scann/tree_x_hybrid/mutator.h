@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 
 
@@ -1060,7 +1063,12 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::UpdateDatapoint(
     std::vector<int32_t> tmp_tokens;
     auto& g2l = global_to_local[dp_idx];
     tmp_tokens.reserve(g2l.size());
-    for (auto [token, sub_index] : g2l) tmp_tokens.push_back(token);
+    // scann-core: skip unused slots. With spilling (SOAR) each datapoint has
+    // a fixed-size array of assignments, and an unused one is kInvalidToken;
+    // upstream passed it on, indexing the stats arrays at -1 (heap
+    // corruption on update/delete of such a datapoint).
+    for (auto [token, sub_index] : g2l)
+      if (token != kInvalidToken) tmp_tokens.push_back(token);
     stats_collector().SubtractStats(tmp_tokens, {dp_idx});
   }
 
@@ -1195,7 +1203,9 @@ Status TreeXHybridMutator<Searcher>::RemoveDatapointImpl(
   std::vector<int32_t> tmp_tokens;
   auto& g2l = global_to_local[dp_idx];
   tmp_tokens.reserve(g2l.size());
-  for (auto [token, sub_index] : g2l) tmp_tokens.push_back(token);
+  // scann-core: skip unused (kInvalidToken) slots; see UpdateDatapoint.
+  for (auto [token, sub_index] : g2l)
+    if (token != kInvalidToken) tmp_tokens.push_back(token);
   stats_collector().SubtractStats(tmp_tokens, {dp_idx});
 
   SCANN_RETURN_IF_ERROR(this->RemoveDatapointFromBase(dp_idx).status());

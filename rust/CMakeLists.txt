@@ -73,7 +73,8 @@ add_custom_target(scann_core_rust ALL
   VERBATIM)
 add_dependencies(scann_core_rust scann_core_static scann_core_deps_bundle)
 
-# Not part of ALL: needs the fixtures written by tests/equivalence/run.py.
+# cargo test: the API tests are self-contained; the equivalence test runs
+# against SCANN_EQUIV_FIXTURES when that directory exists, and skips otherwise.
 add_custom_target(scann_core_rust_test
   COMMAND ${_cargo_env} "SCANN_CORE_EQUIV_FIXTURES=${SCANN_EQUIV_FIXTURES}"
           "${CARGO_EXECUTABLE}" test ${_cargo_args} -- --nocapture
@@ -81,3 +82,10 @@ add_custom_target(scann_core_rust_test
   COMMENT "cargo test (scann-core Rust bindings)"
   VERBATIM)
 add_dependencies(scann_core_rust_test scann_core_static scann_core_deps_bundle)
+
+if(SCANN_BUILD_TESTS)
+  add_test(NAME rust
+           COMMAND ${_cargo_env} "SCANN_CORE_EQUIV_FIXTURES=${SCANN_EQUIV_FIXTURES}"
+                   "${CARGO_EXECUTABLE}" test ${_cargo_args}
+           WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()

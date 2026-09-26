@@ -89,7 +89,7 @@ of 2026-09-22):
 | highway | 1.4.0 |
 | Eigen | 5.0.1 |
 | zlib | 1.3.2 (static, only for cnpy) |
-| cnpy | commit `57184ee0` |
+| cnpy | commit `57184ee0`, vendored in [`third_party/cnpy`](third_party/cnpy) (not downloaded) |
 | pybind11 | 3.1.0 (Python only) |
 | cxx | 1.x (Rust only, from crates.io) |
 
@@ -103,7 +103,6 @@ cmake -S . -B build -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
   -DFETCHCONTENT_SOURCE_DIR_HIGHWAY=/src/highway-1.4.0 \
   -DFETCHCONTENT_SOURCE_DIR_EIGEN=/src/eigen-5.0.1 \
   -DFETCHCONTENT_SOURCE_DIR_ZLIB=/src/zlib-1.3.2 \
-  -DFETCHCONTENT_SOURCE_DIR_CNPY=/src/cnpy \
   -DFETCHCONTENT_SOURCE_DIR_PYBIND11=/src/pybind11-3.1.0
 ```
 
@@ -201,13 +200,27 @@ compiles only the small bridge shim and links the CMake-built archives.
 
 ## Testing
 
-| | what | how |
-|---|---|---|
-| Equivalence | Python and Rust results vs. the upstream Bazel-built wheel | `tests/equivalence/run.py --build-dir build --python <wheel venv python> --core-python <python with numpy/protobuf>`, then `cmake --build build --target scann_core_rust_test` |
-| C++ API | build, all search modes, serialize round trip, mutation, bad input | `scann_core_api_exercise <fixtures dir> [training threads]` (ctest with `-DSCANN_TEST_FIXTURES=`) |
-| ConfigBuilder | 75 option sets vs. the Python builder's output | `tests/config_builder/make_expected.py --out D`, then `scann_core_config_builder_test D` |
-| Rust API | exactness vs. naive search, mode agreement, round trip, mutation, concurrency, errors | `cargo test` (part of `scann_core_rust_test`) |
-| Python docids | a failed `upsert`/`delete` leaves docids in sync with the index | `PYTHONPATH=build/python python tests/python/test_docid_bookkeeping.py` |
+```sh
+ctest --test-dir build --output-on-failure
+```
+
+runs everything that needs nothing beyond the build:
+
+| test | what |
+|---|---|
+| `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input |
+| `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
+| `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |
+| `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
+
+The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
+module is built for; CMake says so at configure time if they're missing.
+
+The comparison against the upstream wheel is separate, since it needs that
+wheel installed: `tests/equivalence/run.py --build-dir build --python <wheel
+venv python> --core-python <python with numpy/protobuf>` writes fixtures, and
+configuring with `-DSCANN_TEST_FIXTURES=build/equivalence/fixtures` adds them
+to `ctest`. The Rust test picks them up automatically.
 
 ### Equivalence with upstream
 

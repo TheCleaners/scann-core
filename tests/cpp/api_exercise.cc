@@ -18,9 +18,11 @@
 // mutation (delete / add / update / incremental maintenance / retrain),
 // health stats, and error handling on bad input.
 //
-// Usage: scann_core_api_exercise <fixtures dir> [training_threads]
-// Fixtures are written by tests/equivalence/run.py (same format the Rust
-// equivalence test reads).
+// Usage: scann_core_api_exercise [<fixtures dir>] [training_threads]
+// With no fixtures dir (or "-"), it generates synthetic datasets and builds
+// their configs with scann_core::ConfigBuilder, so it needs nothing else.
+// A fixtures dir is what tests/equivalence/run.py writes (the same format
+// the Rust equivalence test reads).
 
 #include <unistd.h>
 
@@ -32,7 +34,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -44,6 +48,7 @@
 #include "scann/data_format/dataset.h"
 #include "scann/scann_ops/cc/scann.h"
 #include "scann/utils/types.h"
+#include "scann_core/config_builder.h"
 
 namespace {
 
@@ -136,29 +141,40 @@ void ExpectSame(const std::vector<NNResultsVector>& a,
     Fail(absl::StrCat(what, ": ", differing, "/", a.size(), " queries differ"));
 }
 
-// Across search modes: single-query search and batched search use
-// different distance kernels (one-to-many vs. many-to-many), so distances
-// may differ in the last bits and near-ties may swap order. Require the
-// same neighbour sets unless the displaced neighbours are within `tol` of
-// each other, and distances within `tol` (relative).
+// Across search modes: single-query and batched search use different
+// kernels (one-to-many vs. many-to-many distances; single- vs. multi-query
+// AH lookup tables), and parallel batched search splits the batch.
+//   * A neighbour both results contain must have the same distance (within
+//     `tol`, relative): the final scores agree.
+//   * Exact configs must return the same neighbours. Approximate configs
+//     may differ in which candidates survive the AH stage, so they only
+//     have to share `min_overlap` of their neighbours overall.
 void ExpectEquivalent(const std::vector<NNResultsVector>& a,
                       const std::vector<NNResultsVector>& b,
-                      const std::string& what, float tol = 1e-5f) {
+                      const std::string& what, bool exact,
+                      float tol = 1e-5f, double min_overlap = 0.95) {
   if (a.size() != b.size()) return Fail(absl::StrCat(what, ": size differs"));
-  size_t bad = 0;
+  size_t shared = 0, total = 0, score_mismatches = 0;
   float worst = 0;
   for (size_t i = 0; i < a.size(); ++i) {
-    if (a[i].size() != b[i].size()) { ++bad; continue; }
-    for (size_t j = 0; j < a[i].size(); ++j) {
-      const float da = a[i][j].second, db = b[i][j].second;
-      const float rel = std::abs(da - db) / std::max(1.0f, std::abs(da));
+    total += std::max(a[i].size(), b[i].size());
+    for (const auto& [index, da] : a[i]) {
+      auto it = std::find_if(b[i].begin(), b[i].end(),
+                             [&](const auto& p) { return p.first == index; });
+      if (it == b[i].end()) continue;
+      ++shared;
+      const float rel = std::abs(da - it->second) / std::max(1.0f, std::abs(da));
       worst = std::max(worst, rel);
-      if (rel > tol) { ++bad; break; }
+      if (rel > tol) ++score_mismatches;
     }
   }
-  if (bad)
-    Fail(absl::StrCat(what, ": ", bad, "/", a.size(),
-                      " queries differ beyond tolerance (worst rel ", worst, ")"));
+  const double overlap = total ? static_cast<double>(shared) / total : 1.0;
+  if (score_mismatches)
+    Fail(absl::StrCat(what, ": ", score_mismatches, " shared neighbours have "
+                      "different distances (worst rel ", worst, ")"));
+  if (exact ? shared != total : overlap < min_overlap)
+    Fail(absl::StrCat(what, ": neighbour overlap ", overlap,
+                      exact ? " (exact config: must be 1)" : " < ", exact ? "" : absl::StrCat(min_overlap)));
 }
 
 void ExpectIndicesBelow(const std::vector<NNResultsVector>& r, size_t limit,
@@ -186,8 +202,9 @@ void ExerciseFixture(const Fixture& f, int training_threads) {
   // Parallel batched search runs the same kernels on chunks of the batch,
   // but brute-force many-to-many blocks by batch size, so the last bits of
   // a distance can depend on the chunking.
-  ExpectEquivalent(batched, parallel, f.name + ": batched vs parallel");
-  ExpectEquivalent(single, batched, f.name + ": single vs batched");
+  const bool exact = f.name.find("brute_force") != std::string::npos;
+  ExpectEquivalent(batched, parallel, f.name + ": batched vs parallel", exact);
+  ExpectEquivalent(single, batched, f.name + ": single vs batched", exact);
   ExpectIndicesBelow(single, f.n, f.name + ": search");
 
   // Serialize -> load -> search again.
@@ -304,28 +321,119 @@ void ExerciseBadInput(const Fixture& f) {
     if (Ok(s.SearchBatchedParallel(qs, MakeMutableSpan(out), f.k, -1, -1, 16),
            "SearchBatchedParallel without a thread pool"))
       ExpectEquivalent(SearchBatched(s, f, false), out,
-                       "SearchBatchedParallel without a thread pool");
+                       "SearchBatchedParallel without a thread pool",
+                       f.name.find("brute_force") != std::string::npos);
   }
+}
+
+// Unit-norm points around `clusters` random centres, row-major n x dim.
+std::vector<float> Clustered(size_t n, size_t dim, size_t clusters,
+                             uint32_t seed) {
+  std::mt19937 rng(seed);
+  std::normal_distribution<float> gauss;
+  std::vector<float> centers(clusters * dim);
+  for (float& c : centers) c = gauss(rng);
+  std::vector<float> out(n * dim);
+  for (size_t i = 0; i < n; ++i) {
+    float* row = &out[i * dim];
+    double norm = 0;
+    for (size_t d = 0; d < dim; ++d) {
+      row[d] = centers[(i % clusters) * dim + d] + 0.4f * gauss(rng);
+      norm += row[d] * row[d];
+    }
+    for (size_t d = 0; d < dim; ++d) row[d] /= std::sqrt(norm);
+  }
+  return out;
+}
+
+// The same kinds of configs the equivalence fixtures cover, plus SOAR and a
+// bfloat16 reorder, on two synthetic datasets (one with a dimensionality
+// that isn't a multiple of 4).
+std::vector<Fixture> SyntheticFixtures() {
+  using scann_core::ConfigBuilder;
+  using scann_core::DistanceMeasure;
+  using scann_core::Quantization;
+  struct Data { const char* name; size_t n, dim; uint32_t seed; };
+  const Data datasets[] = {{"A", 4000, 64, 1}, {"B", 3000, 98, 2}};
+  scann_core::TreeOptions tree;
+  tree.num_leaves = 60;
+  tree.num_leaves_to_search = 8;
+  tree.random_init = false;
+  scann_core::AhOptions ah;
+  ah.anisotropic_quantization_threshold = 0.2;
+  scann_core::AhOptions ah_l2;  // AQ is for dot product
+  scann_core::ReorderOptions reorder;
+  reorder.reordering_num_neighbors = 100;
+  scann_core::ReorderOptions reorder_int8 = reorder;
+  reorder_int8.quantize = Quantization::kInt8;
+  scann_core::ReorderOptions reorder_bf16 = reorder;
+  reorder_bf16.quantize = Quantization::kBfloat16;
+  scann_core::TreeOptions soar = tree;
+  soar.soar_lambda = 1.5;
+
+  const size_t k = 10;
+  struct Config {
+    const char* name;
+    DistanceMeasure distance;
+    std::function<void(ConfigBuilder&)> setup;
+  };
+  const std::vector<Config> configs = {
+      {"brute_force_dot", DistanceMeasure::kDotProduct,
+       [](ConfigBuilder& b) { b.ScoreBruteForce(); }},
+      {"ah_int8reorder_dot", DistanceMeasure::kDotProduct,
+       [&](ConfigBuilder& b) { b.ScoreAh(ah).Reorder(reorder_int8); }},
+      {"autopilot_dot", DistanceMeasure::kDotProduct,
+       [](ConfigBuilder& b) { b.Autopilot(); }},
+      {"tree_ah_reorder_dot", DistanceMeasure::kDotProduct,
+       [&](ConfigBuilder& b) { b.Tree(tree).ScoreAh(ah).Reorder(reorder); }},
+      {"tree_ah_reorder_l2", DistanceMeasure::kSquaredL2,
+       [&](ConfigBuilder& b) { b.Tree(tree).ScoreAh(ah_l2).Reorder(reorder); }},
+      {"tree_soar_bf16reorder_dot", DistanceMeasure::kDotProduct,
+       [&](ConfigBuilder& b) { b.Tree(soar).ScoreAh(ah).Reorder(reorder_bf16); }},
+  };
+  std::vector<Fixture> out;
+  for (const Data& d : datasets) {
+    std::vector<float> all = Clustered(d.n + 200, d.dim, 40, d.seed);
+    for (const Config& c : configs) {
+      Fixture f;
+      f.name = absl::StrCat(d.name, "_", c.name);
+      f.n = d.n;
+      f.dim = d.dim;
+      f.nq = 200;
+      f.k = k;
+      f.db.assign(all.begin(), all.begin() + d.n * d.dim);
+      f.queries.assign(all.begin() + d.n * d.dim, all.end());
+      ConfigBuilder b(k, c.distance, d.dim);
+      c.setup(b);
+      auto config = b.BuildText(d.n);
+      if (!Ok(config.status(), f.name + ": ConfigBuilder")) continue;
+      f.config = *config;
+      out.push_back(std::move(f));
+    }
+  }
+  return out;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    std::fprintf(stderr, "usage: %s <fixtures dir> [training_threads]\n", argv[0]);
-    return 2;
-  }
+  const bool synthetic = argc < 2 || std::string(argv[1]) == "-";
   const int training_threads = argc > 2 ? std::atoi(argv[2]) : 1;
-  std::vector<fs::path> dirs;
-  for (const auto& e : fs::directory_iterator(argv[1]))
-    if (fs::exists(e.path() / "meta.txt")) dirs.push_back(e.path());
-  std::sort(dirs.begin(), dirs.end());
-  if (dirs.empty()) {
-    std::fprintf(stderr, "no fixtures under %s\n", argv[1]);
+  std::vector<Fixture> fixtures;
+  if (synthetic) {
+    fixtures = SyntheticFixtures();
+  } else {
+    std::vector<fs::path> dirs;
+    for (const auto& e : fs::directory_iterator(argv[1]))
+      if (fs::exists(e.path() / "meta.txt")) dirs.push_back(e.path());
+    std::sort(dirs.begin(), dirs.end());
+    for (const auto& d : dirs) fixtures.push_back(LoadFixture(d));
+  }
+  if (fixtures.empty()) {
+    std::fprintf(stderr, "no fixtures%s%s\n", synthetic ? "" : " under ",
+                 synthetic ? "" : argv[1]);
     return 2;
   }
-  std::vector<Fixture> fixtures;
-  for (const auto& d : dirs) fixtures.push_back(LoadFixture(d));
   for (const auto& f : fixtures) ExerciseFixture(f, training_threads);
   ExerciseBadInput(fixtures.front());
   std::printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);

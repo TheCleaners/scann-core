@@ -27,6 +27,19 @@ endif()
 
 project(scann_core VERSION 0.1.0 LANGUAGES C CXX)
 
+# ScaNN is written for clang (as is upstream's build): GCC rejects parts of it
+# (-Wtemplate-body errors in utils/intrinsics, always_inline on functions it
+# cannot inline), and MSVC lacks the GNU vector extensions it uses.
+option(SCANN_ALLOW_UNSUPPORTED_COMPILER
+  "Configure even with a compiler other than clang (expect build errors)" OFF)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT SCANN_ALLOW_UNSUPPORTED_COMPILER)
+  message(FATAL_ERROR
+    "scann-core requires clang; the C++ compiler is ${CMAKE_CXX_COMPILER_ID} "
+    "${CMAKE_CXX_COMPILER_VERSION}. Configure with "
+    "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ (or set CC/CXX), "
+    "or pass -DSCANN_ALLOW_UNSUPPORTED_COMPILER=ON to try anyway.")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Bazel passes -std=c++17, not -std=gnu++17. Besides dialect, this matters

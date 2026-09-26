@@ -60,6 +60,10 @@ fn matches_reference_wheel() {
         eprintln!("skipped: SCANN_CORE_EQUIV_FIXTURES not set (fixtures come from tests/equivalence/run.py)");
         return;
     };
+    if !root.is_dir() {
+        eprintln!("skipped: {} doesn't exist (fixtures come from tests/equivalence/run.py)", root.display());
+        return;
+    }
     let mut cases: Vec<PathBuf> = fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
         .map(|e| e.unwrap().path())

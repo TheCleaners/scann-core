@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #ifndef SCANN_UTILS_BFLOAT16_HELPERS_H_
 #define SCANN_UTILS_BFLOAT16_HELPERS_H_
@@ -43,7 +46,10 @@ SCANN_INLINE int16_t Bfloat16Quantize(float value) {
 }
 
 SCANN_INLINE float Bfloat16Decompress(int16_t value) {
-  int value32 = value << 16;
+  // scann-core: shift as unsigned. Upstream shifted the signed int16_t, which
+  // is undefined behavior for negative values (i.e. negative numbers) in
+  // C++17. Same bits, no UB.
+  uint32_t value32 = static_cast<uint32_t>(static_cast<uint16_t>(value)) << 16;
   return absl::bit_cast<float>(value32);
 }
 

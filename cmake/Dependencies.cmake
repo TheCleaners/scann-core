@@ -18,12 +18,11 @@
 # the latest release of each as of 2026-09-22. (The initial import commit
 # pinned instead the exact archives upstream's Bazel build resolved, to
 # prove the extraction equivalent to the upstream wheel; see git history
-# and tests/equivalence/.) cnpy has no releases; it is pinned to a commit,
-# which is also its current HEAD.
+# and tests/equivalence/.) cnpy is vendored in third_party/cnpy.
 #
 # Offline / reproducible builds -- see README.md "Dependencies":
 #   * -DFETCHCONTENT_SOURCE_DIR_<NAME>=/path   use an existing source tree
-#     (NAME = ABSL, ZLIB, PROTOBUF, HIGHWAY, EIGEN, CNPY, PYBIND11)
+#     (NAME = ABSL, ZLIB, PROTOBUF, HIGHWAY, EIGEN, PYBIND11)
 #   * -DFETCHCONTENT_FULLY_DISCONNECTED=ON     never touch the network
 #     (requires every dependency to be populated already)
 #   * -DSCANN_USE_SYSTEM_DEPS=ON               find_package() first; a found
@@ -114,18 +113,20 @@ FetchContent_Declare(eigen
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   FIND_PACKAGE_ARGS NAMES Eigen3 CONFIG)
 
-FetchContent_Declare(cnpy
-  GIT_REPOSITORY https://github.com/sammymax/cnpy.git
-  GIT_TAG 57184ee0db37cac383fc29175950747a46a8b512
-  # cnpy ships an ancient CMakeLists.txt (cmake_minimum_required 2.x, which
-  # CMake >= 4 rejects outright). Pointing SOURCE_SUBDIR at a path that
-  # doesn't exist makes FetchContent populate the source without
-  # add_subdirectory()-ing it; the `cnpy` target is defined below instead.
-  SOURCE_SUBDIR "no-such-dir-skip-cnpy-cmakelists")
-
-FetchContent_MakeAvailable(absl zlib protobuf highway eigen cnpy)
+FetchContent_MakeAvailable(absl zlib protobuf highway eigen)
 
 if(SCANN_BUILD_PYTHON)
+  # Build for the interpreter `python3` runs, unless told otherwise. Left to
+  # itself FindPython searches directory by directory, and can pick e.g. a
+  # ~/.local/bin/python3.12 ahead of the /usr/bin/python3 on PATH; the module
+  # then fails to import with "No module named 'scann_pybind'".
+  if(NOT DEFINED Python_EXECUTABLE)
+    find_program(_scann_python3 NAMES python3 python NO_CACHE)
+    if(_scann_python3)
+      set(Python_EXECUTABLE "${_scann_python3}" CACHE FILEPATH
+        "Python interpreter the scann_pybind module is built for")
+    endif()
+  endif()
   set(PYBIND11_FINDPYTHON ON CACHE BOOL "" FORCE)
   set(PYBIND11_INSTALL OFF CACHE BOOL "" FORCE)
   set(PYBIND11_TEST OFF CACHE BOOL "" FORCE)
@@ -135,6 +136,23 @@ if(SCANN_BUILD_PYTHON)
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     FIND_PACKAGE_ARGS CONFIG)
   FetchContent_MakeAvailable(pybind11)
+  message(STATUS "scann-core: Python module is built for ${Python_EXECUTABLE} "
+                 "(override with -DPython_EXECUTABLE=...)")
+  # Runtime requirements of the Python package (not needed to build it).
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c
+      "import numpy, google.protobuf as p; v = tuple(int(x) for x in p.__version__.split('.')[:3]); raise SystemExit(0 if v >= (7, 36, 2) else 3)"
+    RESULT_VARIABLE _scann_py_deps ERROR_QUIET OUTPUT_QUIET)
+  if(_scann_py_deps EQUAL 0)
+    set(SCANN_PYTHON_RUNTIME_OK TRUE)
+  else()
+    set(SCANN_PYTHON_RUNTIME_OK FALSE)
+    message(WARNING
+      "scann-core: ${Python_EXECUTABLE} lacks numpy, or protobuf >= 7.36.2 "
+      "(needed by the generated _pb2 modules). The Python package builds, "
+      "but importing it needs them: ${Python_EXECUTABLE} -m pip install "
+      "numpy 'protobuf>=7.36.2'")
+  endif()
 endif()
 
 # --- Exact-version enforcement for find_package() results -----------------
@@ -204,9 +222,10 @@ else()
 endif()
 
 # --- cnpy --------------------------------------------------------------------
-# The one source file ScaNN needs, with the flags cnpy requires.
-FetchContent_GetProperties(cnpy)
-add_library(cnpy STATIC "${cnpy_SOURCE_DIR}/cnpy/cnpy.cpp")
-target_include_directories(cnpy PUBLIC "${cnpy_SOURCE_DIR}")
+# Vendored (see third_party/cnpy/README.md): the one source file ScaNN needs,
+# with the flags cnpy requires.
+set(_scann_cnpy_dir "${CMAKE_CURRENT_LIST_DIR}/../third_party/cnpy")
+add_library(cnpy STATIC "${_scann_cnpy_dir}/cnpy/cnpy.cpp")
+target_include_directories(cnpy PUBLIC "$<BUILD_INTERFACE:${_scann_cnpy_dir}>")
 target_link_libraries(cnpy PUBLIC ${SCANN_ZLIB_TARGET})
 target_compile_options(cnpy PRIVATE -Wno-unused-variable -fexceptions)
