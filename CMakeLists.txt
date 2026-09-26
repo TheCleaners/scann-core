@@ -25,7 +25,26 @@ if(NOT DEFINED CMAKE_C_FLAGS_RELEASE)
   set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "Flags used by the C compiler during RELEASE builds.")
 endif()
 
-project(scann_core VERSION 0.1.0 LANGUAGES C CXX)
+# Prefer clang when no compiler was chosen (CC/CXX or -DCMAKE_<LANG>_COMPILER):
+# scann-core needs it (see below), and the platform default is often GCC.
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+  find_program(_scann_clangxx clang++ NO_CACHE)
+  find_program(_scann_clang clang NO_CACHE)
+  if(_scann_clangxx AND _scann_clang AND NOT DEFINED ENV{CC} AND NOT DEFINED CMAKE_C_COMPILER)
+    set(CMAKE_C_COMPILER "${_scann_clang}")
+    set(CMAKE_CXX_COMPILER "${_scann_clangxx}")
+  endif()
+endif()
+
+# The version lives in VERSION (also read by pyproject.toml; Cargo.toml
+# repeats it, which is checked right after project()).
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SCANN_CORE_VERSION LIMIT_COUNT 1)
+project(scann_core VERSION ${SCANN_CORE_VERSION} LANGUAGES C CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" _scann_cargo_version
+     REGEX "^version = " LIMIT_COUNT 1)
+if(NOT _scann_cargo_version MATCHES "^version = \"${SCANN_CORE_VERSION}\"")
+  message(FATAL_ERROR "Cargo.toml (${_scann_cargo_version}) doesn't match VERSION (${SCANN_CORE_VERSION})")
+endif()
 
 # ScaNN is written for clang (as is upstream's build): GCC rejects parts of it
 # (-Wtemplate-body errors in utils/intrinsics, always_inline on functions it
@@ -60,12 +79,14 @@ option(SCANN_BUILD_TESTS "Build the C++ tests" ON)
 option(SCANN_BUILD_EXAMPLES "Build the C++ examples" ON)
 option(SCANN_USE_SYSTEM_DEPS
   "Try find_package() for each dependency before fetching it (versions are still required to match the pins exactly)" OFF)
+option(SCANN_RUST_BUILD_ENV_ONLY
+  "Write rust/scann_core_rust_build.env for the crate's build script without invoking cargo (set by build.rs)" OFF)
 option(SCANN_ENABLE_LTO "Build scann_core with link-time optimization (see README before enabling)" OFF)
 
 if(NOT SCANN_BUILD_STATIC AND NOT SCANN_BUILD_SHARED)
   message(FATAL_ERROR "At least one of SCANN_BUILD_STATIC / SCANN_BUILD_SHARED must be ON")
 endif()
-if(SCANN_BUILD_RUST_BINDINGS AND NOT SCANN_BUILD_STATIC)
+if((SCANN_BUILD_RUST_BINDINGS OR SCANN_RUST_BUILD_ENV_ONLY) AND NOT SCANN_BUILD_STATIC)
   message(FATAL_ERROR "SCANN_BUILD_RUST_BINDINGS=ON requires SCANN_BUILD_STATIC=ON (the crate links the static archive)")
 endif()
 
@@ -80,6 +101,7 @@ include(SourceFlags)
 
 set(SCANN_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(SCANN_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(core/scann_core/version.h.in "${SCANN_GEN_DIR}/scann_core/version.h" @ONLY)
 
 # -----------------------------------------------------------------------
 # Generated sources
@@ -240,6 +262,6 @@ if(SCANN_BUILD_PYTHON)
   add_subdirectory(python)
 endif()
 
-if(SCANN_BUILD_RUST_BINDINGS)
+if(SCANN_BUILD_RUST_BINDINGS OR SCANN_RUST_BUILD_ENV_ONLY)
   add_subdirectory(rust)
 endif()

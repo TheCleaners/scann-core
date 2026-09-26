@@ -12,13 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Compiles only the cxx-bridge shim (`src/bridge.rs` + `src/shim.cc`) and
-//! links it against the CMake-built scann_core archives. scann_core's own
-//! sources are never recompiled here -- see ../rust/CMakeLists.txt, which
-//! writes the build description this reads and then invokes cargo.
+//! Build script for the scann-core crate.
 //!
-//! For standalone `cargo build` / `cargo check` / rust-analyzer, point
-//! SCANN_CORE_BUILD_ENV at <cmake build dir>/rust/scann_core_rust_build.env.
+//! The Rust side is a cxx bridge (rust/src/bridge.rs + rust/src/shim.cc) over
+//! the C++ library, which is built by CMake. Three modes:
+//!
+//! * Inside scann-core's CMake build (SCANN_BUILD_RUST_BINDINGS=ON), CMake
+//!   invokes cargo with SCANN_CORE_BUILD_ENV pointing at a build description
+//!   (include paths, flags, archives) it wrote. For standalone `cargo build`
+//!   against an existing CMake build dir, export
+//!   SCANN_CORE_BUILD_ENV=<build dir>/rust/scann_core_rust_build.env.
+//! * Otherwise (e.g. a crates.io dependency), this script configures and
+//!   builds the C++ library itself with CMake (the `cmake` crate). That
+//!   downloads the C++ dependencies unless SCANN_CORE_CMAKE_ARGS points
+//!   FetchContent at local copies, e.g.
+//!   SCANN_CORE_CMAKE_ARGS="-DFETCHCONTENT_SOURCE_DIR_ABSL=/src/absl ...".
+//!   Needs CMake >= 3.27 and clang (picked automatically when CXX isn't set).
+//! * On docs.rs (DOCS_RS set) nothing native is built: rustdoc doesn't link.
 
 use std::env;
 use std::fs;
@@ -61,22 +71,69 @@ fn read_build_env(path: &str) -> BuildEnv {
     env
 }
 
+/// Builds the C++ library with CMake and returns its build description.
+fn build_with_cmake() -> String {
+    let root = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let mut cfg = cmake::Config::new(&root);
+    cfg.profile("Release")
+        .define("SCANN_BUILD_PYTHON", "OFF")
+        .define("SCANN_BUILD_RUST_BINDINGS", "OFF")
+        .define("SCANN_RUST_BUILD_ENV_ONLY", "ON")
+        .define("SCANN_BUILD_TESTS", "OFF")
+        .define("SCANN_BUILD_EXAMPLES", "OFF")
+        .define("SCANN_BUILD_SHARED", "OFF")
+        .build_target("scann_core_rust_inputs");
+    // scann-core needs clang; the cmake crate would otherwise pass the
+    // platform default compiler (often GCC) explicitly.
+    if env::var_os("CXX").is_none() {
+        if let (Some(cc), Some(cxx)) = (find_on_path("clang"), find_on_path("clang++")) {
+            cfg.define("CMAKE_C_COMPILER", cc).define("CMAKE_CXX_COMPILER", cxx);
+        }
+    }
+    println!("cargo:rerun-if-env-changed=SCANN_CORE_CMAKE_ARGS");
+    if let Ok(args) = env::var("SCANN_CORE_CMAKE_ARGS") {
+        for arg in args.split_whitespace() {
+            let def = arg.strip_prefix("-D").unwrap_or_else(|| {
+                panic!("SCANN_CORE_CMAKE_ARGS: expected -DNAME=VALUE entries, got {arg:?}")
+            });
+            let (name, value) = def.split_once('=').unwrap_or((def, "ON"));
+            let name = name.split(':').next().unwrap(); // drop a :TYPE suffix
+            cfg.define(name, value);
+        }
+    }
+    for dir in ["CMakeLists.txt", "cmake", "core", "src", "third_party", "VERSION"] {
+        println!("cargo:rerun-if-changed={root}/{dir}");
+    }
+    let out = cfg.build();
+    out.join("build/rust/scann_core_rust_build.env").display().to_string()
+}
+
+fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
+    env::split_paths(&env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
 fn main() {
-    let env_path = env::var("SCANN_CORE_BUILD_ENV").expect(
-        "SCANN_CORE_BUILD_ENV not set -- build through CMake (SCANN_BUILD_RUST_BINDINGS=ON), \
-         or point it at <build dir>/rust/scann_core_rust_build.env",
-    );
     println!("cargo:rerun-if-env-changed=SCANN_CORE_BUILD_ENV");
-    println!("cargo:rerun-if-changed={env_path}");
-    for f in ["src/bridge.rs", "src/shim.h", "src/shim.cc"] {
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    for f in ["rust/src/bridge.rs", "rust/src/shim.h", "rust/src/shim.cc"] {
         println!("cargo:rerun-if-changed={f}");
     }
+    if env::var_os("DOCS_RS").is_some() {
+        return;
+    }
+    let env_path = match env::var("SCANN_CORE_BUILD_ENV") {
+        Ok(path) => path,
+        Err(_) => build_with_cmake(),
+    };
+    println!("cargo:rerun-if-changed={env_path}");
     let benv = read_build_env(&env_path);
 
     // 1. The shim, compiled with the core's own include paths, defines and
     //    ISA flags. Compiled (and therefore emitted on the link line) first.
-    let mut build = cxx_build::bridge("src/bridge.rs");
-    build.file("src/shim.cc").include("src").std("c++17");
+    let mut build = cxx_build::bridge("rust/src/bridge.rs");
+    build.file("rust/src/shim.cc").include("rust/src").std("c++17");
     if let Some(cxx) = &benv.cxx {
         build.compiler(cxx);
     }

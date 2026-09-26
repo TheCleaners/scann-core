@@ -1,0 +1,84 @@
+# Copyright 2026 ebenali and TheCleaners.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[package]
+name = "scann-core"
+version = "0.1.0"  # must match VERSION (checked by CMakeLists.txt)
+edition = "2021"
+description = "Rust bindings for scann-core: ScaNN's vector search core without TensorFlow (derived from Google's ScaNN; not an official Google product)"
+license = "Apache-2.0"
+authors = ["ebenali", "TheCleaners"]
+repository = "https://github.com/TheCleaners/scann-core"
+homepage = "https://github.com/TheCleaners/scann-core"
+documentation = "https://docs.rs/scann-core"
+readme = "rust/README.md"
+keywords = ["vector-search", "nearest-neighbor", "ann", "embeddings", "scann"]
+categories = ["algorithms", "science", "api-bindings"]
+build = "rust/build.rs"
+# The build script links the native scann_core library; only one version of
+# the crate may do that in a dependency graph.
+links = "scann_core"
+autotests = false
+autoexamples = false
+autobenches = false
+# What `cargo package` ships: the Rust sources plus everything the build
+# script needs to build the C++ library with CMake.
+include = [
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/CMakeLists.txt",
+  "/VERSION",
+  "/LICENSE",
+  "/NOTICE",
+  "/README.md",
+  "/cmake/**",
+  "/core/**",
+  "/src/**",
+  "/third_party/**",
+  "/rust/**",
+  "/docs/tutorial/code/rust/glove.rs",
+]
+
+[lib]
+name = "scann_core"
+path = "rust/src/lib.rs"
+
+[dependencies]
+cxx = "1"
+
+[build-dependencies]
+cxx-build = "1"
+cmake = "0.1"
+
+[[test]]
+name = "api"
+path = "rust/tests/api.rs"
+
+[[test]]
+name = "equivalence"
+path = "rust/tests/equivalence.rs"
+
+[[example]]
+name = "quickstart"
+path = "rust/examples/quickstart.rs"
+
+# The tutorial's Rust program (docs/tutorial/07-cpp-and-rust.md).
+[[example]]
+name = "tutorial_glove"
+path = "docs/tutorial/code/rust/glove.rs"
+
+[package.metadata.docs.rs]
+# docs.rs has no network access to fetch the C++ dependencies; build.rs skips
+# the native build there (rustdoc doesn't need it).
+targets = ["x86_64-unknown-linux-gnu"]

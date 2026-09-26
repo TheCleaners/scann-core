@@ -30,7 +30,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "google/protobuf/text_format.h"
-#include "scann-core/src/bridge.rs.h"
+#include "scann-core/rust/src/bridge.rs.h"
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/dataset.h"
 #include "scann/utils/common.h"

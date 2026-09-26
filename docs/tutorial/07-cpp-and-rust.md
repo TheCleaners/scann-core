@@ -38,9 +38,11 @@ build/examples/scann_core_tutorial_glove ~/.cache/scann-core-tutorial
 build/rust/target/release/examples/tutorial_glove ~/.cache/scann-core-tutorial
 ```
 
-For the Rust program you can also use plain cargo:
-`SCANN_CORE_BUILD_ENV=$PWD/build/rust/scann_core_rust_build.env cargo run --release --example tutorial_glove -- <data dir>`
-from `rust/`.
+For the Rust program you can also use plain cargo from the repository root:
+`cargo run --release --example tutorial_glove -- <data dir>`. Without
+`SCANN_CORE_BUILD_ENV` the crate builds the C++ library itself; with
+`SCANN_CORE_BUILD_ENV=$PWD/build/rust/scann_core_rust_build.env` it reuses
+the CMake build.
 
 ## C++
 

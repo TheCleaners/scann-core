@@ -80,5 +80,16 @@ foreach(rel ${SCANN_PY_SOURCES})
   list(APPEND SCANN_PY_COPIED "${SCANN_PY_OUT}/${rel}")
 endforeach()
 
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/scann/version.py.in"
+               "${SCANN_PY_OUT}/scann/version.py" @ONLY)
+
 add_custom_target(scann_python_package ALL
   DEPENDS ${SCANN_PB2_FILES} ${SCANN_PY_COPIED} scann_pybind)
+
+# pip install / wheel builds (scikit-build-core, see pyproject.toml): the
+# package is assembled in ${SCANN_PY_OUT}/scann and installed as is.
+if(SKBUILD)
+  install(DIRECTORY "${SCANN_PY_OUT}/scann" DESTINATION .
+          PATTERN "__pycache__" EXCLUDE
+          PATTERN "*.pyc" EXCLUDE)
+endif()

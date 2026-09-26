@@ -1,0 +1,58 @@
+# Copyright 2026 ebenali and TheCleaners.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["scikit-build-core>=1.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "scann-core"
+dynamic = ["version"]
+description = "ScaNN's vector search core without TensorFlow (derived from Google's ScaNN; not an official Google product)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "third_party/cnpy/LICENSE"]
+authors = [{ name = "ebenali" }, { name = "TheCleaners" }]
+requires-python = ">=3.10"
+dependencies = ["numpy", "protobuf>=7.36.2"]
+keywords = ["vector search", "nearest neighbor", "ann", "scann", "embeddings"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/TheCleaners/scann-core"
+Documentation = "https://github.com/TheCleaners/scann-core/tree/main/docs"
+Upstream = "https://github.com/google-research/google-research/tree/master/scann"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.27"
+cmake.build-type = "Release"
+build.targets = ["scann_python_package", "scann_pybind"]
+sdist.exclude = ["docs/tutorial/code/**/__pycache__", "build*/", "target/"]
+
+# Don't let scikit-build-core substitute Python's own compiler (often GCC,
+# which can't build ScaNN) when CC/CXX aren't set: pass the user's CC/CXX
+# through if set, and otherwise let CMakeLists.txt pick clang.
+[tool.scikit-build.env]
+CC = { env = "CC" }
+CXX = { env = "CXX" }
+
+[tool.scikit-build.cmake.define]
+SCANN_BUILD_PYTHON = "ON"
+SCANN_BUILD_RUST_BINDINGS = "OFF"
+SCANN_BUILD_TESTS = "OFF"
+SCANN_BUILD_EXAMPLES = "OFF"
+SCANN_BUILD_SHARED = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "VERSION"
+regex = '^(?P<value>\d+\.\d+\.\d+.*)$'
