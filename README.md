@@ -36,10 +36,12 @@ All three build the C++ library from source, which needs:
 * **clang ≥ 19 or GCC ≥ 13.** Tested with clang 19, 21, 23 and 24 and
   GCC 13, 14 and 16 (CI runs clang 19 and 20, GCC 13 and 14). clang is
   upstream's compiler and the one results are verified bit-identical to
-  upstream with; GCC builds give the same recall (checked on GloVe-100) with
-  last-bit differences in distances. When no compiler is chosen, clang is
-  picked if it's on PATH. The AMX kernels (Sapphire Rapids and later) need
-  clang ≥ 20.
+  upstream with. GCC builds give the same recall (checked on GloVe-100),
+  with last-bit differences in distances. They are slower: the partitioned
+  pipeline by about 5%, and batched brute-force search at about half of
+  clang's throughput. Use clang for speed. When no compiler is chosen, clang
+  is picked if it's on PATH. The AMX kernels (Sapphire Rapids and later)
+  need clang ≥ 20.
 * **CMake ≥ 3.27**, and network access to download the C++ dependencies
   (or local copies; see [Dependencies](#dependencies)).
 * For Python: Python ≥ 3.10 with numpy and protobuf ≥ 7.36.2 (pip installs
