@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -58,6 +62,21 @@ namespace internal {
 inline int NumQueryDatabaseSearchTypesConfigured(const ScannConfig& config) {
   return config.has_brute_force() + config.has_hash();
 }
+
+// scann-core: rejects config values that upstream only caught with a
+// LOG(FATAL) or CHECK (process abort) or not at all (undefined behavior)
+// deep inside the searchers; see single_machine_factory_impl.cc.
+Status ValidateFactoryConfig(const ScannConfig& config,
+                             const GenericSearchParameters& params,
+                             TypeTag type_tag);
+
+// scann-core: for asymmetric hashing without residual quantization, sets
+// the AH projection's input_dim to the dataset's dimensionality when the
+// config leaves it out (as the Python ScannBuilder does whenever pca() or
+// truncate() is used). Upstream filled it in only for tree-AH with residual
+// quantization; otherwise the AH projection failed to build and training
+// ended in a bare "SCANN_RET_CHECK failure".
+void MaybeSetAhProjectionInputDim(ScannConfig* config, const Dataset* dataset);
 
 template <typename LeafSearcherT>
 class SingleMachineFactoryImplClass {
@@ -133,6 +152,8 @@ StatusOrSearcherUntyped SingleMachineFactoryUntypedImpl(
     CHECK(dataset) << "Code fails to wire-through the type tag";
     opts.type_tag = dataset->TypeTag();
   }
+  SCANN_RETURN_IF_ERROR(ValidateFactoryConfig(config, params, opts.type_tag));
+  MaybeSetAhProjectionInputDim(&config, dataset.get());
 
   SCANN_ASSIGN_OR_RETURN(
       auto searcher, SCANN_CALL_FUNCTION_BY_TAG(

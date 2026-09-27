@@ -25,6 +25,20 @@ changed.
 > **scann-core is a derived work of ScaNN. It is not an official Google
 > product and is not affiliated with or endorsed by Google.**
 
+## Contents
+
+* [Install](#install)
+* [Layout](#layout)
+* [Building](#building): [dependencies](#dependencies),
+  [compile flags](#compile-flags),
+  [cross-compiling for aarch64](#cross-compiling-for-aarch64)
+* [Using it](#using-it): [C++](#c), [Python](#python), [Rust](#rust)
+* [Testing](#testing): [equivalence with upstream](#equivalence-with-upstream),
+  [sanitizers and static analysis](#sanitizers-and-static-analysis)
+* [Intentional differences from upstream](#intentional-differences-from-upstream)
+* [Documentation](#documentation)
+* [License](#license)
+
 ## Install
 
 | | |
@@ -326,9 +340,11 @@ runs everything that needs nothing beyond the build:
 | `api_exercise_avx2` | the same, with the AVX2 kernels forced on an AVX-512 machine (`SCANN_TEST_FORCE_AVX2=1`), so both kernel sets get tested (and sanitized) |
 | `mutation_regressions` | a failed `rebalance()` leaves a working index; tree + bfloat16 add/update/delete; every stored vector keeps finding itself |
 | `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load |
+| `config_regressions` | raw configs that crashed upstream (zero block sizes, LUT16 with other than 16 clusters, binary or unsupported distances, bad quantiles) are errors; tree + PCA/TRUNCATE + AH without residuals builds, searches well and reloads |
 | `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
 | `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |
 | `python_input_validation` | NaN/infinity in builds, upserts and batched queries, and `leaves_to_search` on indexes without a tree, are clean errors (not crashes); a failed batch upsert changes nothing; padded results map to `None` |
+| `python_config_validation` | the same raw configs through `create_searcher`; the builder's `pca()`/`truncate()` with a squared-L2 tree builds; `incremental_threshold` with `pca()`, `truncate()` or `upper_tree()` raises `ValueError` |
 | `python_projection_mutation` | trees with PCA/TRUNCATE projections through inserts, updates, deletes and `rebalance()`: points stay findable, health stats stay consistent |
 | `python_rebalance_flow` | an index grown from empty with batched upserts, then retrained with `rebalance(config)` into a SOAR tree (the big-ann-benchmarks flow); the builder's SOAR options; a clear error for more leaves than points |
 | `python_serialization` | `serialize()`/`load_searcher()` round trips for 10 configs, also with every point deleted; re-serializing over another index leaves no stale files or docids; a re-serialize that fails or is killed (`SIGKILL`) midway leaves the old index, the new one, or a directory that fails to load, never a mix |

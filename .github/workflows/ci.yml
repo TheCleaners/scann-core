@@ -121,7 +121,7 @@ jobs:
             -DSCANN_SANITIZE=${{ matrix.sanitize }} \
             -DSCANN_BUILD_PYTHON=OFF -DSCANN_BUILD_RUST_BINDINGS=OFF \
             -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF
-          cmake --build build --target scann_core_api_exercise
+          cmake --build build --target scann_core_api_exercise scann_core_config_regressions
       - name: Run
         env:
           ASAN_OPTIONS: detect_leaks=1
@@ -131,6 +131,7 @@ jobs:
           build/tests/scann_core_api_exercise - 0
           # Again with the AVX2 kernels, which AVX-512 runners otherwise skip.
           SCANN_TEST_FORCE_AVX2=1 build/tests/scann_core_api_exercise - 0
+          build/tests/scann_core_config_regressions
 
   # Rust lints and the minimum supported Rust version. DOCS_RS=1 makes
   # build.rs skip the C++ build, which neither check needs.
@@ -150,3 +151,25 @@ jobs:
           msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
           rustup toolchain install "$msrv" --profile minimal
           cargo +"$msrv" check --all-targets --locked
+
+  # The crate as published: `cargo package` builds the packaged sources on
+  # their own, C++ library included, as a crates.io user would. Catches files
+  # missing from Cargo.toml's include list before a release, and fills the
+  # ccache that the release's `cargo publish` restores (key `crate`).
+  crate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-22 cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: crate
+          max-size: 2G
+      - name: cargo package
+        env:
+          CC: clang-22
+          CXX: clang++-22
+          CCACHE_BASEDIR: ${{ github.workspace }}
+        run: cargo package --locked

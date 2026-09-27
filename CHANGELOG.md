@@ -5,11 +5,6 @@ All notable changes to scann-core. Versions follow
 
 ## 0.2.0-rc.2 (unreleased)
 
-### Added
-- C++: `ScannInterface::SerializeToDirectory(dir)` writes the whole index,
-  manifest included, so that an interrupted save can't leave a mixed
-  directory (see Fixed). The Python and Rust `serialize` use it.
-
 ### Fixed
 - Loading a damaged or inconsistent index directory crashed the process
   (segfault, SIGFPE, abort, uncaught C++ exceptions) or loaded silently
@@ -31,6 +26,38 @@ All notable changes to scann-core. Versions follow
   be loaded; so did any tree with bfloat16 brute-force leaves.
 - A failed AH lookup table in a tree search threw from `.value()` instead
   of returning an error.
+- Raw config values that crashed the process are now errors when the index
+  is built (a config string passed to Python `create_searcher`, Rust
+  `ScannIndex::new` or the C API, or a loaded `scann_config.pb`; also
+  affects upstream ScaNN). From a sweep of about 1,100 single-field changes
+  to builder-made configs, under ASan+UBSan:
+  - AH `num_dims_per_block` or `num_blocks` of 0 (SIGFPE or CHECK abort);
+  - `INT8_LUT16` with other than 16 clusters per block (heap overflow);
+  - binary distances (Hamming, ...) on float data, in any distance field
+    (LOG(FATAL));
+  - bfloat16 brute force, or an upper tree with int8 or bfloat16 scoring,
+    with a distance other than dot product or squared L2 (LOG(FATAL));
+  - `fixed_point_multiplier_quantile` outside (0, 1] or NaN for int8 tree
+    leaves or int8 reordering (undefined behavior);
+  - reloading an AH index with `LimitedInnerProductDistance` and int8
+    reordering (null reference; the int8 data isn't serialized).
+- A tree with `pca()` or `truncate()` scored with AH without residual
+  quantization (e.g. every `squared_l2` tree) failed to build with a bare
+  "SCANN_RET_CHECK failure" (upstream too). It now builds and searches with
+  the same recall as other trees.
+- Incremental training (`incremental_threshold`) together with `pca()`,
+  `truncate()` or `upper_tree()` failed at build time with an unclear
+  error. The Python builder, `ConfigBuilder` and Rust now reject it when
+  the config is built; raw configs get a clear error.
+- Undefined behavior (null pointer arithmetic) in distances between an
+  empty sparse datapoint and a dense one (UBSan).
+
+### Added
+- C++: `ScannInterface::SerializeToDirectory(dir)` writes the whole index,
+  manifest included, so that an interrupted save can't leave a mixed
+  directory (see Fixed). The Python and Rust `serialize` use it.
+- `config_regressions` (C++) and `python_config_validation` tests; the CI
+  sanitizer job runs `config_regressions` too.
 
 ## 0.2.0-rc.1 (2026-09-27)
 

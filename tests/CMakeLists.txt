@@ -48,6 +48,14 @@ target_link_libraries(scann_core_artifact_loading PRIVATE scann::core)
 add_test(NAME artifact_loading COMMAND scann_core_artifact_loading)
 set_tests_properties(artifact_loading PROPERTIES TIMEOUT 900)
 
+# Regressions for raw config values that aborted the process, overflowed the
+# heap or hit undefined behavior (each must be an error now), and for valid
+# configs upstream failed to build (tree + PCA/TRUNCATE + non-residual AH).
+add_executable(scann_core_config_regressions cpp/config_regressions.cc)
+target_link_libraries(scann_core_config_regressions PRIVATE scann::core)
+add_test(NAME config_regressions COMMAND scann_core_config_regressions)
+set_tests_properties(config_regressions PROPERTIES TIMEOUT 900)
+
 # A Python test run with this build's package on PYTHONPATH.
 function(scann_add_python_test name script)
   add_test(NAME ${name}
@@ -102,4 +110,6 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   # serialize()/load_searcher() round trips, including an all-deleted tree,
   # and re-serializing (also killed midway) over an existing index.
   scann_add_python_test(python_serialization python/test_serialization.py)
+  # Raw config values that crashed the process; builder checks.
+  scann_add_python_test(python_config_validation python/test_config_validation.py)
 endif()

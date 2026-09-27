@@ -40,7 +40,17 @@ you need:
   `SCANN_CORE_CMAKE_ARGS="-DFETCHCONTENT_SOURCE_DIR_ABSL=/src/abseil-cpp ..."`
   (see the repository README).
 
-The first build takes a few minutes; later builds reuse it. The baseline
+The first build takes a few minutes; later builds in the same target
+directory reuse it. Each target directory (another project, CI, `cargo
+install`) builds the C++ library again; a compiler cache makes those
+rebuilds cheap, since CMake picks up the launcher from the environment:
+
+```sh
+export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+export CCACHE_BASEDIR=$HOME   # hits across different target directories
+```
+
+(`sccache` works the same way.) The baseline
 instruction set is AVX + FMA on x86-64 and Armv8 Neon on aarch64; faster
 kernels (AVX2/AVX-512, SVE) are picked at run time when the CPU has them.
 `SCANN_CORE_CMAKE_ARGS="-DSCANN_ARCH_FLAGS=-march=native"` also lets the

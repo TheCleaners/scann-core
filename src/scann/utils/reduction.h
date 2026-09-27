@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -38,7 +42,10 @@ __attribute__((no_sanitize("alignment"))) auto DensePairAccumulate(
   AT result3 = 0;
 
   auto enda = a + size;
-  for (; a + 3 < enda; a += 4, b += 4) {
+  // scann-core: compare remaining counts (as HybridPairAccumulateImpl2 does),
+  // not a + 3 < enda: for an empty (null) vector that was arithmetic on a
+  // null pointer (undefined behavior, flagged by UBSan).
+  for (; enda - a > 3; a += 4, b += 4) {
     reduce(&result0, a[0], b[0]);
     reduce(&result1, a[1], b[1]);
     reduce(&result2, a[2], b[2]);
@@ -46,7 +53,7 @@ __attribute__((no_sanitize("alignment"))) auto DensePairAccumulate(
   }
 
   result2 += result3;
-  if (a + 1 < enda) {
+  if (enda - a > 1) {
     reduce(&result0, a[0], b[0]);
     reduce(&result1, a[1], b[1]);
     a += 2;
@@ -232,7 +239,9 @@ inline AccumulatorTypeFor<T, U> HybridPairAccumulateImpl1(
   AT result2 = 0;
   AT result3 = 0;
 
-  for (; sparse_index_ptr + 3 < sparse_index_end;
+  // scann-core: as in DensePairAccumulate; an empty sparse datapoint has
+  // null indices.
+  for (; sparse_index_end - sparse_index_ptr > 3;
        sparse_index_ptr += 4, sparse_values_ptr += 4) {
     reduce_two(&result0, dense_values_ptr[sparse_index_ptr[0]],
                sparse_values_ptr[0]);
@@ -245,7 +254,7 @@ inline AccumulatorTypeFor<T, U> HybridPairAccumulateImpl1(
   }
 
   result2 += result3;
-  if (sparse_index_ptr + 1 < sparse_index_end) {
+  if (sparse_index_end - sparse_index_ptr > 1) {
     reduce_two(&result0, dense_values_ptr[sparse_index_ptr[0]],
                sparse_values_ptr[0]);
     reduce_two(&result1, dense_values_ptr[sparse_index_ptr[1]],

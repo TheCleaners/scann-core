@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/utils/hash_leaf_helpers.h"
 
@@ -18,6 +22,7 @@
 #include <memory>
 #include <utility>
 
+#include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "scann/distance_measures/distance_measure_factory.h"
 #include "scann/hashes/asymmetric_hashing2/searcher.h"
@@ -101,6 +106,12 @@ HashLeafHelpers<T>::TrainAsymmetricHashingModel(
       CreateOrGetAymmetricHashingQuantizationDistance(config, params));
   asymmetric_hashing2::TrainingOptions<T> opts(config, quantization_distance,
                                                *dataset);
+  // scann-core: upstream skipped Validate() here (the tree-AH residual
+  // factory calls it), so an invalid projection config, whose error the
+  // TrainingOptions constructor only records, surfaced as a bare
+  // "SCANN_RET_CHECK failure" (null projector), and invalid AH settings
+  // weren't checked at all.
+  SCANN_RETURN_IF_ERROR(opts.Validate());
   SCANN_ASSIGN_OR_RETURN(
       shared_ptr<const asymmetric_hashing2::Model<T>> model,
       asymmetric_hashing2::TrainSingleMachine<T>(*dataset, opts, pool));
@@ -148,6 +159,17 @@ StatusOrSearcher<T> HashLeafHelpers<T>::AsymmetricHasherFactory(
     }
   }
 
+  // scann-core: the LUT16 kernels read 16 lookup-table entries per block;
+  // with fewer clusters they read past the table (heap overflow).
+  if (training_results.lookup_type == AsymmetricHasherConfig::INT8_LUT16 &&
+      training_results.queryer &&
+      training_results.queryer->num_clusters_per_block() !=
+          asymmetric_hashing2::kNumClustersPerBlockForLUT16) {
+    return InvalidArgumentError(absl::StrCat(
+        "lookup_type INT8_LUT16 requires num_clusters_per_block = ",
+        asymmetric_hashing2::kNumClustersPerBlockForLUT16, ", not ",
+        training_results.queryer->num_clusters_per_block(), "."));
+  }
   asymmetric_hashing2::SearcherOptions<T> opts(training_results.queryer,
                                                training_results.indexer);
   opts.set_asymmetric_lookup_type(training_results.lookup_type);
