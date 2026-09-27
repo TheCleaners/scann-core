@@ -2,8 +2,9 @@
 
 Speed and recall of scann-core against the upstream `scann` wheel from PyPI,
 on x86-64 and on aarch64 (AWS Graviton4). Everything here comes from
-[`benchmarks/glove.py`](../benchmarks/glove.py). See
-[Reproducing](#reproducing) to run it yourself.
+[`benchmarks/ann_benchmarks.py`](../benchmarks/ann_benchmarks.py). See
+[Reproducing](#reproducing) to run it yourself, on GloVe or on any other
+[ann-benchmarks](http://ann-benchmarks.com) dataset.
 
 ## Summary
 
@@ -39,7 +40,8 @@ dot product (cosine similarity). It's the tutorial's dataset; see
 | `tree_ah_reorder_noaq` | the same without anisotropic quantization |
 
 Trees are trained with k-means++ (`random_init=False`) on 250,000 samples,
-so repeated builds of one implementation train the same index.
+so repeated builds of one implementation train the same index. (Other
+datasets scale these settings; see [Other datasets](#other-datasets).)
 
 For each config the script reports:
 
@@ -212,16 +214,43 @@ Python 3.9 environment. For example, with uv:
 # scann-core (defaults: portable ISA flags, Release)
 cmake -S . -B build -G Ninja && cmake --build build
 python -m venv .venv && .venv/bin/pip install numpy "protobuf>=7.36.2" h5py
-PYTHONPATH=build/python .venv/bin/python benchmarks/glove.py --label scann-core --json scann-core.json
+PYTHONPATH=build/python .venv/bin/python benchmarks/ann_benchmarks.py --label scann-core --json scann-core.json
 
 # the upstream wheel, in its own environment (Python 3.9 on aarch64)
 python -m venv wheel-venv && wheel-venv/bin/pip install scann==1.4.2 h5py
-wheel-venv/bin/python benchmarks/glove.py --label upstream --json upstream.json
+wheel-venv/bin/python benchmarks/ann_benchmarks.py --label upstream --json upstream.json
 ```
 
 `--only brute_force_int8 tree_ah_reorder` runs a subset of the configs,
-and `--threads N` sets the number of threads for the QPS pass. The
-dataset (~485 MB) is downloaded on first use into
-`$SCANN_TUTORIAL_DATA` (default `~/.cache/scann-core-tutorial`). Run on an
-otherwise idle machine, and run the implementations one after another,
-not concurrently.
+and `--threads N` sets the number of threads for the QPS pass. Datasets
+are downloaded on first use into `$SCANN_TUTORIAL_DATA` (default
+`~/.cache/scann-core-tutorial`); GloVe is ~485 MB. `--json` also records
+the environment: CPU, thread count, scann and Python versions, dataset and
+tree settings. Run on an otherwise idle machine, and run the
+implementations one after another, not concurrently.
+
+### Other datasets
+
+`--dataset <name>` runs any ann-benchmarks dataset.
+- Names ending in `-angular` are L2-normalized and searched by dot
+  product, as GloVe is.
+- Names ending in `-euclidean` are searched by squared L2, without
+  anisotropic quantization (it applies to dot product only), so
+  `tree_ah_reorder_noaq` isn't run.
+- The tree scales with the dataset: 2000 leaves from a million points up,
+  otherwise 2√n, searching 5% of them.
+
+For example, `--dataset fashion-mnist-784-euclidean` (60,000 × 784,
+217 MB) on the x86-64 machine above, one run, scann-core 0.2.0-rc.1 with
+the default ISA flags:
+
+```
+fashion-mnist-784-euclidean: 60000 x 784, squared_l2, 10000 queries; 64 threads
+brute_force_f32        build    0.02 s  recall@10 1.0000      33247 QPS    3.871 ms/query
+brute_force_int8       build    0.08 s  recall@10 0.9761      14809 QPS    1.619 ms/query
+tree_ah_reorder        build    6.21 s  recall@10 0.9986     248518 QPS    0.068 ms/query
+tree_ah_reorder_int8   build    6.10 s  recall@10 0.9749     415693 QPS    0.064 ms/query
+```
+
+Other sizes to try: `nytimes-256-angular` (290k × 256),
+`sift-128-euclidean` (1M × 128), `gist-960-euclidean` (1M × 960, 3.6 GB).

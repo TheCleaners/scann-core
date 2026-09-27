@@ -47,9 +47,11 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
   - the Python tests on CPython 3.10-3.15t (`scripts/python-versions.sh`).
 
   Builds are cached with ccache.
-- `benchmarks/glove.py` and `docs/benchmarks.md`: build time, recall,
+- `benchmarks/ann_benchmarks.py` and `docs/benchmarks.md`: build time, recall,
   throughput and latency against the upstream wheel, on x86-64 and
-  Graviton4.
+  Graviton4. It runs GloVe-100 by default, or any ann-benchmarks dataset
+  (angular ones by dot product, euclidean ones by squared L2), and records
+  the environment with the results.
 - The C++ API test also checks recall against an exact search it computes
   itself, and covers a tree with int8 (fixed-point) centers.
 
@@ -88,6 +90,23 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
 - CMake builds run cargo with `--locked`, so they never rewrite `Cargo.lock`.
 - ctest timeouts (5 minutes for the Python tests, 15 for the C++ ones), so a
   hang fails the test instead of stalling for ctest's default 25 minutes.
+- Configs ScaNN mishandled now fail with a clear error when the searcher is
+  built:
+  - PCA or TRUNCATE to 0 dimensions (PCA aborted the process; negative
+    TRUNCATE failed with "vector::_M_range_insert");
+  - a tree searching 0 leaves (the searcher built, then every search failed
+    with a bare "SCANN_RET_CHECK failure").
+
+  Both are reachable from upstream's Python builder (`pca(0, None)`,
+  `tree(n, 0)`).
+- `ConfigBuilder` (C++ and Rust) rejects values that don't make sense,
+  where the Python builder passes them through:
+  - counts below 1;
+  - `reordering_num_neighbors` below `num_neighbors` (searches silently
+    returned fewer neighbors);
+  - `dimensions_per_block` above the dimensionality;
+  - residual quantization without a tree;
+  - out-of-range `Pca`/`Truncate` dimensions.
 - Rust: `ScannIndex::health_stats(&self)` could race with itself when
   called from several threads (the C++ call updates cached figures in a
   `mutable` member), which safe Rust must never allow; calls are now

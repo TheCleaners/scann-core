@@ -359,6 +359,16 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
 Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
   auto [config, dataset, opts] = std::move(artifacts);
   config_ = config;
+  // scann-core: with max_spill_centers = 0 (e.g. the Python builder's
+  // tree(num_leaves_to_search=0)), the searcher built fine and then every
+  // search failed with a bare "SCANN_RET_CHECK failure".
+  if (config_.has_partitioning() &&
+      config_.partitioning().query_spilling().spilling_type() ==
+          QuerySpillingConfig::FIXED_NUMBER_OF_CENTERS &&
+      config_.partitioning().query_spilling().max_spill_centers() < 1)
+    return InvalidArgumentError(
+        "partitioning.query_spilling.max_spill_centers (the number of leaves "
+        "to search) must be > 0.");
   SCANN_ASSIGN_OR_RETURN(dimensionality_, opts.ComputeConsistentDimensionality(
                                               config_, dataset.get()));
   SCANN_ASSIGN_OR_RETURN(scann_,

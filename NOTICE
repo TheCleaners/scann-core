@@ -35,7 +35,13 @@ isn't a one-line change:
       SearchBatchedParallel() rejects batch_size < 1 (division by zero) and
       works without a thread pool (null dereference after SetNumThreads(0)
       or on single-CPU machines); query dimension errors state both
-      dimensionalities.
+      dimensionalities; a partitioning config with max_spill_centers = 0 is
+      rejected (the searcher built, then every search failed with a bare
+      RET_CHECK error).
+  src/scann/projection/projection_factory.cc
+      PCA and TRUNCATE projections reject a projected dimensionality outside
+      1..input_dim (PCA aborted the process through a CHECK failure,
+      TRUNCATE failed with "vector::_M_range_insert").
   src/scann/scann_ops/cc/scann_npy.cc
       Upsert() rejects batch_size < 1 (division by zero) and wrong-sized
       vectors (upstream failed with an uninformative RET_CHECK); Delete()

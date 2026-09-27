@@ -238,6 +238,50 @@ int main(int argc, char** argv) {
     b.Truncate(128).Tree(tree).ScoreAh(ah);
   });
 
+  // Values the Python builder passes through, and ScaNN then mishandles
+  // (a search error on every query, an abort, fewer results than asked).
+  ExpectError("num_leaves_to_search = 0", [&](ConfigBuilder& b) {
+    auto t = tree;
+    t.num_leaves_to_search = 0;
+    b.Tree(t).ScoreAh(ah);
+  });
+  ExpectError("num_leaves unset (0)", [&](ConfigBuilder& b) {
+    b.Tree(scann_core::TreeOptions{}).ScoreAh(ah);
+  });
+  ExpectError("num_neighbors = 0", [&](ConfigBuilder& b) {
+    b = ConfigBuilder(0, DistanceMeasure::kDotProduct, 128);
+    b.ScoreBruteForce();
+  });
+  ExpectError("reorder fewer than num_neighbors", [&](ConfigBuilder& b) {
+    b.ScoreAh(ah).Reorder({5});
+  });
+  ExpectError("truncate to 0", [&](ConfigBuilder& b) {
+    b.Truncate(0).Tree(tree).ScoreAh(ah);
+  });
+  ExpectError("pca reduction_dim = 0", [&](ConfigBuilder& b) {
+    scann_core::PcaOptions p;
+    p.reduction_dim = 0;
+    b.Pca(p).Tree(tree).ScoreAh(ah);
+  });
+  ExpectError("pca reduction_dim > dimensionality", [&](ConfigBuilder& b) {
+    scann_core::PcaOptions p;
+    p.reduction_dim = 256;
+    b.Pca(p).Tree(tree).ScoreAh(ah);
+  });
+  ExpectError("dimensions_per_block > dimensionality", [&](ConfigBuilder& b) {
+    auto a = ah;
+    a.dimensions_per_block = 129;
+    b.ScoreAh(a);
+  });
+  ExpectError("residual quantization without tree", [&](ConfigBuilder& b) {
+    auto a = ah;
+    a.residual_quantization = true;
+    b.ScoreAh(a);
+  });
+  ExpectError("upper_tree num_leaves_to_search = 0", [&](ConfigBuilder& b) {
+    b.Tree(tree).UpperTree({40, 0}).ScoreAh(ah);
+  });
+
   // soar_lambda = 0.0 on the upper tree is kept (Python turns it into 1.5).
   {
     ConfigBuilder b(10, DistanceMeasure::kDotProduct, 128);

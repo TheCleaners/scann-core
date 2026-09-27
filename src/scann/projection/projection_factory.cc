@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/projection/projection_factory.h"
 
@@ -18,6 +22,7 @@
 #include <memory>
 #include <utility>
 
+#include "absl/strings/str_cat.h"
 #include "scann/data_format/dataset.h"
 #include "scann/projection/blockwise_random_orthogonal.h"
 #include "scann/projection/eigenvalue_opq_projection.h"
@@ -172,6 +177,17 @@ StatusOr<unique_ptr<Projection<T>>> ProjectionFactoryImpl<T>::Create(
         SCANN_RETURN_IF_ERROR(result->Create(serialized_projection));
 
       } else if (config.has_num_dims_per_block()) {
+        // scann-core: PcaProjection CHECK-fails (aborting the process) unless
+        // 0 < projected dims <= input_dim; report a config error instead.
+        const int64_t projected_dims =
+            int64_t{config.num_dims_per_block()} * config.num_blocks();
+        if (projected_dims < 1 ||
+            projected_dims > static_cast<int64_t>(input_dim)) {
+          return InvalidArgumentError(absl::StrCat(
+              "PCA projection: num_dims_per_block * num_blocks (",
+              projected_dims, ") must be between 1 and input_dim (", input_dim,
+              ")."));
+        }
         result = std::make_unique<PcaProjection<T>>(
             input_dim, config.num_dims_per_block() * config.num_blocks());
         result->Create(*std::get<1>(dataset_or_serialized_projection),
@@ -197,9 +213,21 @@ StatusOr<unique_ptr<Projection<T>>> ProjectionFactoryImpl<T>::Create(
       }
       return {std::move(result)};
     }
-    case ProjectionConfig::TRUNCATE:
+    case ProjectionConfig::TRUNCATE: {
+      // scann-core: a negative size reached std::vector as a huge count
+      // ("vector::_M_range_insert"); report a config error instead.
+      const int64_t projected_dims =
+          int64_t{config.num_dims_per_block()} * config.num_blocks();
+      if (projected_dims < 1 ||
+          projected_dims > static_cast<int64_t>(input_dim)) {
+        return InvalidArgumentError(absl::StrCat(
+            "TRUNCATE projection: num_dims_per_block * num_blocks (",
+            projected_dims, ") must be between 1 and input_dim (", input_dim,
+            ")."));
+      }
       return {make_unique<TruncateProjection<T>>(
           input_dim, config.num_dims_per_block() * config.num_blocks())};
+    }
     case ProjectionConfig::RANDOM_ORTHOGONAL: {
       SCANN_RETURN_IF_ERROR(fix_remainder_dims());
 

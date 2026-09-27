@@ -355,5 +355,9 @@ fn builder_rejects_what_python_silently_ignores() {
         .build(1000)
         .is_err());
     assert!(b().truncate(DIM).tree(tree()).score_ah(ah()).build(1000).is_err());
+    // Values Python passes through and ScaNN then mishandles.
+    assert!(b().tree(TreeOptions::new(30, 0)).score_ah(ah()).build(1000).is_err());
+    assert!(b().score_ah(ah()).reorder(ReorderOptions::new(K as u32 - 1)).build(1000).is_err());
+    assert!(b().score_ah(ah().residual_quantization(true)).build(1000).is_err());
     assert!(b().tree(tree()).score_ah(ah()).build(1000).is_ok());
 }

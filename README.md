@@ -76,7 +76,7 @@ scann-core/
 ├── examples/             C++ example, FetchContent consumer template
 ├── third_party/          vendored: cnpy, googletest's gtest_prod.h
 ├── tests/                C++/Python tests, upstream-equivalence harness
-├── benchmarks/           GloVe-100 benchmark (docs/benchmarks.md)
+├── benchmarks/           ann-benchmarks runner, GloVe by default (docs/benchmarks.md)
 ├── scripts/ci.sh         what CI runs (also runnable locally)
 ├── scripts/python-versions.sh  the Python tests on CPython 3.10-3.15t
 ├── scripts/cross-aarch64.sh  aarch64 cross-build + tests under QEMU
@@ -423,7 +423,8 @@ pointing at the wrong vectors.
   scripts included with it.
 * [`docs/benchmarks.md`](docs/benchmarks.md): speed and recall against the
   upstream wheel on x86-64 and aarch64 (Graviton4), and how to reproduce
-  them with [`benchmarks/glove.py`](benchmarks/glove.py).
+  them with [`benchmarks/ann_benchmarks.py`](benchmarks/ann_benchmarks.py)
+  (GloVe by default, or any ann-benchmarks dataset).
 * [`docs/api_reference.md`](docs/api_reference.md): the config options and
   search parameters, and what they mean.
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric

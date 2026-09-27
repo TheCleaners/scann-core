@@ -141,6 +141,8 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     return absl::InvalidArgumentError(absl::StrJoin(errors_, "; "));
   if (dimensionality_ == 0)
     return absl::InvalidArgumentError("dimensionality must be positive");
+  if (num_neighbors_ < 1)
+    return absl::InvalidArgumentError("num_neighbors must be positive");
   const bool dot = distance_ == DistanceMeasure::kDotProduct;
   const std::string distance_msg =
       absl::StrCat("{distance_measure: \"", DistanceName(distance_), "\"}");
@@ -178,6 +180,10 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     if (by_dim && pca_->pca_significance_threshold.has_value())
       return absl::InvalidArgumentError(
           "pca: set either reduction_dim or pca_significance_threshold, not both");
+    if (by_dim && (*pca_->reduction_dim < 1 ||
+                   *pca_->reduction_dim > static_cast<int64_t>(dimensionality_)))
+      return absl::InvalidArgumentError(absl::StrCat(
+          "pca: reduction_dim must be between 1 and ", dimensionality_));
     projection = absl::StrCat("projection { projection_type: PCA input_dim: ",
                               dimensionality_, " ");
     if (by_dim) {
@@ -190,9 +196,9 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     }
     absl::StrAppend(&projection, " }\n");
   } else if (truncate_) {
-    if (*truncate_ >= static_cast<int64_t>(dimensionality_))
-      return absl::InvalidArgumentError(
-          absl::StrCat("reduction_dim must be less than ", dimensionality_));
+    if (*truncate_ < 1 || *truncate_ >= static_cast<int64_t>(dimensionality_))
+      return absl::InvalidArgumentError(absl::StrCat(
+          "truncate: reduction_dim must be between 1 and ", dimensionality_ - 1));
     projection = absl::StrCat("projection { projection_type: TRUNCATE num_dims_per_block: ",
                               *truncate_, " input_dim: ", dimensionality_, " }\n");
   }
@@ -202,6 +208,9 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
         "partitioning config (the Python builder silently drops it)");
   if (upper_tree_ && !tree_)
     return absl::InvalidArgumentError("UpperTree() requires Tree()");
+  if (upper_tree_ && (upper_tree_->num_leaves < 1 || upper_tree_->num_leaves_to_search < 1))
+    return absl::InvalidArgumentError(
+        "upper_tree: num_leaves and num_leaves_to_search must be positive");
 
   if (tree_) {
     const TreeOptions& t = *tree_;
@@ -212,6 +221,14 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     if (t.incremental_threshold_points && t.incremental_threshold_fraction)
       return absl::InvalidArgumentError(
           "set at most one of incremental_threshold_points / _fraction");
+    // ScaNN rejects most of these itself, but with num_leaves_to_search = 0
+    // the searcher used to build and then fail every search.
+    if (t.num_leaves < 1 || t.num_leaves_to_search < 1 ||
+        t.training_sample_size < 1 || t.min_partition_size < 1 ||
+        t.training_iterations < 1)
+      return absl::InvalidArgumentError(
+          "tree: num_leaves, num_leaves_to_search, training_sample_size, "
+          "min_partition_size and training_iterations must be positive");
     absl::StrAppend(
         &config, "partitioning {\n",
         "  num_children: ", t.num_leaves, "\n",
@@ -268,6 +285,15 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     const AhOptions& a = *ah_;
     if (a.dimensions_per_block <= 0)
       return absl::InvalidArgumentError("dimensions_per_block must be positive");
+    // Python builds these, but a single block wider than the data isn't
+    // product quantization any more (recall collapses), and residuals need
+    // partition centers to be residuals of.
+    if (a.dimensions_per_block > static_cast<int64_t>(dimensionality_))
+      return absl::InvalidArgumentError(absl::StrCat(
+          "dimensions_per_block (", a.dimensions_per_block,
+          ") exceeds the dimensionality (", dimensionality_, ")"));
+    if (a.residual_quantization.value_or(false) && !tree_)
+      return absl::InvalidArgumentError("residual_quantization requires Tree()");
     const bool lut16 = a.hash_type == HashType::kLut16;
     const bool residual = a.residual_quantization.value_or(tree_.has_value() && dot);
     const uint32_t full_blocks = dimensionality_ / a.dimensions_per_block;
@@ -317,6 +343,14 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
 
   if (reorder_) {
     const ReorderOptions& r = *reorder_;
+    // Python builds this, and searches then silently return only
+    // reordering_num_neighbors results.
+    if (r.reordering_num_neighbors < num_neighbors_)
+      return absl::InvalidArgumentError(absl::StrCat(
+          "reorder: reordering_num_neighbors (", r.reordering_num_neighbors,
+          ") is less than num_neighbors (", num_neighbors_,
+          "); searches would return only ", r.reordering_num_neighbors,
+          " neighbors"));
     absl::StrAppend(&config, "exact_reordering {\n",
                     "  approx_num_neighbors: ", r.reordering_num_neighbors, "\n",
                     "  ", ReorderBlock(r.quantize), " { enabled: ",

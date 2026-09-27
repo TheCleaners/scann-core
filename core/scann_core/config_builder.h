@@ -25,7 +25,12 @@
 //   * UpperTree() without Tree()                (Python: ignored)
 //   * Pca()/Truncate() without Tree()           (Python: projection dropped)
 //   * Autopilot() combined with manual options  (Python: others ignored)
-// and three Python quirks are fixed:
+// Values that don't make sense are errors too: counts below 1 (with
+// num_leaves_to_search = 0 ScaNN built a searcher whose every search failed),
+// reordering_num_neighbors < num_neighbors (Python: searches silently return
+// fewer neighbors), dimensions_per_block > dimensionality, residual
+// quantization without Tree(), and out-of-range Pca()/Truncate() dimensions.
+// And three Python quirks are fixed:
 //   * UpperTree soar_lambda = 0.0 is kept (Python replaces it with 1.5)
 //   * Pca(reduction_dim) doesn't also require clearing the significance
 //     threshold (Python raises unless pca_significance_threshold=None)
