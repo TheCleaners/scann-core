@@ -12,10 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_executable(scann_core_example_quickstart cpp/quickstart.cc)
-target_link_libraries(scann_core_example_quickstart PRIVATE scann::core)
-set_target_properties(scann_core_example_quickstart PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+foreach(example quickstart updating)
+  add_executable(scann_core_example_${example} cpp/${example}.cc)
+  target_link_libraries(scann_core_example_${example} PRIVATE scann::core)
+  set_target_properties(scann_core_example_${example} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+  # The examples check their own results, so they double as tests. (The
+  # Python examples are registered in tests/CMakeLists.txt, the Rust ones
+  # in rust/CMakeLists.txt.)
+  if(SCANN_BUILD_TESTS)
+    add_test(NAME example_cpp_${example} COMMAND scann_core_example_${example})
+    set_tests_properties(example_cpp_${example} PROPERTIES TIMEOUT 300)
+  endif()
+endforeach()
 
 # The tutorial's C++ program (docs/tutorial/07-cpp-and-rust.md).
 add_executable(scann_core_tutorial_glove ../docs/tutorial/code/cpp/glove.cc)

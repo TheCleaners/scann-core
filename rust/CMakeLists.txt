@@ -97,4 +97,12 @@ if(SCANN_BUILD_TESTS)
            COMMAND ${_cargo_env} "SCANN_CORE_EQUIV_FIXTURES=${SCANN_EQUIV_FIXTURES}"
                    "${CARGO_EXECUTABLE}" test ${_cargo_args}
            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+  # The examples check their own results (built by scann_core_rust above).
+  foreach(example quickstart updating)
+    add_test(NAME example_rust_${example}
+             COMMAND ${_cargo_env} "${CARGO_EXECUTABLE}" run --quiet
+                     --example ${example} ${_cargo_args}
+             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    set_tests_properties(example_rust_${example} PROPERTIES TIMEOUT 600)
+  endforeach()
 endif()

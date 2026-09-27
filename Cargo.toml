@@ -79,6 +79,10 @@ path = "rust/tests/equivalence.rs"
 name = "quickstart"
 path = "examples/rust/quickstart.rs"
 
+[[example]]
+name = "updating"
+path = "examples/rust/updating.rs"
+
 # The tutorial's Rust program (docs/tutorial/07-cpp-and-rust.md).
 [[example]]
 name = "tutorial_glove"
