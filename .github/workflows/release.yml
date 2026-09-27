@@ -133,6 +133,7 @@ jobs:
         with:
           key: crate
           max-size: 2G
+          verbose: 1
       - env:
           CC: clang-22
           CXX: clang++-22
