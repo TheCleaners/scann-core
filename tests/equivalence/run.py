@@ -48,8 +48,10 @@ Usage:
 """
 
 import argparse
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -247,6 +249,7 @@ def main():
   args.core_python = os.path.abspath(args.core_python or args.python)
   os.makedirs(out, exist_ok=True)
   workdir = tempfile.mkdtemp(prefix="scann-equiv-")
+  atexit.register(shutil.rmtree, workdir, ignore_errors=True)
   rng = np.random.default_rng(SEED)
   data = {}
   for name, spec in DATASETS.items():

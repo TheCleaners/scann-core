@@ -14,7 +14,9 @@
 
 """Part 5: saving, loading, and serving: threads, batching, latency."""
 
+import atexit
 import os
+import shutil
 import tempfile
 
 import numpy as np
@@ -34,7 +36,10 @@ with Timer() as t:
 print(f"built in {t.seconds:.1f} s")
 
 # --- Save and load. ---------------------------------------------------------
+# A scratch directory, removed when the script exits (each index is ~0.5 GB,
+# and /tmp is often in RAM).
 index_dir = tempfile.mkdtemp(prefix="glove-index-")
+atexit.register(shutil.rmtree, index_dir, ignore_errors=True)
 with Timer() as t:
   searcher.serialize(index_dir)
 print(f"serialized in {t.seconds:.1f} s to {index_dir}:")
@@ -65,6 +70,7 @@ for name, quantize in [("float32", scann.ReorderType.FLOAT32),
   d = tempfile.mkdtemp(prefix=f"glove-index-{name}-")
   s.serialize(d)
   size = sum(os.path.getsize(os.path.join(d, f)) for f in os.listdir(d))
+  shutil.rmtree(d)
   s.set_num_threads(os.cpu_count())
   found, _ = s.search_batched_parallel(queries)
   print(f"  reorder {name:8}: {size / 2**20:6.1f} MiB on disk, "
