@@ -220,12 +220,11 @@ def check_killed_serialize(tmp):
     child.send_signal(signal.SIGKILL)
     child.wait()
     try:
-      t = load(d)
+      t = load(d, assets_backcompat_shim=False)
     except (RuntimeError, ValueError) as e:
       msg = str(e)
-      # Killed before anything was ever committed, or mid-commit.
-      assert ("incomplete" in msg or "scann_assets.pbtxt" in msg or
-              "No such file" in msg or "not opened" in msg), msg
+      # Killed mid-commit, or before the first serialize committed anything.
+      assert "incomplete" in msg or "No scann_assets.pbtxt" in msg, msg
       outcomes["error"] = outcomes.get("error", 0) + 1
       continue
     size = t.size()
@@ -237,8 +236,10 @@ def check_killed_serialize(tmp):
     ids, _ = t.search(q, leaves_to_search=40)
     assert all(i.startswith(tag) for i in ids), (size, ids)
     outcomes[tag] = outcomes.get(tag, 0) + 1
-  assert not [f for f in os.listdir(d) if f.startswith(".scann_staging")] or \
-      True  # a killed serialize may leave one; the next serialize removes it
+  # A killed serialize may leave a staging directory; the next one removes
+  # it.
+  builder(dataset(300), "tree_bf").build().serialize(d)
+  assert not [f for f in os.listdir(d) if f.startswith(".scann_staging")]
   return outcomes
 
 
