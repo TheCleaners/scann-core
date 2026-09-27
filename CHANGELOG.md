@@ -96,6 +96,18 @@ All notable changes to scann-core. Versions follow
 - Tests: `python_wrapper_edge_cases`; a failed-update case in
   `mutation_regressions`; Rust tests for repeated upsert ids, empty
   batches and spherical upserts.
+- `scann.tf`: upstream's TensorFlow `scann_ops` API (`builder`,
+  `create_searcher`, `search`/`search_batched`/`search_batched_parallel`
+  returning int32/float32 tensors) over the pybind searcher, through
+  `tf.numpy_function`. Works eagerly, in `tf.function` and in `tf.data`;
+  `serialize_to_module()`/`searcher_from_module()` raise
+  `NotImplementedError`. `import scann` still doesn't import TensorFlow.
+  Optional dependency: `pip install 'scann-core[tf]'` (TensorFlow ≥ 2.21,
+  the first whose protobuf range includes scann-core's).
+- `docs/tensorflow.md`: `scann.tf`, serving retrieval next to a TensorFlow
+  query model, and why there is no TensorFlow op.
+- Test `python_tf`, skipped when TensorFlow isn't installed; CI runs it on
+  Python 3.12 with `tensorflow-cpu`.
 
 ## 0.2.0-rc.1 (2026-09-27)
 

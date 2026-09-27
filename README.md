@@ -96,7 +96,8 @@ scann-core/
 ├── scripts/cross-aarch64.sh  aarch64 cross-build + tests under QEMU
 ├── Cargo.toml            the Rust crate (sources in rust/)
 ├── pyproject.toml        the Python package (scikit-build-core)
-└── docs/                 tutorial, benchmarks, API reference, algorithms, AVQ explainer
+└── docs/                 tutorial, benchmarks, API reference, algorithms, AVQ explainer,
+                          TensorFlow
 ```
 
 ## Building
@@ -270,7 +271,11 @@ CMake build, `build/python/` is the same package, importable directly:
 PYTHONPATH=build/python python -c "import scann; print(scann.__version__)"
 ```
 
-`scann.scann_ops` (the TensorFlow op) is not included.
+`scann.scann_ops` (the TensorFlow op) is not included. `scann.tf` wraps the
+searcher for TensorFlow code instead (eager mode, `tf.function`, `tf.data`;
+not SavedModels): `pip install 'scann-core[tf]'`, and see
+[docs/tensorflow.md](docs/tensorflow.md), which also covers serving
+alongside a TensorFlow model.
 
 #### Threads
 
@@ -350,13 +355,17 @@ runs everything that needs nothing beyond the build:
 | `python_rebalance_flow` | an index grown from empty with batched upserts, then retrained with `rebalance(config)` into a SOAR tree (the big-ann-benchmarks flow); the builder's SOAR options; a clear error for more leaves than points |
 | `python_serialization` | `serialize()`/`load_searcher()` round trips for 10 configs, also with every point deleted; re-serializing over another index leaves no stale files or docids; a re-serialize that fails or is killed (`SIGKILL`) midway leaves the old index, the new one, or a directory that fails to load, never a mix |
 | `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
+| `python_tf` | `scann.tf` returns exactly the pybind searcher's results as int32/float32 tensors, eagerly and in `tf.function` (unknown batch size, static shapes), from `tf.data` maps and concurrent threads; docids, padding, `serialize_to_module()` raising; `import scann` doesn't import TensorFlow. Skipped without TensorFlow |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
+`python_tf` also needs TensorFlow, and ctest reports it as skipped without
+it.
 [`scripts/python-versions.sh`](scripts/python-versions.sh) runs them on
 every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
-with interpreters from [uv](https://docs.astral.sh/uv/). It compiles the
+with interpreters from [uv](https://docs.astral.sh/uv/), and installs
+`tensorflow-cpu` for 3.12 so that `python_tf` runs there. It compiles the
 C++ library once and rebuilds only the Python module for each version.
 
 The comparison against the upstream wheel is separate, since it needs that
@@ -426,7 +435,9 @@ pointing at the wrong vectors.
 ## Intentional differences from upstream
 
 * No TensorFlow op (`scann.scann_ops`); `scann/__init__.py` doesn't import
-  TensorFlow.
+  TensorFlow. `scann.tf` offers the op's Python API without the op, and
+  can't be saved in a SavedModel; see [docs/tensorflow.md](docs/tensorflow.md)
+  for that and for serving next to a TensorFlow model.
 * CMake instead of Bazel; dependencies are upgraded to current releases.
 * The bug fixes above: some inputs upstream accepted (bad configs,
   inconsistent shapes, `batch_size = 0`) are now errors.
@@ -452,6 +463,9 @@ pointing at the wrong vectors.
   (GloVe by default, or any ann-benchmarks dataset).
 * [`docs/api_reference.md`](docs/api_reference.md): the config options and
   search parameters, and what they mean.
+* [`docs/tensorflow.md`](docs/tensorflow.md): using scann-core from
+  TensorFlow code (`scann.tf`), serving retrieval next to a TensorFlow
+  model, and why there is no TensorFlow op.
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
   hashing, anisotropic quantization, reordering.
 * [`docs/anisotropic_quantization_explained.md`](docs/anisotropic_quantization_explained.md):

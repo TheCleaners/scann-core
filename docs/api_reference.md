@@ -11,7 +11,8 @@ companion to that page's "why."
 Everything here reflects the code in this repository. scann-core's Python
 package exposes the same `scann.scann_ops_pybind` API as the upstream
 wheel; upstream's TensorFlow-op variant (`scann.scann_ops`) is not part of
-scann-core.
+scann-core. `scann.tf` wraps this API for TensorFlow code (same builder,
+searches returning tensors); see [docs/tensorflow.md](tensorflow.md).
 
 ## Quickstart
 
