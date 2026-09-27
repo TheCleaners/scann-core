@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -27,6 +31,7 @@
 
 #include "absl/flags/flag.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -338,6 +343,16 @@ Status TreeAHHybridResidual::BuildLeafSearchers(
     return FailedPreconditionError(
         "Cannot learn ckmeans when building a TreeAHHybridResidual with "
         "pre-training.");
+  }
+  // scann-core: the LUT16 kernels read 16 lookup-table entries per block;
+  // with fewer clusters they read past the table (heap overflow).
+  if (config.lookup_type() == AsymmetricHasherConfig::INT8_LUT16 &&
+      ah_model->num_clusters_per_block() !=
+          asymmetric_hashing2::kNumClustersPerBlockForLUT16) {
+    return InvalidArgumentError(absl::StrCat(
+        "lookup_type INT8_LUT16 requires num_clusters_per_block = ",
+        asymmetric_hashing2::kNumClustersPerBlockForLUT16, ", not ",
+        ah_model->num_clusters_per_block(), "."));
   }
   SCANN_ASSIGN_OR_RETURN(shared_ptr<const ChunkingProjection<float>> projector,
                          ah_model->GetProjection(config.projection()));
