@@ -93,12 +93,15 @@ jobs:
   # The API exercise under AddressSanitizer + UndefinedBehaviorSanitizer and
   # ThreadSanitizer (dependencies instrumented too).
   sanitizers:
-    name: sanitizer / ${{ matrix.sanitize }}
+    name: sanitizer / ${{ matrix.name }}
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        sanitize: ["address,undefined", "thread"]
+        include:
+          # `name` doubles as the ccache key, which can't contain commas.
+          - { name: asan-ubsan, sanitize: "address,undefined" }
+          - { name: tsan, sanitize: thread }
     steps:
       - uses: actions/checkout@v7
       - name: Install toolchain
@@ -107,7 +110,7 @@ jobs:
           sudo apt-get install -y -qq clang-22 cmake ninja-build
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: sanitize-${{ matrix.sanitize }}
+          key: sanitize-${{ matrix.name }}
           max-size: 2G
       - name: Configure and build
         env:
