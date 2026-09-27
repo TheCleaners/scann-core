@@ -112,6 +112,33 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
   - `dimensions_per_block` above the dimensionality;
   - residual quantization without a tree;
   - out-of-range `Pca`/`Truncate` dimensions.
+- Crashes and index corruption found by an audit of the C++ core (each
+  with a regression test; also affects upstream ScaNN):
+  - upserting a vector containing NaN or infinity into a tree index
+    crashed the process (segfault or heap overflow). Python and Rust
+    upserts now check every row before changing anything, so a batch that
+    fails on a later row no longer half-applies;
+  - building an index on data containing NaN or infinity aborted the
+    process; it is now an error naming the row. This includes loading an
+    index that contains such values;
+  - batched search accepted NaN/infinity queries and returned garbage; it
+    now rejects them, as single search already did;
+  - `leaves_to_search` on an int8 brute-force index segfaulted; it is now
+    ignored on indexes without partitioning;
+  - a failed `rebalance()` (e.g. fewer points than leaves after deletions,
+    or more children than points) left the index using freed memory, so the
+    next upsert or delete crashed or corrupted it. A failed retrain now
+    leaves the index unchanged;
+  - tree + bfloat16 brute-force indexes couldn't be mutated: every upsert or
+    delete failed after half-applying (size shrank, searches returned
+    out-of-range indices). More generally, a failed leaf mutation no longer
+    leaves a tree's size out of step with its leaves;
+  - mutating a tree with a PCA or TRUNCATE projection read out of bounds in
+    the health-stats collector (`avg_quantization_error` became inf). For
+    projected trees the quantization error isn't tracked (reported as 0);
+    partition sizes and imbalance stay correct.
+- Python `search_batched` with docids mapped short-result padding to
+  `docids[0]`; padded entries are now `None`.
 - Undefined behavior in the AVX2 LUT16 search kernel: its prefetch did
   pointer arithmetic on a null pointer for the last partition (UBSan). It
   only runs on CPUs without AVX-512, and only since scann-core uses the AVX2

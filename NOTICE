@@ -37,7 +37,34 @@ isn't a one-line change:
       or on single-CPU machines); query dimension errors state both
       dimensionalities; a partitioning config with max_spill_centers = 0 is
       rejected (the searcher built, then every search failed with a bare
-      RET_CHECK error).
+      RET_CHECK error); Initialize() rejects NaN/infinity in the dataset
+      (training a partitioner on it aborted on a QCHECK); batched search
+      rejects NaN/infinity queries (upstream checked single queries only);
+      leaves_to_search attaches tree parameters only for partitioned
+      configs (the int8 brute-force searcher misread them: segfault).
+  src/scann/brute_force/scalar_quantized_brute_force.cc
+      Searcher-specific parameters are dynamic_cast; parameters of another
+      type are ignored (upstream down_cast them unconditionally).
+  src/scann/brute_force/bfloat16_brute_force_mutator.cc
+      Mutator::Create() gives a searcher without docids an empty docid
+      collection, as the int8 mutator does. The bfloat16 leaves of a tree had
+      none, so every add, update or delete failed a RET_CHECK after partially
+      changing the index.
+  src/scann/partitioning/kmeans_tree_partitioner.cc
+      ResidualizeToFloat() and OrthogonalityAmplifiedTokenForDatapointBatched()
+      bounds-check partition tokens (upstream read out of bounds for a
+      NaN/infinity datapoint's token -1).
+  src/scann/utils/single_machine_retraining.cc
+      RetrainAndReindexSearcher() builds the new searcher from the
+      reconstructed dataset and no longer modifies the old one. Upstream
+      replaced the live searcher's dataset and docids before building, so
+      when retraining failed (e.g. fewer points than leaves) the kept
+      searcher's mutator used a freed docid collection (heap-use-after-free).
+  src/scann/base/health_stats_collector.h
+      Health statistics no longer compare unprojected datapoints with
+      projected (PCA/TRUNCATE) centroids (an out-of-bounds read on every
+      mutation of such a tree); for projected trees the quantization error
+      isn't tracked, as upstream's Initialize() already did.
   src/scann/hashes/internal/lut16_avx2.inc
       The "smart" prefetch of the next partition is skipped when there is
       none (the last partition): upstream did pointer arithmetic on the null
@@ -49,7 +76,10 @@ isn't a one-line change:
   src/scann/scann_ops/cc/scann_npy.cc
       Upsert() rejects batch_size < 1 (division by zero) and wrong-sized
       vectors (upstream failed with an uninformative RET_CHECK); Delete()
-      re-attaches the mutation thread pool after a retrain, like Upsert().
+      re-attaches the mutation thread pool after a retrain, like Upsert();
+      Upsert() validates every row (dimensionality, NaN/infinity, update
+      index range) before mutating, so a bad row neither crashes a tree
+      index nor leaves a batch half-applied.
   src/scann/scann_ops/cc/scann_npy.h, src/scann/scann_ops/cc/scann_npy.cc
       ScannNumpy holds a reader/writer lock: searches and size() shared,
       everything else exclusive, always with the GIL released. Upstream
@@ -68,6 +98,12 @@ isn't a one-line change:
       assignment slots. With spilling (SOAR) upstream passed them to the
       health-stats collector, which indexed its arrays at -1: heap
       corruption when updating or deleting points in a SOAR index.
+      Partition tokens from tokenizing a new vector are bounds-checked (a
+      NaN/infinity vector tokenizes to -1; upstream indexed
+      leaf_mutators_[-1]). RemoveDatapoint() removes from the base only
+      after the leaf removals succeed, and AddDatapoint() undoes its base
+      and leaf additions when a leaf add fails (upstream left size() out of
+      step with the leaves).
   src/scann/utils/bfloat16_helpers.h
       Bfloat16Decompress() shifts as unsigned; left-shifting a negative
       int16 is undefined behavior in C++17.
@@ -103,6 +139,8 @@ isn't a one-line change:
       a search overlapping an upsert or delete maps its results to the
       right docids. delete() on a searcher without docids raises the same
       ValueError as upsert() (upstream: AttributeError).
+      search_batched()/search_batched_parallel() map result padding (NaN
+      distance) to None instead of docids[0].
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 Everything else (build system, the C++ config builder in core/, Rust
