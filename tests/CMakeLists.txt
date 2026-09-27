@@ -72,4 +72,6 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_docid_bookkeeping python/test_docid_bookkeeping.py)
   # A deadlock between searches and updates would show up here as a hang.
   scann_add_python_test(python_concurrency python/test_concurrency.py)
+  # Grow from empty and retrain into a SOAR tree (google-research#2712).
+  scann_add_python_test(python_rebalance_flow python/test_rebalance_flow.py)
 endif()

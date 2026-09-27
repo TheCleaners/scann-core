@@ -54,6 +54,11 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
   the environment with the results.
 - The C++ API test also checks recall against an exact search it computes
   itself, and covers a tree with int8 (fixed-point) centers.
+- `python_rebalance_flow` test: an index grown from empty by batched
+  upserts, then retrained with `rebalance(config)` into a SOAR tree (the
+  flow of big-ann-benchmarks' ScaNN entry; see google-research#2712).
+  Also covers the builder's SOAR options, and the error for a tree with
+  more leaves than points.
 
 ### Changed
 - x86-64 results are no longer bit-identical to the upstream wheel, because

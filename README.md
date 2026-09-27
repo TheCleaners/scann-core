@@ -325,6 +325,7 @@ runs everything that needs nothing beyond the build:
 | `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input |
 | `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
 | `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |
+| `python_rebalance_flow` | an index grown from empty with batched upserts, then retrained with `rebalance(config)` into a SOAR tree (the big-ann-benchmarks flow); the builder's SOAR options; a clear error for more leaves than points |
 | `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 
