@@ -482,8 +482,14 @@ Status TreeXHybridMutator<Searcher>::InitializeCentroids() {
   auto pq = std::dynamic_pointer_cast<
       const KMeansTreePartitioner<typename Searcher::DataType>>(
       searcher_->query_tokenizer_);
-  SCANN_RET_CHECK(pq != nullptr)
-      << "Query partitioner must be a KMeansTreeLikePartitioner.";
+  // scann-core: a config error, not an internal one: a projection (PCA,
+  // TRUNCATE) or an upper tree wraps the k-means tree partitioner.
+  if (pq == nullptr || pd == nullptr)
+    return InvalidArgumentError(
+        "Incremental training (partitioning.incremental_training_config) "
+        "needs a plain k-means tree partitioner; it is not supported with a "
+        "partitioning projection (PCA/TRUNCATE) or an upper tree "
+        "(bottom_up_top_level_partitioner).");
   SCANN_RET_CHECK_EQ(pd->kmeans_tree(), pq->kmeans_tree())
       << "Centroids in database partitioner and query partitioner must be "
       << "identical";

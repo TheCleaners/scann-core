@@ -12,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+# scann-core (a derived work of ScaNN, not an official Google product);
+# see NOTICE.
 
 """Builder to create ScaNN searchers of various configurations."""
 
@@ -400,6 +404,13 @@ class ScannBuilder(object):
 
     tree_params = self.params.get("tree")
     if tree_params is not None:
+      # scann-core: ScaNN's incremental training needs a plain k-means tree;
+      # these configs used to fail only when the searcher was built.
+      if tree_params.get("incremental_threshold") is not None and (
+          projection is not None or "upper_tree" in self.params):
+        raise ValueError(
+            "tree(incremental_threshold=...) is not supported together with "
+            "pca(), truncate() or upper_tree()")
       tree_params["distance_measure"] = distance_measure
       upper_tree = self.params.get("upper_tree")
       if upper_tree is not None:

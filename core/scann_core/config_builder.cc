@@ -221,6 +221,13 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     if (t.incremental_threshold_points && t.incremental_threshold_fraction)
       return absl::InvalidArgumentError(
           "set at most one of incremental_threshold_points / _fraction");
+    // ScaNN's incremental training needs a plain k-means tree; Python builds
+    // these and the searcher then fails to initialize.
+    if ((t.incremental_threshold_points || t.incremental_threshold_fraction) &&
+        (!projection.empty() || upper_tree_))
+      return absl::InvalidArgumentError(
+          "tree: incremental_threshold is not supported together with "
+          "Pca(), Truncate() or UpperTree()");
     // ScaNN rejects most of these itself, but with num_leaves_to_search = 0
     // the searcher used to build and then fail every search.
     if (t.num_leaves < 1 || t.num_leaves_to_search < 1 ||

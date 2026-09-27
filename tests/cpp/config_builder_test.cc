@@ -281,6 +281,20 @@ int main(int argc, char** argv) {
   ExpectError("upper_tree num_leaves_to_search = 0", [&](ConfigBuilder& b) {
     b.Tree(tree).UpperTree({40, 0}).ScoreAh(ah);
   });
+  // Incremental training needs a plain k-means tree (Initialize fails).
+  auto incremental_tree = tree;
+  incremental_tree.incremental_threshold_fraction = 0.2;
+  ExpectError("incremental_threshold with pca", [&](ConfigBuilder& b) {
+    scann_core::PcaOptions p;
+    p.reduction_dim = 64;
+    b.Tree(incremental_tree).Pca(p).ScoreAh(ah);
+  });
+  ExpectError("incremental_threshold with truncate", [&](ConfigBuilder& b) {
+    b.Tree(incremental_tree).Truncate(64).ScoreAh(ah);
+  });
+  ExpectError("incremental_threshold with upper_tree", [&](ConfigBuilder& b) {
+    b.Tree(incremental_tree).UpperTree({40, 10}).ScoreAh(ah);
+  });
 
   // soar_lambda = 0.0 on the upper tree is kept (Python turns it into 1.5).
   {
