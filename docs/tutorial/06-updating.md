@@ -118,12 +118,17 @@ and drops out. Both take effect immediately, with no rebuild.
 Query 0's exact top 3 are 97478, 262700 and 846101 (part 1). This index
 missed 262700, a reminder that a 90%-recall index misses one result in ten.
 
-Three behaviours to know about:
+Four behaviours to know about:
 
 * `delete` raises `KeyError` for an unknown docid, and changes nothing if it
   does. A failed `upsert` (a vector of the wrong dimension, say) also leaves
   the index and its docids unchanged. In upstream ScaNN both could leave the
   docids pointing at the wrong vectors; scann-core fixed this.
+* A docid may appear only once per `upsert` call: a repeated one raises
+  `ValueError` before anything changes. (Upstream added the point twice but
+  mapped the docid once, leaving a copy that could never be deleted.) The
+  searcher also keeps its own copy of the docids list you pass to `build()`,
+  so your list isn't modified by later updates.
 * Saving an updated index (`serialize`) saves its current contents and
   docids. Loading it gives you the updated index, not the original build.
 * Updates and searches can come from different threads, with or without

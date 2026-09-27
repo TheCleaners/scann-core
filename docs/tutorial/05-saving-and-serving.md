@@ -41,6 +41,16 @@ loaded index gives identical results: True
 Loading involves no training: it's 0.5 s, mostly reading `dataset.npy`, and
 the loaded index returns exactly the same results.
 
+Saving over an index that's already in `index_dir` replaces it safely.
+`serialize` writes and syncs every file in a staging subdirectory first,
+then moves them into place, so a save interrupted by a crash or a kill
+leaves either the old index or a directory that refuses to load, never a
+mix of the two. Loading checks the files against each other and against
+the configuration, so a damaged or incomplete directory gives a clear error
+(upstream ScaNN could crash, or load mismatched files silently). The exact
+guarantee is in
+[api_reference.md](../api_reference.md#persistence-serialize--load_searcher).
+
 Only load index directories you trust: if the index has docids,
 `load_searcher` unpickles `scann_docids.pkl`, and unpickling can run
 arbitrary code.
@@ -159,5 +169,10 @@ Batching goes further: 294k QPS, against about 100k for threads. **On
 free-threaded Python** threads get as far as batching. **From C++ or Rust**
 there is no interpreter lock. [Part 7](07-cpp-and-rust.md) measures
 concurrent `search()` calls from Rust threads.
+
+**Serving next to a TensorFlow model:** export only the model's query
+encoder, and search its embeddings with scann-core in the same process.
+[tensorflow.md](../tensorflow.md) shows this, and `scann.tf`, which runs
+searches inside `tf.function`.
 
 **Next:** real collections change. [Part 6: Updating](06-updating.md).
