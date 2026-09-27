@@ -40,6 +40,15 @@ target_link_libraries(scann_core_mutation_regressions PRIVATE scann::core)
 add_test(NAME mutation_regressions COMMAND scann_core_mutation_regressions)
 set_tests_properties(mutation_regressions PROPERTIES TIMEOUT 900)
 
+# Damaged or inconsistent index directories (generated at run time) fail to
+# load with an error instead of crashing or loading garbage; all-deleted
+# and bfloat16-leaf trees round-trip; SerializeToDirectory replaces an index
+# in one commit.
+add_executable(scann_core_artifact_loading cpp/artifact_loading.cc)
+target_link_libraries(scann_core_artifact_loading PRIVATE scann::core)
+add_test(NAME artifact_loading COMMAND scann_core_artifact_loading)
+set_tests_properties(artifact_loading PROPERTIES TIMEOUT 900)
+
 # Regressions for raw config values that aborted the process, overflowed the
 # heap or hit undefined behavior (each must be an error now), and for valid
 # configs upstream failed to build (tree + PCA/TRUNCATE + non-residual AH).
@@ -103,6 +112,9 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_rebalance_flow python/test_rebalance_flow.py)
   # Mutating and rebalancing a tree with a PCA/TRUNCATE projection.
   scann_add_python_test(python_projection_mutation python/test_projection_mutation.py)
+  # serialize()/load_searcher() round trips, including an all-deleted tree,
+  # and re-serializing (also killed midway) over an existing index.
+  scann_add_python_test(python_serialization python/test_serialization.py)
   # Raw config values that crashed the process; builder checks.
   scann_add_python_test(python_config_validation python/test_config_validation.py)
 endif()

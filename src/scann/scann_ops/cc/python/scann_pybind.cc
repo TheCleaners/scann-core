@@ -45,7 +45,9 @@ PYBIND11_MODULE(scann_pybind, py_module, pybind11::mod_gil_not_used()) {
       .def("reserve", &research_scann::ScannNumpy::Reserve)
       .def("set_num_threads", &research_scann::ScannNumpy::SetNumThreads)
       .def("config", &research_scann::ScannNumpy::Config)
-      .def("serialize", &research_scann::ScannNumpy::Serialize)
+      .def("serialize", &research_scann::ScannNumpy::Serialize,
+           pybind11::arg("path"), pybind11::arg("relative_path") = false,
+           pybind11::arg("docids_pkl") = pybind11::none())
       .def("get_health_stats", &research_scann::ScannNumpy::GetHealthStats)
       .def("initialize_health_stats",
            &research_scann::ScannNumpy::InitializeHealthStats);

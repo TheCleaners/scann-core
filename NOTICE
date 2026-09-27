@@ -29,6 +29,7 @@ isn't a one-line change:
       ReshapeNNResult / ReshapeBatchedNNResult templates are const;
       default_num_neighbors() and NormalizeDatapoints() accessors (for the
       scann_npy.cc changes below).
+      Declares SerializeToDirectory() (see scann.cc).
   src/scann/scann_ops/cc/scann.cc
       Initialize() validates dataset shapes (n_points == 0 divided by zero;
       a size that isn't a multiple of n_points silently produced a wrong
@@ -51,6 +52,38 @@ isn't a one-line change:
       same for upserts; SearchBatchedParallel() reports a query
       dimensionality mismatch like SearchBatched() (upstream: a bare
       RET_CHECK failure).
+      LoadArtifacts() validates an index directory instead of trusting it
+      (upstream segfaulted, died of SIGFPE or LOG(FATAL), threw exceptions
+      out of Status-returning functions, or loaded mixed files silently):
+      it checks ranks and duplicates of assets, assets the config can't
+      use, row counts and dimensionalities across all assets, the
+      tokenization's length and token range (a bounds-checked loop instead
+      of vector::at, which threw), the partitioner's leaf count and center
+      dimensionality, the int8 multipliers, hashed codes against the AH
+      codebook, and SOAR assets (a null docid collection was passed to
+      DenseDataset). SerializeToDirectory() is new: it stages the files,
+      then commits them behind an "incomplete" marker manifest that
+      LoadArtifacts() rejects, so an interrupted re-serialize can't leave a
+      directory that loads a mix of two indexes (upstream's in-place
+      Serialize() wrote scann_config.pb first).
+  src/scann/utils/io_npy.h, src/scann/utils/io_npy.cc
+      NumpyToVectorAndShape() validates the .npy file (magic, version,
+      header length, header dict, dtype kind, size and byte order, C order,
+      shape overflow, data size against the file size) with its own parser
+      instead of cnpy::parse_npy_header, which read past its buffer for a
+      bad header length, threw std::out_of_range for dimensions above
+      INT_MAX, and ignored the dtype's kind and byte order.
+  src/scann/utils/io_oss_wrapper.cc
+      File writes are flushed and checked, so a failed write (e.g. a full
+      disk) is reported instead of being lost in the stream's destructor.
+  src/scann/tree_x_hybrid/tree_x_hybrid_smmd.cc,
+  src/scann/tree_x_hybrid/internal/utils.cc
+      A tree with every datapoint deleted reports empty datasets of the
+      right dimensionality (float, int8, bfloat16, hashed), so it
+      serializes to a directory that loads (upstream wrote none: "dataset,
+      hashed_dataset, ... are all null"); the bfloat16 datasets of
+      bfloat16 brute-force leaves are merged and serialized (upstream wrote
+      no data for such trees).
   src/scann/brute_force/scalar_quantized_brute_force.cc
       Searcher-specific parameters are dynamic_cast; parameters of another
       type are ignored (upstream down_cast them unconditionally).
@@ -105,10 +138,13 @@ isn't a one-line change:
       everything else exclusive, always with the GIL released. Upstream
       relied on the GIL, but searches release it, so a search could run
       concurrently with an upsert or delete; without the GIL, concurrent
-      upserts corrupted the index.
+      upserts corrupted the index. Serialize() goes through
+      SerializeToDirectory() and takes the pickled docids, which are
+      committed with the index.
   src/scann/scann_ops/cc/python/scann_pybind.cc
       The module declares mod_gil_not_used(), so free-threaded Python keeps
-      the GIL disabled when it is imported.
+      the GIL disabled when it is imported. serialize() has named
+      arguments and an optional docids_pkl.
   src/scann/utils/memory_logging.cc
       No longer dereferences empty std::optionals.
   src/scann/data_format/docid_collection.h
@@ -145,7 +181,10 @@ isn't a one-line change:
       LUT16 kernels read past the lookup table: heap overflow).
       TrainAsymmetricHashingModel() calls TrainingOptions::Validate(), as
       the tree-AH residual factory does; an invalid AH projection used to
-      end in a bare "SCANN_RET_CHECK failure" (null projector).
+      end in a bare "SCANN_RET_CHECK failure" (null projector). In
+      tree_ah_hybrid_residual.cc, a failure to create a query's lookup
+      table is returned as a Status (upstream called .value(), which
+      throws).
   src/scann/base/internal/single_machine_factory_impl.h,
   src/scann/base/internal/single_machine_factory_impl.cc
       The factory rejects binary distance measures (Hamming, ...) on
@@ -163,7 +202,9 @@ isn't a one-line change:
       tokenization distances its searchers don't support (LOG(FATAL)).
   src/scann/base/reordering_helper_factory.cc
       Fixed-point reordering rejects a NaN multiplier quantile and a missing
-      dataset (upstream: undefined behavior, null reference).
+      dataset (upstream: undefined behavior, null reference). So does exact
+      (float) reordering (upstream: LOG(FATAL) in ExactReorderingHelper's
+      constructor, e.g. for an index directory without dataset.npy).
   src/scann/utils/reduction.h
       The dense and sparse-dense accumulation loops compare remaining
       counts instead of advancing past the end of the input; for an empty
@@ -206,6 +247,11 @@ isn't a one-line change:
       listed twice (upstream added a new one twice but mapped it once,
       leaving a duplicate in docids). ScannSearcher keeps a copy of the
       docids list it is given (upstream mutated the caller's list).
+      serialize() passes the pickled docids to the C++ serialize, which
+      commits them with the index (upstream wrote scann_docids.pkl
+      afterwards, and left a stale one when the index had no docids);
+      load_searcher() rejects a scann_docids.pkl whose length doesn't match
+      the index.
   python/scann/scann_ops/py/scann_builder.py
       create_config() raises ValueError for tree(incremental_threshold=...)
       together with pca(), truncate() or upper_tree(), which the C++ side

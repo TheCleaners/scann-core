@@ -55,7 +55,8 @@ class ScannNumpy {
   SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
                 int pre_reorder_nn, int leaves, bool parallel = false,
                 int batch_size = 256);
-  void Serialize(std::string path, bool relative_path = false);
+  void Serialize(std::string path, bool relative_path = false,
+                 std::optional<std::string> docids_pkl = std::nullopt);
 
   vector<DatapointIndex> Upsert(
       std::vector<std::optional<DatapointIndex>> indices,

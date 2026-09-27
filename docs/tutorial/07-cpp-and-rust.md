@@ -197,14 +197,18 @@ threads busy, since two hyperthreads share each core.
 | build | `.build()` | `ScannInterface::Initialize(data, n, config, threads)` | `.build_index(&data)` or `ScannIndex::new(&data, dim, &config)` |
 | search one | `search(q, final_num_neighbors=...)` | `Search(q, &res, k, pre, leaves)` | `search(q, SearchOptions::k(..))` |
 | search many | `search_batched(qs)` / `search_batched_parallel(qs)` | `SearchBatched` / `SearchBatchedParallel` | `search_batched` / `search_batched_parallel` |
-| save / load | `serialize(dir)` / `load_searcher(dir)` | `Serialize(dir)`, then write the returned assets to `scann_assets.pbtxt`\* / `LoadArtifacts(dir)` + `Initialize` | `serialize(dir, relative)` / `ScannIndex::load(dir)` |
+| save / load | `serialize(dir)` / `load_searcher(dir)` | `SerializeToDirectory(dir)`\* / `LoadArtifacts(dir)` + `Initialize` | `serialize(dir, relative)` / `ScannIndex::load(dir)` |
 | update | `upsert(docids, vecs)`, `delete(docids)` | `GetMutator()` → `AddDatapoint` / `UpdateDatapoint` / `RemoveDatapoint` | `add`, `upsert(ids, vecs, batch)`, `delete(ids)` |
 | retrain | `rebalance()` | `RetrainAndReindex("")` | `rebalance(None)` |
 | distances | Python convention | internal (use `ReshapeNNResult`) | Python convention |
 
-\* `ScannInterface::Serialize` writes the index files and *returns* the
-`ScannAssets` list instead of writing it. The Python and Rust wrappers write
-it to `scann_assets.pbtxt`, which `LoadArtifacts(dir)` reads.
+\* `SerializeToDirectory` (scann-core) writes the index files and the
+`scann_assets.pbtxt` manifest that `LoadArtifacts(dir)` reads, staged and
+committed so that an interrupted save never leaves a directory that loads a
+mix of two indexes (the Python and Rust wrappers use it; see
+[`serialize`](../api_reference.md#persistence-serialize--load_searcher)).
+Upstream's `ScannInterface::Serialize` is still there: it writes the index
+files in place and *returns* the manifest for you to write.
 [`examples/cpp/quickstart.cc`](../../examples/cpp/quickstart.cc) shows the
 C++ side.
 

@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/utils/io_oss_wrapper.h"
 
@@ -27,7 +31,9 @@ OpenSourceableFileWriter::OpenSourceableFileWriter(absl::string_view filename)
     : fout_(std::string(filename), std::ofstream::binary) {}
 
 Status OpenSourceableFileWriter::Write(ConstSpan<char> bytes) {
-  if (!fout_.write(bytes.data(), bytes.size())) {
+  // scann-core: flush, so that a failed write (e.g. a full disk) is reported
+  // here; the destructor's implicit flush can't report it.
+  if (!fout_.write(bytes.data(), bytes.size()) || !fout_.flush()) {
     return InternalError("I/O error");
   }
   return OkStatus();
@@ -58,7 +64,7 @@ Status WriteProtobufToFile(absl::string_view filename,
   if (!fout) {
     return InternalError("Failed to open file " + std::string(filename));
   }
-  if (!message.SerializeToOstream(&fout)) {
+  if (!message.SerializeToOstream(&fout) || !fout.flush()) {
     return InternalError("Failed to write proto to " + std::string(filename));
   }
   return OkStatus();

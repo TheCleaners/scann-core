@@ -229,6 +229,13 @@ impl ScannIndex {
     /// [`load`](Self::load) and by Python's `scann_ops_pybind.load_searcher`.
     /// `relative_path` records asset paths relative to `dir`, so the
     /// directory can be moved.
+    ///
+    /// An index already in `dir` is replaced: the files are staged, then
+    /// renamed into place with the manifest last, so an interrupted
+    /// `serialize` leaves the old index, the new one, or a directory that
+    /// [`load`](Self::load) rejects, never a mix of both. Index files the
+    /// new index doesn't have (including a Python `scann_docids.pkl`) are
+    /// removed.
     pub fn serialize(&mut self, dir: impl AsRef<Path>, relative_path: bool) -> Result<()> {
         let dir = path_str(dir.as_ref())?;
         Ok(ffi::scann_serialize(self.inner.pin_mut(), dir, relative_path)?)

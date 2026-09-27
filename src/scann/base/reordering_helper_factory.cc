@@ -198,6 +198,12 @@ StatusOrHelper<T> ExactReorderingFactory(
     } else {
     }
   }
+  // scann-core: ExactReorderingHelper's constructor LOG(FATAL)s without a
+  // dataset (e.g. an index directory whose dataset.npy is missing).
+  if (!dataset)
+    return FailedPreconditionError(
+        "Exact reordering needs the original (float) dataset, which is "
+        "missing.");
   return {make_unique<ExactReorderingHelper<T>>(reordering_dist, dataset)};
 }
 

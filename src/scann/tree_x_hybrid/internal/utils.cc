@@ -169,6 +169,27 @@ void DeduplicateDatabaseSpilledResults(NNResultsVector* results,
 
 namespace tree_ah_utils_internal {
 
+namespace {
+
+// scann-core: CombineLeafDatasets returns nothing when the tree has no
+// datapoints, as if the leaves had no dataset of that kind, so an index with
+// every point deleted serialized without its data and couldn't be loaded.
+// Returns an empty dataset of the leaves' dimensionality if a leaf has one.
+template <typename T, typename F>
+shared_ptr<DenseDataset<T>> EmptyCombinedDataset(size_t n_leaves, F get) {
+  for (size_t i = 0; i < n_leaves; ++i) {
+    const DenseDataset<T>* leaf = get(i);
+    if (leaf != nullptr && leaf->dimensionality() > 0) {
+      auto result = make_shared<DenseDataset<T>>();
+      result->set_dimensionality(leaf->dimensionality());
+      return result;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
 StatusOr<SingleMachineFactoryOptions> FinishMergeAHLeafOptions(
     MutableSpan<SingleMachineFactoryOptions> leaf_opts,
     ConstSpan<std::vector<DatapointIndex>> datapoints_by_token,
@@ -204,6 +225,20 @@ StatusOr<SingleMachineFactoryOptions> FinishMergeAHLeafOptions(
   if (n_leaves >= 1) {
     opts.ah_codebook = leaf_opts[0].ah_codebook;
   }
+  // scann-core: an empty hashed dataset (one code per codebook block) for a
+  // tree with every point deleted; see EmptyCombinedDataset.
+  if (expected_size == 0 && opts.hashed_dataset == nullptr &&
+      opts.ah_codebook != nullptr &&
+      opts.ah_codebook->subspace_centers_size() > 0) {
+    opts.hashed_dataset = make_shared<DenseDataset<uint8_t>>();
+    opts.hashed_dataset->set_dimensionality(
+        opts.ah_codebook->subspace_centers_size());
+    if (spilling_mult > 1) {
+      opts.soar_hashed_dataset = make_shared<DenseDataset<uint8_t>>();
+      opts.soar_hashed_dataset->set_dimensionality(
+          opts.ah_codebook->subspace_centers_size());
+    }
+  }
   if (opts.hashed_dataset != nullptr && !opts.hashed_dataset->empty()) {
     std::string codebook_proto_str;
     leaf_opts[0].ah_codebook->SerializeToString(&codebook_proto_str);
@@ -225,6 +260,30 @@ StatusOr<SingleMachineFactoryOptions> FinishMergeAHLeafOptions(
       vector<int8_t> int8_dataset,
       (CombineLeafDatasets<int8_t>(expected_size, "INT8", datapoints_by_token,
                                    get_int8)));
+  if (int8_dataset.empty() && expected_size == 0) {
+    auto empty =
+        EmptyCombinedDataset<int8_t>(datapoints_by_token.size(), get_int8);
+    if (empty != nullptr) {
+      opts.pre_quantized_fixed_point = make_shared<PreQuantizedFixedPoint>();
+      opts.pre_quantized_fixed_point->fixed_point_dataset = std::move(empty);
+    }
+  }
+  // scann-core: bfloat16 brute-force leaves (upstream didn't merge them, so
+  // serialize() wrote a tree with bfloat16 leaves without any data).
+  const auto get_bf16 = [&](int leaf_idx) {
+    return leaf_opts[leaf_idx].bfloat16_dataset.get();
+  };
+  SCANN_ASSIGN_OR_RETURN(
+      vector<int16_t> bf16_dataset,
+      (CombineLeafDatasets<int16_t>(expected_size, "bfloat16",
+                                    datapoints_by_token, get_bf16)));
+  if (!bf16_dataset.empty()) {
+    opts.bfloat16_dataset = make_shared<DenseDataset<int16_t>>(
+        std::move(bf16_dataset), expected_size);
+  } else if (expected_size == 0) {
+    opts.bfloat16_dataset =
+        EmptyCombinedDataset<int16_t>(datapoints_by_token.size(), get_bf16);
+  }
   if (!int8_dataset.empty()) {
     opts.pre_quantized_fixed_point = make_shared<PreQuantizedFixedPoint>();
     opts.pre_quantized_fixed_point->fixed_point_dataset =

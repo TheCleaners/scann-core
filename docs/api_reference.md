@@ -396,6 +396,28 @@ searcher2 = scann.scann_ops_pybind.load_searcher(artifacts_dir)
 - `relative_path=True` records asset paths in the manifest relative to
   `artifacts_dir`, so the whole directory can be moved/copied intact.
   `relative_path=False` (default) records absolute paths.
+- **Re-serializing into a directory that holds an index replaces it.**
+  scann-core writes and fsyncs every file in a staging subdirectory
+  (`.scann_staging_*`) first, then replaces `scann_assets.pbtxt` with a
+  marker that makes loading fail, renames the new files into place
+  (removing index files the new index doesn't have, including a stale
+  `scann_docids.pkl`), and renames the new `scann_assets.pbtxt` in last.
+  Each rename is atomic; the whole sequence is not. If the process dies or
+  the disk fills during a `serialize()`, `load_searcher()` afterwards finds
+  either the complete old index, the complete new one, or a directory it
+  refuses to load ("This index directory is incomplete: serialize() was
+  interrupted ... Serialize the index again."), never a mix of the two.
+  Loading a directory *while* another process serializes into it isn't
+  covered (it may see the marker, or with bad timing a mix), and neither are
+  two concurrent `serialize()` calls into one directory. Upstream ScaNN
+  writes in place, config first, so an interrupted re-save there leaves a
+  new config next to old files.
+- `load_searcher` checks the files against each other and the config (dtypes,
+  shapes, row counts, token ranges, SOAR assets, codebook size) and raises
+  on any mismatch instead of crashing or loading garbage. This catches most
+  mixed directories left by other writers (e.g. an interrupted upstream
+  save), but not files swapped between two indexes of identical shape (same
+  config, dimensionality and size).
 - `load_searcher(artifacts_dir, assets_backcompat_shim=True)` does **not**
   need the original dataset or config to reload — everything required is
   reconstructed from the artifacts directory. If `scann_assets.pbtxt` is

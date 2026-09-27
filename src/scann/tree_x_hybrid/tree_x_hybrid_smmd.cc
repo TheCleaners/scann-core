@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -1137,6 +1141,10 @@ TreeXHybridSMMD<T>::ExtractSingleMachineFactoryOptions() {
     opts.ah_codebook = leaf_opts.ah_codebook;
     opts.hashed_dataset = leaf_opts.hashed_dataset;
   }
+  // scann-core: bfloat16 brute-force leaves; without this, serialize() wrote
+  // no data for them and the directory couldn't be loaded.
+  if (leaf_opts.bfloat16_dataset != nullptr)
+    opts.bfloat16_dataset = leaf_opts.bfloat16_dataset;
   if (leaf_opts.pre_quantized_fixed_point && !int8_multipliers.empty()) {
     opts.pre_quantized_fixed_point = make_shared<PreQuantizedFixedPoint>();
     opts.pre_quantized_fixed_point = leaf_opts.pre_quantized_fixed_point;
@@ -1165,6 +1173,20 @@ TreeXHybridSMMD<T>::SharedFloatDatasetIfNeeded() {
     datasets[i] = ptr_or->get();
   }
   SCANN_ASSIGN_OR_RETURN(const int dataset_size, this->DatasetSize());
+  // scann-core: with every datapoint deleted, the leaves' float datasets are
+  // empty, and upstream returned null as if no float dataset were needed.
+  // Serialize then wrote no dataset.npy, and the directory couldn't be
+  // loaded ("dataset, hashed_dataset, ... are all null"). Return an empty
+  // dataset of the right dimensionality instead.
+  if (dataset_size == 0) {
+    for (const auto* leaf_dataset : datasets) {
+      if (leaf_dataset != nullptr && leaf_dataset->dimensionality() > 0) {
+        auto empty = std::make_shared<DenseDataset<float>>();
+        empty->set_dimensionality(leaf_dataset->dimensionality());
+        return shared_ptr<const DenseDataset<float>>(std::move(empty));
+      }
+    }
+  }
   const auto get_dataset = [&](int leaf_idx) { return datasets[leaf_idx]; };
 
   SCANN_ASSIGN_OR_RETURN(

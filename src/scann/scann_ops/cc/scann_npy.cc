@@ -362,17 +362,20 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
           pybind11::array_t<float>(shape, dis.data())};
 }
 
-void ScannNumpy::Serialize(std::string path, bool relative_path) {
+void ScannNumpy::Serialize(std::string path, bool relative_path,
+                           std::optional<std::string> docids_pkl) {
+  // scann-core: written through SerializeToDirectory, so an interrupted
+  // serialize can't leave a directory that loads a mix of two indexes, and
+  // the docids are committed with the index (upstream's Python wrapper
+  // wrote them afterwards, and left a stale file when there were none).
+  std::vector<std::pair<std::string, std::string>> extra_files;
+  if (docids_pkl.has_value())
+    extra_files.emplace_back("scann_docids.pkl", *std::move(docids_pkl));
   pybind11::gil_scoped_release gil_release;
   absl::MutexLock lock(&mu_);
-  StatusOr<ScannAssets> assets_or = scann_.Serialize(path, relative_path);
-  RuntimeErrorIfNotOk("Failed to extract SingleMachineFactoryOptions: ",
-                      assets_or.status());
-  std::string assets_or_text;
-  google::protobuf::TextFormat::PrintToString(*assets_or, &assets_or_text);
-  RuntimeErrorIfNotOk("Failed to write ScannAssets proto: ",
-                      OpenSourceableFileWriter(path + "/scann_assets.pbtxt")
-                          .Write(assets_or_text));
+  RuntimeErrorIfNotOk(
+      "Failed to serialize searcher: ",
+      scann_.SerializeToDirectory(path, relative_path, extra_files));
 }
 
 pybind11::dict ScannNumpy::GetHealthStats() const {
