@@ -103,10 +103,47 @@ isn't a one-line change:
       leaf_mutators_[-1]). RemoveDatapoint() removes from the base only
       after the leaf removals succeed, and AddDatapoint() undoes its base
       and leaf additions when a leaf add fails (upstream left size() out of
-      step with the leaves).
+      step with the leaves). Incremental training on a projected tree or
+      one with an upper tree is a config error with a clear message
+      (upstream: a bare RET_CHECK failure).
   src/scann/utils/bfloat16_helpers.h
       Bfloat16Decompress() shifts as unsigned; left-shifting a negative
       int16 is undefined behavior in C++17.
+  src/scann/projection/chunking_projection.cc,
+  src/scann/projection/projection_factory.h
+      Chunking projections reject num_dims_per_block, num_blocks or
+      input_dim below 1 (upstream divided by zero, SIGFPE, or CHECK-failed,
+      aborting the process).
+  src/scann/utils/hash_leaf_helpers.cc,
+  src/scann/tree_x_hybrid/tree_ah_hybrid_residual.cc
+      INT8_LUT16 lookups require 16 clusters per block (with fewer, the
+      LUT16 kernels read past the lookup table: heap overflow).
+      TrainAsymmetricHashingModel() calls TrainingOptions::Validate(), as
+      the tree-AH residual factory does; an invalid AH projection used to
+      end in a bare "SCANN_RET_CHECK failure" (null projector).
+  src/scann/base/internal/single_machine_factory_impl.h,
+  src/scann/base/internal/single_machine_factory_impl.cc
+      The factory rejects binary distance measures (Hamming, ...) on
+      non-binary data, bfloat16 brute force with distances other than dot
+      product and squared L2 (both LOG(FATAL) upstream), and a brute-force
+      fixed_point_multiplier_quantile outside (0, 1] (undefined behavior
+      when quantizing tree leaves). For asymmetric hashing without residual
+      quantization, an AH projection without input_dim gets the dataset's
+      dimensionality, as the tree-AH residual factory already did with the
+      centers' (upstream failed to build a tree with a PCA/TRUNCATE
+      projection and non-residual AH, e.g. any squared L2 tree from the
+      Python builder's pca()/truncate()).
+  src/scann/partitioning/tree_brute_force_second_level_wrapper.cc
+      An upper tree with FIXED8 or BFLOAT16 scoring rejects query
+      tokenization distances its searchers don't support (LOG(FATAL)).
+  src/scann/base/reordering_helper_factory.cc
+      Fixed-point reordering rejects a NaN multiplier quantile and a missing
+      dataset (upstream: undefined behavior, null reference).
+  src/scann/utils/reduction.h
+      The dense and sparse-dense accumulation loops compare remaining
+      counts instead of advancing past the end of the input; for an empty
+      sparse datapoint that was arithmetic on a null pointer (undefined
+      behavior, flagged by UBSan).
   GCC portability (upstream built only with clang, which accepts these as
   extensions or never checks them; GCC >= 13 rejects them). None changes
   clang's results (verified: still bit-identical to upstream):
@@ -141,6 +178,10 @@ isn't a one-line change:
       ValueError as upsert() (upstream: AttributeError).
       search_batched()/search_batched_parallel() map result padding (NaN
       distance) to None instead of docids[0].
+  python/scann/scann_ops/py/scann_builder.py
+      create_config() raises ValueError for tree(incremental_threshold=...)
+      together with pca(), truncate() or upper_tree(), which the C++ side
+      can't build (upstream failed only when initializing the searcher).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 Everything else (build system, the C++ config builder in core/, Rust
