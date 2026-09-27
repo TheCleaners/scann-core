@@ -3,7 +3,11 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## 0.2.0-rc.2 (unreleased)
+## 0.2.0-rc.2 (2026-09-27)
+
+Second release candidate: fixes for the rest of the audit findings
+(loading and saving indexes, config values, mutation), `scann.tf`, and
+the first release on crates.io (rc.1 was published to PyPI only).
 
 ### Changed
 - Spherical partitioning (`tree(spherical=True)`) stores unit vectors: the
@@ -92,6 +96,10 @@ All notable changes to scann-core. Versions follow
   index past that are rejected too (Python and Rust).
 
 ### Added
+- Release: the crate is built and verified in parallel with the wheels,
+  with ccache; `cargo publish` only uploads. CI builds the packaged crate
+  (`cargo package`) on pushes to main, which catches files missing from the
+  crate before a release and fills that ccache.
 - C++: `ScannInterface::SerializeToDirectory(dir)` writes the whole index,
   manifest included, so that an interrupted save can't leave a mixed
   directory (see Fixed). The Python and Rust `serialize` use it.
