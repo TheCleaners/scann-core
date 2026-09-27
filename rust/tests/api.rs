@@ -17,8 +17,9 @@
 //! serialize/load, mutation, concurrency and error handling.
 
 use scann_core::{
-    AhOptions, ConfigBuilder, DistanceMeasure, IncrementalMode, Neighbors, Quantization,
-    ReorderOptions, ScannError, ScannIndex, SearchOptions, TreeOptions, UpperTreeOptions,
+    AhOptions, ConfigBuilder, DistanceMeasure, IncrementalMode, IncrementalThreshold, Neighbors,
+    PcaOptions, Quantization, ReorderOptions, ScannError, ScannIndex, SearchOptions, TreeOptions,
+    UpperTreeOptions,
 };
 use std::path::PathBuf;
 
@@ -427,4 +428,56 @@ fn builder_rejects_what_python_silently_ignores() {
     assert!(b().score_ah(ah()).reorder(ReorderOptions::new(K as u32 - 1)).build(1000).is_err());
     assert!(b().score_ah(ah().residual_quantization(true)).build(1000).is_err());
     assert!(b().tree(tree()).score_ah(ah()).build(1000).is_ok());
+    // Incremental training needs a plain k-means tree (Python builds these,
+    // then the index fails to initialize).
+    let incremental = || tree().incremental_threshold(IncrementalThreshold::Fraction(0.2));
+    assert!(b().tree(incremental()).pca(PcaOptions::reduction_dim(16)).score_ah(ah()).build(1000).is_err());
+    assert!(b().tree(incremental()).truncate(16).score_ah(ah()).build(1000).is_err());
+    assert!(b()
+        .tree(incremental())
+        .upper_tree(UpperTreeOptions::new(10, 2))
+        .score_ah(ah())
+        .build(1000)
+        .is_err());
+    assert!(b().tree(incremental()).score_ah(ah()).build(1000).is_ok());
+}
+
+/// Raw config values that aborted the process (SIGFPE, CHECK, LOG(FATAL))
+/// or overflowed the heap must be errors from `ScannIndex::new`.
+#[test]
+fn raw_config_values_are_errors_not_crashes() {
+    const N_SMALL: usize = 600;
+    let data = dataset(N_SMALL, DIM, 31);
+    let ah = ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM)
+        .score_ah(AhOptions::new(2))
+        .build(N_SMALL as u64)
+        .unwrap();
+    let tree_ah = ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM)
+        .tree(TreeOptions::new(12, 4).training_sample_size(N_SMALL as u64))
+        .score_ah(AhOptions::new(2))
+        .training_threads(1)
+        .build(N_SMALL as u64)
+        .unwrap();
+    let bf16 = ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM)
+        .score_brute_force(Quantization::Bfloat16)
+        .build(N_SMALL as u64)
+        .unwrap();
+    let edit = |config: &str, from: &str, to: &str| {
+        assert!(config.contains(from), "{from} not in {config}");
+        config.replacen(from, to, 1)
+    };
+    let cases = [
+        edit(&ah, "num_dims_per_block: 2", "num_dims_per_block: 0"),
+        edit(&ah, &format!("num_blocks: {}", DIM / 2), "num_blocks: 0"),
+        edit(&tree_ah, "num_clusters_per_block: 16", "num_clusters_per_block: 1"),
+        edit(&ah, "\"DotProductDistance\"", "\"BinaryHammingDistance\""),
+        edit(&bf16, "\"DotProductDistance\"", "\"L1Distance\""),
+        edit(&bf16, "\"DotProductDistance\"", "\"LimitedInnerProductDistance\""),
+    ];
+    for config in &cases {
+        match ScannIndex::new(&data, DIM, config) {
+            Err(ScannError::Scann(_)) => {}
+            other => panic!("expected an error for\n{config}\ngot {other:?}"),
+        }
+    }
 }

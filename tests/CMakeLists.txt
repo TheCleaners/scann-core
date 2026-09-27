@@ -39,6 +39,14 @@ target_link_libraries(scann_core_mutation_regressions PRIVATE scann::core)
 add_test(NAME mutation_regressions COMMAND scann_core_mutation_regressions)
 set_tests_properties(mutation_regressions PROPERTIES TIMEOUT 900)
 
+# Regressions for raw config values that aborted the process, overflowed the
+# heap or hit undefined behavior (each must be an error now), and for valid
+# configs upstream failed to build (tree + PCA/TRUNCATE + non-residual AH).
+add_executable(scann_core_config_regressions cpp/config_regressions.cc)
+target_link_libraries(scann_core_config_regressions PRIVATE scann::core)
+add_test(NAME config_regressions COMMAND scann_core_config_regressions)
+set_tests_properties(config_regressions PROPERTIES TIMEOUT 900)
+
 # A Python test run with this build's package on PYTHONPATH.
 function(scann_add_python_test name script)
   add_test(NAME ${name}
@@ -90,4 +98,6 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_rebalance_flow python/test_rebalance_flow.py)
   # Mutating and rebalancing a tree with a PCA/TRUNCATE projection.
   scann_add_python_test(python_projection_mutation python/test_projection_mutation.py)
+  # Raw config values that crashed the process; builder checks.
+  scann_add_python_test(python_config_validation python/test_config_validation.py)
 endif()
