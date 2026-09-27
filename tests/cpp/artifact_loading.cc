@@ -37,6 +37,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -55,6 +56,7 @@
 #include "scann/scann_ops/cc/scann.h"
 #include "scann/scann_ops/scann_assets.pb.h"
 #include "scann/utils/io_npy.h"
+#include "scann/utils/intrinsics/flags.h"
 #include "scann/utils/io_oss_wrapper.h"
 #include "scann/utils/types.h"
 #include "scann_core/config_builder.h"
@@ -579,6 +581,18 @@ void AllDeletedRoundTrip(const std::string& name, const Spec& spec) {
   while (s.n_points() > 0)
     if (!Ok((*m)->RemoveDatapoint(s.n_points() - 1), name + ": Remove"))
       return;
+  // Searching an index whose searched leaves are all empty: the AVX2 LUT16
+  // kernel divided by num_blocks = 0 (SIGFPE) for tree + AH.
+  const auto expect_no_results = [&](const ScannInterface& idx,
+                                     const std::string& what) {
+    Vec q = RandomData(1, dim, 13);
+    NNResultsVector res;
+    if (Ok(idx.Search(Ptr(q), &res, 5, -1, kLeaves), name + ": " + what) &&
+        !res.empty())
+      Fail(absl::StrCat(name, ": ", what, " returned ", res.size(),
+                        " results from an empty index"));
+  };
+  expect_no_results(s, "search after deleting everything");
   const std::string dir = (g_root / ("empty_" + name)).string();
   fs::create_directories(dir);
   if (!Ok(s.SerializeToDirectory(dir), name + ": serialize empty")) return;
@@ -589,6 +603,7 @@ void AllDeletedRoundTrip(const std::string& name, const Spec& spec) {
   if (!Ok(t.Initialize(*std::move(artifacts)), name + ": Initialize (empty)"))
     return;
   if (t.n_points() != 0) Fail(name + ": reloaded empty index isn't empty");
+  expect_no_results(t, "search of the reloaded empty index");
   auto tm = t.GetMutator();
   if (!Ok(tm.status(), name + ": GetMutator (reloaded)")) return;
   Vec added = RandomData(5, dim, 12);
@@ -711,6 +726,14 @@ void AtomicReserialize() {
 }  // namespace
 
 int main() {
+  // SCANN_TEST_FORCE_AVX2=1: the AVX2 kernels on a CPU that has AVX-512 too,
+  // as in api_exercise.
+  if (const char* e = std::getenv("SCANN_TEST_FORCE_AVX2"); e && *e == '1') {
+    research_scann::flags_internal::should_use_avx512 = false;
+    research_scann::flags_internal::should_use_avx512_vnni = false;
+    research_scann::flags_internal::should_use_amx = false;
+    std::printf("SCANN_TEST_FORCE_AVX2: AVX-512 kernels disabled\n");
+  }
   g_root = fs::temp_directory_path() /
            absl::StrCat("scann_artifact_loading_", ::getpid());
   fs::remove_all(g_root);

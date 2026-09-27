@@ -756,6 +756,10 @@ Status TreeAHHybridResidual::FindNeighborsBatchedImpl(
 
     for (size_t i = 0; i + 1 < data.size(); i++) {
       BatchedGlobalTopNData cur_data = data[i];
+      // scann-core: an empty leaf has nothing to score. If every searched leaf
+      // is empty (e.g. all points deleted), num_blocks is 0, which the AVX2
+      // kernel divides by (SIGFPE).
+      if (cur_data.leaf_size == 0) continue;
 
       asymmetric_hashing_internal::LUT16ArgsTopN<float> args;
       args.packed_dataset = cur_data.ah_data;
@@ -950,6 +954,8 @@ Status TreeAHHybridResidual::FindNeighborsInternal1(
     const bool parallel_enabled = false;
 
     auto pf_task = [&](size_t i) -> Status {
+      // scann-core: skip empty leaves, as in the batched path above.
+      if (center_data[i].second == 0) return OkStatus();
       SearchParameters leaf_params;
       const uint32_t token = centers_to_search[i].first;
 

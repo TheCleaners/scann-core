@@ -44,6 +44,12 @@ the first release on crates.io (rc.1 was published to PyPI only).
   `relative_path=False` wrote an index that didn't load (upstream too): the
   manifest recorded `dir/name`, which loading resolved to `dir/dir/name`.
   The recorded paths are now absolute.
+- Searching a tree + AH index where every searched leaf is empty (e.g.
+  after deleting all points) crashed with SIGFPE in the AVX2 LUT16 kernel,
+  which divided by the leaves' block count of 0 (upstream too; AVX-512 CPUs
+  use other kernels). Empty leaves are now skipped. New test:
+  `artifact_loading_avx2`; the CI sanitizer job also runs
+  `mutation_regressions`.
 - A tree with every point deleted serialized to a directory that couldn't
   be loaded; so did any tree with bfloat16 brute-force leaves.
 - A failed AH lookup table in a tree search threw from `.value()` instead

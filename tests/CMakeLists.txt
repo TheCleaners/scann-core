@@ -48,6 +48,9 @@ add_executable(scann_core_artifact_loading cpp/artifact_loading.cc)
 target_link_libraries(scann_core_artifact_loading PRIVATE scann::core)
 add_test(NAME artifact_loading COMMAND scann_core_artifact_loading)
 set_tests_properties(artifact_loading PROPERTIES TIMEOUT 900)
+add_test(NAME artifact_loading_avx2 COMMAND scann_core_artifact_loading)
+set_tests_properties(artifact_loading_avx2 PROPERTIES TIMEOUT 900
+  ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
 
 # Regressions for raw config values that aborted the process, overflowed the
 # heap or hit undefined behavior (each must be an error now), and for valid

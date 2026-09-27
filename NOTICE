@@ -186,7 +186,9 @@ isn't a one-line change:
       end in a bare "SCANN_RET_CHECK failure" (null projector). In
       tree_ah_hybrid_residual.cc, a failure to create a query's lookup
       table is returned as a Status (upstream called .value(), which
-      throws).
+      throws). The LUT16 searches skip empty leaves: when every searched
+      leaf was empty (e.g. all points deleted), num_blocks was 0, and the
+      AVX2 kernel divided by it (SIGFPE).
   src/scann/base/internal/single_machine_factory_impl.h,
   src/scann/base/internal/single_machine_factory_impl.cc
       The factory rejects binary distance measures (Hamming, ...) on
