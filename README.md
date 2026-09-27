@@ -72,8 +72,8 @@ scann-core/
 ├── src/scann/            upstream C++ sources (see NOTICE for the fixes)
 ├── core/scann_core/      scann-core additions: ConfigBuilder
 ├── python/               pybind11 module + upstream Python package
-├── rust/                 the Rust crate (cxx bridge, safe API, tests, examples)
-├── examples/             C++ example, FetchContent consumer template
+├── rust/                 the Rust crate (cxx bridge, safe API, tests)
+├── examples/             C++ and Rust quickstarts, FetchContent consumer template
 ├── third_party/          vendored: cnpy, googletest's gtest_prod.h
 ├── tests/                C++/Python tests, upstream-equivalence harness
 ├── benchmarks/           ann-benchmarks runner, GloVe by default (docs/benchmarks.md)
@@ -302,7 +302,7 @@ stats. It is `Send + Sync`: search takes `&self` and can run from many
 threads, and mutation takes `&mut self`. Shapes are validated before
 anything reaches C++, and every C++ error becomes a `ScannError`.
 
-Full program: [`rust/examples/quickstart.rs`](rust/examples/quickstart.rs).
+Full program: [`examples/rust/quickstart.rs`](examples/rust/quickstart.rs).
 
 The crate's manifest is the repository root's `Cargo.toml`. Built on its own
 (`cargo build`, or as a dependency), its build script builds the C++ library

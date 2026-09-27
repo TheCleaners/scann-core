@@ -48,6 +48,7 @@ include = [
   "/src/**",
   "/third_party/**",
   "/rust/**",
+  "/examples/rust/**",
   "/docs/tutorial/code/rust/glove.rs",
 ]
 
@@ -72,7 +73,7 @@ path = "rust/tests/equivalence.rs"
 
 [[example]]
 name = "quickstart"
-path = "rust/examples/quickstart.rs"
+path = "examples/rust/quickstart.rs"
 
 # The tutorial's Rust program (docs/tutorial/07-cpp-and-rust.md).
 [[example]]
