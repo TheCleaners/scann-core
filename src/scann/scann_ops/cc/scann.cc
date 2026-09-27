@@ -365,8 +365,19 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
   DimensionIndex n_dim = kInvalidDimension;
   if (config_.input_output().pure_dynamic_config().has_dimensionality())
     n_dim = config_.input_output().pure_dynamic_config().dimensionality();
-  return Initialize(std::make_tuple(
-      config_, InitDataset(dataset, n_points, n_dim), std::move(opts)));
+  shared_ptr<DenseDataset<float>> ds = InitDataset(dataset, n_points, n_dim);
+  // scann-core: spherical partitioning needs a dataset tagged unit-L2-norm
+  // (CreateSearcher sets the tag), but upstream never normalized it. Points
+  // upserted later were then normalized in some configurations (where the
+  // tag reached the stored float data) and stored as given in others, while
+  // the original points were stored as given: the same vector scored
+  // differently depending on when it was added. Store unit vectors
+  // throughout: normalize the dataset here and upserts in
+  // NormalizeIfSpherical.
+  if (ds && IsSphericalPartitioning(config_))
+    for (size_t i = 0; i < ds->size(); ++i)
+      NormalizeForSphericalPartitioning(ds->mutable_data(i));
+  return Initialize(std::make_tuple(config_, std::move(ds), std::move(opts)));
 }
 
 Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
@@ -485,6 +496,17 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   scann_->MaybeReleaseDataset();
   SCANN_RETURN_IF_ERROR(scann_->InitializeHealthStats());
   return config_;
+}
+
+bool ScannInterface::NormalizesDatapoints() const {
+  return IsSphericalPartitioning(config_);
+}
+
+void ScannInterface::NormalizeDatapoints(MutableSpan<float> rows) const {
+  if (!NormalizesDatapoints() || dimensionality_ == 0) return;
+  for (size_t begin = 0; begin + dimensionality_ <= rows.size();
+       begin += dimensionality_)
+    NormalizeForSphericalPartitioning(rows.subspan(begin, dimensionality_));
 }
 
 Status ScannInterface::Search(const DatapointPtr<float> query,

@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_UTILS_SINGLE_MACHINE_RETRAINING_H_
 #define SCANN_UTILS_SINGLE_MACHINE_RETRAINING_H_
@@ -27,6 +31,16 @@ StatusOrSearcherUntyped RetrainAndReindexSearcher(
     UntypedSingleMachineSearcherBase* searcher,
     absl::Mutex* searcher_pointer_mutex, const ScannConfig& config,
     shared_ptr<ThreadPool> parallelization_pool = nullptr);
+
+// scann-core: spherical partitioning (PartitioningConfig::SPHERICAL) trains
+// on, and tags its dataset as, unit-L2-norm vectors. These keep an index's
+// vectors actually unit-norm wherever they enter it (build, upsert,
+// retraining), so vectors added at different times are stored alike.
+bool IsSphericalPartitioning(const ScannConfig& config);
+// Scales `v` to unit L2 norm, as NormalizeUnitL2 (utils/datapoint_utils.h)
+// does, unless it is zero, non-finite or already unit-norm to within float
+// rounding (then it is left bit-for-bit alone).
+void NormalizeForSphericalPartitioning(MutableSpan<float> v);
 
 }
 

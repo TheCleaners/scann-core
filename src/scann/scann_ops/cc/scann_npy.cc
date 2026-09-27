@@ -120,31 +120,44 @@ vector<DatapointIndex> ScannNumpy::Upsert(
   DatapointIndex n = vecs.size();
   vector<DatapointIndex> result;
 
+  // scann-core: an index with spherical partitioning stores unit vectors;
+  // see ScannInterface::NormalizeDatapoints.
+  const size_t dim = scann_.dimensionality();
+  vector<float> normalized;
+  if (scann_.NormalizesDatapoints()) {
+    normalized.resize(vecs.size() * dim);
+    for (size_t row : Seq(vecs.size()))
+      std::copy(vecs[row].data(), vecs[row].data() + dim,
+                normalized.begin() + row * dim);
+    scann_.NormalizeDatapoints(MakeMutableSpan(normalized));
+  }
+  auto row_ptr = [&](size_t row) {
+    return MakeDatapointPtr(
+        normalized.empty() ? vecs[row].data() : normalized.data() + row * dim,
+        dim);
+  };
+
   for (size_t b : Seq(DivRoundUp(n, batch_size))) {
     size_t begin = batch_size * b;
     size_t bs = std::min<DatapointIndex>(n - begin, batch_size);
     DenseDataset<float> ds;
     for (size_t i : Seq(bs))
       RuntimeErrorIfNotOk("Error appending datapoint.",
-                          ds.Append(MakeDatapointPtr(vecs[begin + i].data(),
-                                                     vecs[begin + i].size())));
+                          ds.Append(row_ptr(begin + i)));
     auto precomputed = mutator->ComputePrecomputedMutationArtifacts(
         ds, scann_.parallel_query_pool());
 
     for (size_t i : Seq(bs)) {
       auto& index = indices[begin + i];
-      auto& vec = vecs[begin + i];
       auto mo = MutationOptions{.precomputed_mutation_artifacts =
                                     precomputed[i].get()};
       if (!index.has_value()) {
         result.push_back(ValueOrRuntimeError(
-            mutator->AddDatapoint(MakeDatapointPtr(vec.data(), vec.size()), "",
-                                  mo),
+            mutator->AddDatapoint(row_ptr(begin + i), "", mo),
             "Failed to add datapoint: "));
       } else {
         result.push_back(ValueOrRuntimeError(
-            mutator->UpdateDatapoint(MakeDatapointPtr(vec.data(), vec.size()),
-                                     index.value(), mo),
+            mutator->UpdateDatapoint(row_ptr(begin + i), index.value(), mo),
             "Failed to update datapoint: "));
       }
     }

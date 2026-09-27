@@ -18,6 +18,7 @@
 
 #include "scann/utils/single_machine_retraining.h"
 
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -28,6 +29,7 @@
 #include "scann/base/single_machine_factory_options.h"
 #include "scann/base/single_machine_factory_scann.h"
 #include "scann/data_format/dataset.h"
+#include "scann/distance_measures/one_to_one/l2_distance.h"
 #include "scann/oss_wrappers/scann_down_cast.h"
 #include "scann/oss_wrappers/scann_status.h"
 #include "scann/oss_wrappers/scann_threadpool.h"
@@ -74,6 +76,21 @@ StatusOrSearcherUntyped RetrainAndReindexSearcherImpl(
         "RetrainAndReindexSearcher only supports float searchers.");
   }
 
+  // scann-core: spherical partitioning requires a dataset tagged unit-norm.
+  // Only some searchers' reconstructed datasets carry the tag (e.g. not
+  // float brute-force leaves, or bfloat16/int8 reordering), and the others
+  // failed here with "Input vectors must be unit L2-norm". Normalize a copy
+  // (a no-op for rows that already are unit-norm) and tag it.
+  if (IsSphericalPartitioning(config) && dataset->normalization() != UNITL2NORM) {
+    auto normalized = std::make_shared<DenseDataset<float>>(dataset->Copy());
+    for (size_t i = 0; i < normalized->size(); ++i)
+      NormalizeForSphericalPartitioning(normalized->mutable_data(i));
+    normalized->set_normalization_tag(UNITL2NORM);
+    new_dataset = std::dynamic_pointer_cast<TypedDataset<T>>(
+        std::shared_ptr<DenseDataset<float>>(normalized));
+    dataset = std::move(normalized);
+  }
+
   StripPreprocessedArtifacts(&config);
   SingleMachineFactoryOptions opts;
   opts.parallelization_pool = std::move(parallelization_pool);
@@ -88,6 +105,21 @@ StatusOrSearcherUntyped RetrainAndReindexSearcherImpl(
   result->docids_ = dataset->docids();
   result->retraining_requires_dataset_ = false;
   return result;
+}
+
+bool IsSphericalPartitioning(const ScannConfig& config) {
+  return config.has_partitioning() &&
+         config.partitioning().partitioning_type() ==
+             PartitioningConfig::SPHERICAL;
+}
+
+void NormalizeForSphericalPartitioning(MutableSpan<float> v) {
+  const double squared_norm = SquaredL2Norm(MakeDatapointPtr(v.data(), v.size()));
+  if (squared_norm == 0 || !std::isfinite(squared_norm) ||
+      std::abs(squared_norm - 1) <= 1e-5)
+    return;
+  const double multiplier = 1.0 / sqrt(squared_norm);
+  for (float& x : v) x *= multiplier;
 }
 
 StatusOrSearcherUntyped RetrainAndReindexSearcher(

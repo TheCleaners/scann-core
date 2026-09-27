@@ -79,6 +79,13 @@ class ScannInterface {
 
   StatusOr<ScannConfig> RetrainAndReindex(const string& config);
 
+  // scann-core: an index with spherical partitioning stores unit vectors
+  // (Initialize normalizes the dataset). These normalize the vectors of an
+  // upsert the same way; ScannNumpy::Upsert and the Rust bindings use them,
+  // and C++ callers that mutate through GetMutator() should too.
+  bool NormalizesDatapoints() const;
+  void NormalizeDatapoints(MutableSpan<float> rows) const;
+
   Status Search(const DatapointPtr<float> query, NNResultsVector* res,
                 int final_nn, int pre_reorder_nn, int leaves) const;
   Status SearchBatched(const DenseDataset<float>& queries,

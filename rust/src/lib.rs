@@ -509,6 +509,8 @@ impl TreeOptions {
         self.training_iterations = n;
         self
     }
+    /// Spherical k-means. The index then stores unit vectors: rows are
+    /// L2-normalized at build time and on upsert.
     pub fn spherical(mut self, v: bool) -> Self {
         self.spherical = v;
         self

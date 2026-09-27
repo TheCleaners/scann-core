@@ -238,6 +238,16 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
           "upsert: vector at row ", i / dim,
           " contains NaN or infinity; ScaNN only supports finite values"));
 
+  // An index with spherical partitioning stores unit vectors; see
+  // ScannInterface::NormalizeDatapoints.
+  std::vector<float> normalized;
+  const float* rows = vectors.data();
+  if (idx.NormalizesDatapoints()) {
+    normalized.assign(vectors.begin(), vectors.end());
+    idx.NormalizeDatapoints(research_scann::MakeMutableSpan(normalized));
+    rows = normalized.data();
+  }
+
   const bool attach_pool = batch_size > 1;
   auto* mutator = GetMutator(idx);
   if (attach_pool) mutator->set_mutation_threadpool(idx.parallel_query_pool());
@@ -246,13 +256,12 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
   for (size_t begin = 0; begin < n; begin += batch_size) {
     const size_t bs = std::min<size_t>(n - begin, batch_size);
     DenseDataset<float> ds(
-        std::vector<float>(vectors.data() + begin * dim,
-                           vectors.data() + (begin + bs) * dim),
+        std::vector<float>(rows + begin * dim, rows + (begin + bs) * dim),
         bs);
     auto precomputed =
         mutator->ComputePrecomputedMutationArtifacts(ds, idx.parallel_query_pool());
     for (size_t i = 0; i < bs; ++i) {
-      DatapointPtr<float> dptr(nullptr, vectors.data() + (begin + i) * dim, dim, dim);
+      DatapointPtr<float> dptr(nullptr, rows + (begin + i) * dim, dim, dim);
       research_scann::UntypedSingleMachineSearcherBase::MutationOptions mo{.precomputed_mutation_artifacts =
                                              precomputed[i].get()};
       const int64_t id = ids[begin + i];

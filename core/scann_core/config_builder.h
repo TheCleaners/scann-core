@@ -66,6 +66,9 @@ struct TreeOptions {
   int64_t training_sample_size = 100000;
   int32_t min_partition_size = 50;
   int32_t training_iterations = 12;
+  // Spherical k-means. ScannInterface then stores unit vectors: it
+  // normalizes the dataset in Initialize(), and upserts through
+  // NormalizeDatapoints() (the Python and Rust bindings do this).
   bool spherical = false;
   bool quantize_centroids = false;
   // Python's default is random initialization. Note that upstream's random
