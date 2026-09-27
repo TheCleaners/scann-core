@@ -111,6 +111,13 @@ class ScannInterface {
 
   size_t n_points() const { return scann_->DatasetSize().value(); }
   DimensionIndex dimensionality() const { return dimensionality_; }
+  // scann-core: how many neighbors a search with final_nn = -1 returns per
+  // query (fewer if the index has fewer points).
+  int default_num_neighbors() const {
+    return config_.has_exact_reordering()
+               ? scann_->default_post_reordering_num_neighbors()
+               : scann_->default_pre_reordering_num_neighbors();
+  }
   const ScannConfig* config() {
     if (scann_->config().has_value()) config_ = *scann_->config();
     return &config_;

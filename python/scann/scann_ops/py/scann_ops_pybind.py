@@ -19,6 +19,7 @@
 
 """Wrapper around pybind module that provides convenience functions for instantiating ScaNN searchers."""
 
+import collections
 import contextlib
 import os
 import pickle as pkl
@@ -91,7 +92,9 @@ class ScannSearcher(object):
   def __init__(self, searcher, docids=None):
     self.searcher = searcher
     # Simple docid mapping.
-    self.docids = docids
+    # scann-core: a copy. Upstream kept the caller's list, which upsert()
+    # then appended to and delete() reordered.
+    self.docids = None if docids is None else list(docids)
     self._docids_lock = _ReadWriteLock()
     if docids is not None:
       self.docid_to_id = {docid: id for id, docid in enumerate(docids)}
@@ -206,6 +209,12 @@ class ScannSearcher(object):
     if self.docids is None:
       raise ValueError("Cannot upsert because docids have not been specified "
                        "when initializing.")
+    # scann-core: upstream accepted a docid listed twice. A new one was added
+    # to the index twice but mapped only once, leaving a duplicate in docids;
+    # an existing one was updated twice. Reject both, as delete() does.
+    if len(set(docids)) != len(docids):
+      repeated = [d for d, n in collections.Counter(docids).items() if n > 1]
+      raise ValueError(f"Docids to upsert are not unique: {repeated[:10]}")
     with self._docids_lock.write():
       indices = [self.docid_to_id.get(docid) for docid in docids]
       # scann-core: update the docid bookkeeping only once the index has

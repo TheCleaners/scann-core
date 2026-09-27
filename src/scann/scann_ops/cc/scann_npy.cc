@@ -57,6 +57,11 @@ T ValueOrRuntimeError(StatusOr<T> status_or, const char* prefix) {
   return status_or.value();
 }
 
+// scann-core: the most datapoints an index can hold. Indices are 32-bit and
+// kInvalidDatapointIndex (the largest) is reserved, so the last valid index
+// is kInvalidDatapointIndex - 1.
+constexpr uint64_t kMaxDatapoints = kInvalidDatapointIndex;
+
 ScannNumpy::ScannNumpy(const std::string& artifacts_dir,
                        const std::string& scann_assets_pbtxt) {
   auto status_or =
@@ -70,6 +75,13 @@ ScannNumpy::ScannNumpy(const np_row_major_arr<float>& np_dataset,
                        absl::string_view config, int training_threads) {
   if (np_dataset.ndim() != 2)
     throw std::invalid_argument("Dataset input must be two-dimensional");
+  // scann-core: datapoint indices are 32-bit. Upstream passed the row count
+  // on truncated to 32 bits, building an index over the wrong number of
+  // rows (or failing with an unrelated shape error).
+  if (static_cast<uint64_t>(np_dataset.shape()[0]) > kMaxDatapoints)
+    throw std::invalid_argument(absl::StrCat(
+        "Dataset has ", np_dataset.shape()[0], " rows; ScaNN supports at most ",
+        kMaxDatapoints, " (datapoint indices are 32-bit)"));
   ConstSpan<float> dataset(np_dataset.data(), np_dataset.size());
   pybind11::gil_scoped_release gil_release;
   RuntimeErrorIfNotOk("Error initializing searcher: ",
@@ -94,6 +106,14 @@ vector<DatapointIndex> ScannNumpy::Upsert(
   // batch left the earlier rows applied, so the index and the caller's docid
   // bookkeeping diverged.
   const DatapointIndex n_points = scann_.n_points();
+  const uint64_t n_adds =
+      std::count_if(indices.begin(), indices.end(),
+                    [](const auto& index) { return !index.has_value(); });
+  if (n_points + n_adds > kMaxDatapoints)
+    throw std::invalid_argument(absl::StrCat(
+        "Upsert would grow the index to ", n_points + n_adds,
+        " datapoints; ScaNN supports at most ", kMaxDatapoints,
+        " (datapoint indices are 32-bit)"));
   for (size_t row : Seq(vecs.size())) {
     const auto& vec = vecs[row];
     if (vec.size() != scann_.dimensionality())
@@ -286,6 +306,28 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
                           int batch_size) {
   if (queries.ndim() != 2)
     throw std::invalid_argument("Queries must be in two-dimensional array");
+
+  // scann-core: upstream turned zero queries into a dataset of
+  // dimensionality 0 and failed with a misleading dimensionality error (or a
+  // bare RET_CHECK failure from the parallel path). Return empty results
+  // shaped like a normal call's, (0, k), after the same argument checks.
+  if (queries.shape()[0] == 0) {
+    if (final_nn == 0)
+      throw std::invalid_argument("final_num_neighbors must be > 0");
+    int k;
+    {
+      pybind11::gil_scoped_release gil_release;
+      absl::ReaderMutexLock lock(&mu_);
+      if (static_cast<size_t>(queries.shape()[1]) != scann_.dimensionality())
+        throw std::invalid_argument(absl::StrCat(
+            "Queries have dimensionality ", queries.shape()[1],
+            ", but the dataset has ", scann_.dimensionality()));
+      k = final_nn > 0 ? final_nn : scann_.default_num_neighbors();
+    }
+    std::vector<long> shape = {0, static_cast<long>(k)};
+    return {pybind11::array_t<DatapointIndex>(shape),
+            pybind11::array_t<float>(shape)};
+  }
 
   vector<float> queries_vec(queries.data(), queries.data() + queries.size());
   auto query_dataset =

@@ -546,7 +546,12 @@ Status ScannInterface::SearchBatchedParallel(const DenseDataset<float>& queries,
                                              MutableSpan<NNResultsVector> res,
                                              int final_nn, int pre_reorder_nn,
                                              int leaves, int batch_size) const {
-  SCANN_RET_CHECK_EQ(queries.dimensionality(), dimensionality_);
+  // scann-core: the same error as SearchBatched; upstream failed with a bare
+  // "SCANN_RET_CHECK_EQ failure".
+  if (queries.dimensionality() != dimensionality_)
+    return InvalidArgumentError(
+        absl::StrCat("Queries have dimensionality ", queries.dimensionality(),
+                     ", but the dataset has ", dimensionality_));
   if (batch_size < 1)
     return InvalidArgumentError(
         absl::StrCat("batch_size must be >= 1, got ", batch_size));

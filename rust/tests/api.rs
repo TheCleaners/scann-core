@@ -341,6 +341,52 @@ fn errors_not_crashes() {
     assert!(all.indices.len() <= 500 && all.indices.iter().all(|&i| i < 500));
 }
 
+#[test]
+fn repeated_upsert_ids_are_rejected_and_empty_batches_are_empty() {
+    let data = dataset(200, DIM, 13);
+    let mut index = exact_l2_index(&data);
+    let extra = dataset(3, DIM, 14);
+    let before = index.search_batched(&data[..20 * DIM], SearchOptions::default()).unwrap();
+
+    // The same index twice: rejected before anything changes, also when a
+    // new point comes first.
+    for ids in [[Some(3), Some(3), None], [None, Some(7), Some(7)]] {
+        assert!(is_invalid_argument(index.upsert(&ids, &extra, 1)));
+        assert!(is_invalid_argument(index.upsert(&ids, &extra, 3)));
+        assert_eq!(index.len(), 200);
+        assert_eq!(index.search_batched(&data[..20 * DIM], SearchOptions::default()).unwrap(), before);
+    }
+    // Several new points in one call are fine.
+    assert_eq!(index.upsert(&[None, Some(3), None], &extra, 2).unwrap(), vec![200, 3, 201]);
+    assert_eq!(index.len(), 202);
+
+    // Zero queries: zero results, not an error.
+    assert!(index.search_batched(&[], SearchOptions::k(5)).unwrap().is_empty());
+    assert!(index.search_batched_parallel(&[], SearchOptions::default(), 4).unwrap().is_empty());
+}
+
+#[test]
+fn spherical_tree_stores_unit_vectors() {
+    // Rows scaled away from unit norm: a spherical tree stores them
+    // normalized, both at build time and when upserted.
+    let data: Vec<f32> = dataset(600, DIM, 15).iter().map(|x| x * 3.0).collect();
+    let config = ConfigBuilder::new(K, DistanceMeasure::SquaredL2, DIM)
+        .tree(TreeOptions::new(12, 4).training_sample_size(600).spherical(true))
+        .score_brute_force(Quantization::Int8)
+        .build(600)
+        .unwrap();
+    let mut index = ScannIndex::new(&data, DIM, &config).unwrap();
+    assert_eq!(index.upsert(&[None], row(&data, 3), 1).unwrap(), vec![600]);
+    let all = SearchOptions::k(601).pre_reorder_num_neighbors(700).leaves_to_search(12);
+    let res = index.search(row(&data, 3), all).unwrap();
+    let dist = |i: u32| res.distances[res.indices.iter().position(|&x| x == i).unwrap()];
+    // The query is 3x a unit vector, so its distance to that unit vector is
+    // (3 - 1)^2 = 4, for the original and the copy alike.
+    for i in [3, 600] {
+        assert!((dist(i) - 4.0).abs() < 0.1, "index {i}: {}", dist(i));
+    }
+}
+
 fn is_non_finite_error<T: std::fmt::Debug>(r: Result<T, ScannError>) -> bool {
     matches!(&r, Err(ScannError::Scann(m)) if m.contains("NaN or infinity"))
 }

@@ -52,10 +52,14 @@ StatusOrSearcherUntyped RetrainAndReindexSearcherImpl(
       down_cast<SingleMachineSearcherBase<T>*>(untyped_searcher);
 
   SCANN_ASSIGN_OR_RETURN(auto dataset, searcher->ReconstructFloatDataset());
+  // scann-core: say what this means for the caller. Upstream's message
+  // ("... dataset() must not return null") named an internal accessor.
   if (!dataset) {
     return FailedPreconditionError(
-        "Searchers passed to RetrainAndReindexSearcher must contain the "
-        "original, uncompressed dataset, i.e. dataset() must not return null.");
+        "Retraining (rebalance) needs the datapoints' float values, and this "
+        "searcher keeps only quantized data (e.g. int8 or bfloat16 brute "
+        "force, or asymmetric hashing without reordering), so it cannot be "
+        "retrained. Searchers with float brute force or with reordering can.");
   }
   // scann-core: upstream ran RetrainAndReindexFixup on the live searcher here,
   // replacing its dataset_ and docids_ with the reconstructed dataset before

@@ -121,6 +121,11 @@ std::optional<double> OptF(double v) {
 std::unique_ptr<ScannIndex> scann_new(rust::Slice<const float> dataset,
                                       uint64_t n_points, rust::Str config,
                                       int32_t training_threads) {
+  // Datapoint indices are 32-bit; don't let the cast below truncate.
+  // (ScannIndex::with_training_threads already checks this.)
+  if (n_points > research_scann::kInvalidDatapointIndex)
+    throw std::invalid_argument(absl::StrCat(
+        n_points, " datapoints exceed the 32-bit index space"));
   auto idx = std::make_unique<ScannIndex>();
   ThrowIfNotOk(idx->Initialize(ConstSpan<float>(dataset.data(), dataset.size()),
                                static_cast<DatapointIndex>(n_points),
@@ -224,10 +229,16 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
     throw std::invalid_argument(absl::StrCat(
         "upsert: ", vectors.size(), " floats for ", n, " rows of dimensionality ", dim));
   const DatapointIndex size = idx.n_points();
-  for (int64_t id : ids)
+  uint64_t n_adds = 0;
+  for (int64_t id : ids) {
     if (id >= static_cast<int64_t>(size))
       throw std::invalid_argument(
           absl::StrCat("upsert: index ", id, " out of range (", size, " points)"));
+    if (id < 0) ++n_adds;
+  }
+  if (size + n_adds > research_scann::kInvalidDatapointIndex)
+    throw std::invalid_argument(absl::StrCat(
+        "upsert: ", size + n_adds, " datapoints exceed the 32-bit index space"));
   // Validate every row before mutating anything: a NaN/infinity vector gets
   // partition token -1 in tree indexes (upstream's mutator then indexed
   // leaf_mutators_[-1]), and a row failing partway through a batch would

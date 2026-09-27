@@ -45,7 +45,7 @@
 
 mod bridge;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
@@ -326,6 +326,10 @@ impl ScannIndex {
     /// (> 1 parallelizes on the thread pool). Returns each row's index.
     ///
     /// Python's `searcher.upsert` maps docids to these indices on top.
+    ///
+    /// An index listed more than once is rejected before anything changes,
+    /// as in [`delete`](Self::delete) (and Python's `upsert` with a repeated
+    /// docid).
     pub fn upsert(&mut self, ids: &[Option<u32>], vectors: &[f32], batch_size: usize) -> Result<Vec<u32>> {
         let n = rows(vectors, self.dimensionality(), "vectors")?;
         if n != ids.len() {
@@ -333,6 +337,10 @@ impl ScannIndex {
         }
         if batch_size == 0 {
             return invalid("batch_size must be > 0");
+        }
+        let mut seen = HashSet::new();
+        if let Some(dup) = ids.iter().flatten().find(|&&id| !seen.insert(id)) {
+            return invalid(format!("upsert: index {dup} listed more than once"));
         }
         let ids: Vec<i64> = ids.iter().map(|id| id.map_or(-1, i64::from)).collect();
         let bs = to_i32(batch_size, "batch_size")?;
