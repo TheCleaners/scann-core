@@ -23,12 +23,21 @@
 //  - A tree with bfloat16 brute-force leaves must support add, update and
 //    delete. Upstream's leaves had no docids, so every mutation failed a
 //    RET_CHECK after partially changing the index.
+//  - An update of a datapoint in a tree (with SOAR, in two leaves) whose leaf
+//    mutation fails must leave the index unchanged. Upstream updated the base,
+//    the health stats and the datapoint's leaf assignments step by step and
+//    returned at the first failing leaf, leaving the datapoint half-updated
+//    (e.g. its old spill assignment removed and the new one never added).
+//    After the input validation in ScannNumpy::Upsert nothing reachable from
+//    Python fails there, so the test injects the failure: it hands one leaf a
+//    precomputed artifact of the wrong type, which that leaf rejects.
 //
 // Each case keeps a shadow copy of the stored vectors (deletes move the last
 // datapoint into the freed index, as the index does) and checks that
 // searching for each stored vector, over all leaves, returns its index.
 // Run it under ASan to catch the use-after-free directly.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -43,6 +52,8 @@
 #include "google/protobuf/text_format.h"
 #include "scann/data_format/datapoint.h"
 #include "scann/scann_ops/cc/scann.h"
+#include "scann/tree_x_hybrid/mutator.h"
+#include "scann/tree_x_hybrid/tree_ah_hybrid_residual.h"
 #include "scann/utils/types.h"
 #include "scann_core/config_builder.h"
 
@@ -54,6 +65,12 @@ using research_scann::DatapointPtr;
 using research_scann::NNResultsVector;
 using research_scann::ScannInterface;
 using Mutator = research_scann::SingleMachineSearcherBase<float>::Mutator;
+using MutationOptions =
+    research_scann::UntypedSingleMachineSearcherBase::MutationOptions;
+using PrecomputedMutationArtifacts = research_scann::
+    UntypedSingleMachineSearcherBase::PrecomputedMutationArtifacts;
+using TreeAhArtifacts = research_scann::TreeXHybridMutator<
+    research_scann::TreeAHHybridResidual>::TreeXPrecomputedMutationArtifacts;
 
 int g_failures = 0;
 
@@ -303,6 +320,124 @@ void TreeBfloat16(const std::string& name, scann_core::DistanceMeasure distance,
   h.Churn("regrown");
 }
 
+// A precomputed artifact no AH leaf accepts: they require their own type and
+// reject anything else with InvalidArgumentError.
+struct BogusArtifacts : PrecomputedMutationArtifacts {};
+
+// What searches and health stats can observe: for each probe query its
+// neighbors over all leaves (by index), and the stats.
+struct Snapshot {
+  size_t n_points = 0;
+  std::vector<std::vector<std::pair<DatapointIndex, float>>> results;
+  double quantization_error = 0, imbalance = 0;
+  uint64_t sum_partition_sizes = 0;
+
+  // Distances may differ in the last bits: with SOAR, searches deduplicate
+  // candidates through a hash map whose iteration order (absl seeds it per
+  // table) decides how the reordering kernel batches them, so repeating a
+  // search on an unchanged index can round differently.
+  bool operator==(const Snapshot& o) const {
+    if (n_points != o.n_points || results.size() != o.results.size() ||
+        quantization_error != o.quantization_error ||
+        imbalance != o.imbalance ||
+        sum_partition_sizes != o.sum_partition_sizes)
+      return false;
+    for (size_t i = 0; i < results.size(); ++i) {
+      if (results[i].size() != o.results[i].size()) return false;
+      for (size_t j = 0; j < results[i].size(); ++j) {
+        const auto [idx, dist] = results[i][j];
+        const auto [o_idx, o_dist] = o.results[i][j];
+        if (idx != o_idx || std::abs(dist - o_dist) > 1e-5f * (1 + std::abs(dist)))
+          return false;
+      }
+    }
+    return true;
+  }
+};
+
+Snapshot Take(Harness& h, const std::vector<Vec>& probes) {
+  Snapshot snap;
+  snap.n_points = h.s.n_points();
+  for (const Vec& q : probes) {
+    NNResultsVector res;
+    Ok(h.s.Search(Ptr(q), &res, 20, 100000, kNumLeaves), h.name + ": Search");
+    // By index, so near-ties that swap order compare equal.
+    std::sort(res.begin(), res.end());
+    snap.results.emplace_back(res.begin(), res.end());
+  }
+  auto stats = h.s.GetHealthStats();
+  if (Ok(stats.status(), h.name + ": GetHealthStats")) {
+    snap.quantization_error = stats->avg_quantization_error;
+    snap.imbalance = stats->partition_weighted_avg_relative_imbalance;
+    snap.sum_partition_sizes = stats->sum_partition_sizes;
+  }
+  return snap;
+}
+
+// Tree + AH with SOAR: each update gets a new vector whose precomputed
+// artifacts are valid except for the leaf at position `bad`, which then
+// fails. That covers failures in a leaf the datapoint stays in and in one it
+// newly joins; after each, the index must be observably unchanged.
+void SoarFailedUpdateIsAtomic() {
+  Harness h;
+  h.name = "tree_ah_soar/failed_update";
+  h.unit_norm = true;
+  std::printf("== %s\n", h.name.c_str());
+  const size_t n = 600;
+  if (!h.Build(Config(AhReorder, n, scann_core::DistanceMeasure::kDotProduct,
+                      1.5),
+               n))
+    return;
+  h.Verify("built");
+  std::vector<Vec> probes;
+  for (int i = 0; i < 20; ++i) probes.push_back(h.Random());
+  for (size_t i = 0; i < h.shadow.size(); i += 29) probes.push_back(h.shadow[i]);
+
+  int injected = 0, two_leaves = 0;
+  for (DatapointIndex idx = 0; idx < h.shadow.size(); idx += 13) {
+    for (size_t bad = 0; bad < 2; ++bad) {
+      Mutator* m = h.GetMutator("failed update");
+      if (!m) return;
+      const Vec v = h.Random();
+      auto artifacts = m->ComputePrecomputedMutationArtifacts(Ptr(v));
+      auto* tree_artifacts = dynamic_cast<TreeAhArtifacts*>(artifacts.get());
+      if (!tree_artifacts) {
+        Fail(h.name + ": precomputed artifacts are not TreeAHHybridResidual's");
+        return;
+      }
+      if (tree_artifacts->tokens.size() <= bad) continue;
+      if (tree_artifacts->tokens.size() > 1) ++two_leaves;
+      tree_artifacts->leaf_precomputed_artifacts[bad] =
+          std::make_unique<BogusArtifacts>();
+      const Snapshot before = Take(h, probes);
+      auto r = m->UpdateDatapoint(
+          Ptr(v), idx,
+          MutationOptions{.precomputed_mutation_artifacts = artifacts.get()});
+      ++injected;
+      if (r.ok()) {
+        Fail(absl::StrCat(h.name, ": update of ", idx,
+                          " with a bogus leaf artifact succeeded"));
+        return;
+      }
+      if (!(Take(h, probes) == before)) {
+        Fail(absl::StrCat(h.name, ": failed update of ", idx, " (leaf ", bad,
+                          " of ", tree_artifacts->tokens.size(),
+                          ") changed the index; error: ",
+                          r.status().ToString()));
+        return;
+      }
+    }
+  }
+  std::printf("   %d injected failures (%d on two-leaf updates)\n", injected,
+              two_leaves);
+  if (injected < 40 || two_leaves < 20)
+    Fail(h.name + ": too few injected failures");
+  h.Verify("after failed updates");
+  h.Churn("after failed updates, mutated");
+  for (DatapointIndex i = 0; i < h.shadow.size(); i += 5) h.Update(i);
+  h.Verify("after updates");
+}
+
 }  // namespace
 
 int main() {
@@ -316,6 +451,7 @@ int main() {
                std::nullopt);
   TreeBfloat16("tree_bf16_soar_dot", scann_core::DistanceMeasure::kDotProduct,
                1.5);
+  SoarFailedUpdateIsAtomic();
   std::printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED",
               g_failures);
   return g_failures ? 1 : 0;

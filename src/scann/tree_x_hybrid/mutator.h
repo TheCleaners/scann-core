@@ -1107,68 +1107,122 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::UpdateDatapoint(
   const bool mutate_values_vector = true;
   SCANN_RET_CHECK(mutate_values_vector);
 
+  // scann-core: upstream changed the health stats, the base (the tree's
+  // dataset) and this datapoint's global-to-local entry first, then updated,
+  // removed and added leaf entries one at a time, returning on the first
+  // failure. A failed leaf mutation (e.g. the add to a new SOAR spill leaf,
+  // after the old spill assignment was already removed) left the datapoint
+  // half-updated: its entry listed only some of its leaves, the base held the
+  // new vector while some leaves held the old one, and the health stats were
+  // off. Now the fallible leaf work comes first and can be undone exactly:
+  // the new vector is appended to every leaf it belongs to (for a leaf it
+  // already was in, too), and a failure removes those appended entries, each
+  // the last of its leaf, leaving the index as it was. Only then are the base
+  // and the stats updated and the old entries removed. Removing the old entry
+  // from a leaf the datapoint stays in moves the appended one into its slot,
+  // so the leaves end up exactly as upstream's in-place leaf update left
+  // them.
   auto& global_to_local = std::get<GlobalToLocal>(global_to_local_);
-  if (updated_token_centroid_ == kInvalidToken) {
-    std::vector<int32_t> tmp_tokens;
-    auto& g2l = global_to_local[dp_idx];
-    tmp_tokens.reserve(g2l.size());
-    // scann-core: skip unused slots. With spilling (SOAR) each datapoint has
-    // a fixed-size array of assignments, and an unused one is kInvalidToken;
-    // upstream passed it on, indexing the stats arrays at -1 (heap
-    // corruption on update/delete of such a datapoint).
-    for (auto [token, sub_index] : g2l)
-      if (token != kInvalidToken) tmp_tokens.push_back(token);
-    stats_collector().SubtractStats(tmp_tokens, {dp_idx});
-  }
+  auto& entry = global_to_local[dp_idx];
+  const vector<int32_t>& tokens = ma.tokens;
+  SCANN_RET_CHECK_LE(tokens.size(), entry.size());
 
   Datapoint<T> orig;
-  int32_t token_remove = kInvalidToken, token_add = kInvalidToken;
   if (!mutation_stats_.empty()) GetDatapointPtr(dp_idx, &orig, true);
-  SCANN_RETURN_IF_ERROR(
-      this->UpdateDatapointInBase(dptr, dp_idx, MutateBaseOptions{}));
-  vector<int32_t> tokens = ma.tokens;
-  if (tokens.size() > 1) {
-    searcher_->datapoints_by_token_disjoint_ = false;
+
+  std::vector<int32_t> old_tokens;
+  flat_hash_map<int, DatapointIndex> old_global_to_local;
+  for (auto [token, sub_index] : entry) {
+    if (token == kInvalidToken) continue;
+    old_tokens.push_back(token);
+    old_global_to_local[token] = sub_index;
   }
 
-  flat_hash_map<int, DatapointIndex> old_global_to_local;
-  for (auto& elem : global_to_local[dp_idx]) {
-    if (elem.first == kInvalidToken) continue;
-    old_global_to_local[elem.first] = elem.second;
+  // Which tokens the datapoint already was in (matched once each, as
+  // upstream's in-place update loop did).
+  vector<bool> kept(tokens.size(), false);
+  {
+    absl::flat_hash_set<int32_t> matched;
+    for (size_t token_idx : IndicesOf(tokens)) {
+      const int32_t token = tokens[token_idx];
+      if (old_global_to_local.contains(token) && matched.insert(token).second)
+        kept[token_idx] = true;
+    }
   }
-  auto& new_global_to_local = global_to_local[dp_idx];
-  SCANN_RET_CHECK_LE(tokens.size(), new_global_to_local.size());
-  InitializeGlobalToLocalEntry(new_global_to_local);
-  size_t new_global_to_local_idx = 0;
 
   MutableSpan<std::vector<DatapointIndex>> datapoints_by_token(
       searcher_->datapoints_by_token_);
 
+  vector<DatapointIndex> appended_local(tokens.size(), kInvalidDatapointIndex);
+  size_t num_appended = 0;
+  auto undo_appends = [&]() {
+    for (size_t i = num_appended; i-- > 0;) {
+      const int32_t token = tokens[i];
+      Status status = leaf_mutators_[token]->RemoveDatapoint(appended_local[i]);
+      if (!status.ok()) LOG(WARNING) << status;
+      datapoints_by_token[token].pop_back();
+    }
+  };
+
   for (size_t token_idx : IndicesOf(tokens)) {
-    int& token = tokens[token_idx];
-    auto it = old_global_to_local.find(token);
-    if (it == old_global_to_local.end()) continue;
-    const size_t sub_index1 = it->second;
-    const DatapointPtr<T> maybe_residualized =
-        ma.GetMaybeResidual(dptr, token_idx);
-    auto& leaf_precomputed_artifacts = ma.leaf_precomputed_artifacts[token_idx];
-
-    SCANN_RETURN_IF_ERROR(
-        leaf_mutators_[token]
-            ->UpdateDatapoint(maybe_residualized, sub_index1,
-                              MutationOptions{
-                                  .precomputed_mutation_artifacts =
-                                      leaf_precomputed_artifacts.get(),
-                              })
-            .status());
-
-    if (token_add == kInvalidToken) token_add = token_remove = token;
-
-    new_global_to_local[new_global_to_local_idx++] = {token, sub_index1};
-    token = kInvalidToken;
-    old_global_to_local.erase(it);
+    const int32_t token = tokens[token_idx];
+    StatusOr<DatapointIndex> local_dp_idx_or =
+        leaf_mutators_[token]->AddDatapoint(
+            ma.GetMaybeResidual(dptr, token_idx), "",
+            MutationOptions{
+                .precomputed_mutation_artifacts =
+                    ma.leaf_precomputed_artifacts[token_idx].get()});
+    if (!local_dp_idx_or.ok()) {
+      undo_appends();
+      return local_dp_idx_or.status();
+    }
+    datapoints_by_token[token].push_back(dp_idx);
+    DCHECK_EQ(*local_dp_idx_or, datapoints_by_token[token].size() - 1);
+    appended_local[token_idx] = *local_dp_idx_or;
+    ++num_appended;
   }
 
+  if (updated_token_centroid_ == kInvalidToken) {
+    stats_collector().SubtractStats(old_tokens, {dp_idx});
+  }
+  Status base_status =
+      this->UpdateDatapointInBase(dptr, dp_idx, MutateBaseOptions{});
+  if (!base_status.ok()) {
+    if (updated_token_centroid_ == kInvalidToken) {
+      stats_collector().AddStats(old_tokens, {dp_idx});
+    }
+    undo_appends();
+    return base_status;
+  }
+
+  if (tokens.size() > 1) {
+    searcher_->datapoints_by_token_disjoint_ = false;
+  }
+
+  // The new entry, in upstream's order: the leaves the datapoint stays in,
+  // then the new ones. Until the old entries are removed below, the kept
+  // leaves' sub-indices point at the appended entries.
+  int32_t token_remove = kInvalidToken, token_add = kInvalidToken;
+  InitializeGlobalToLocalEntry(entry);
+  size_t new_global_to_local_idx = 0;
+  for (size_t token_idx : IndicesOf(tokens)) {
+    if (!kept[token_idx]) continue;
+    entry[new_global_to_local_idx++] = {tokens[token_idx],
+                                        appended_local[token_idx]};
+    if (token_add == kInvalidToken) token_add = token_remove = tokens[token_idx];
+  }
+  for (size_t token_idx : IndicesOf(tokens)) {
+    if (kept[token_idx]) continue;
+    entry[new_global_to_local_idx++] = {tokens[token_idx],
+                                        appended_local[token_idx]};
+    searcher_->leaf_size_upper_bound_ =
+        std::max<uint32_t>(searcher_->leaf_size_upper_bound_,
+                           datapoints_by_token[tokens[token_idx]].size());
+    if (token_add == kInvalidToken) token_add = tokens[token_idx];
+  }
+
+  // Remove the old entries. For a kept leaf the last entry is the appended
+  // one, which moves into the freed slot.
   for (auto [token1, sub_index1] : old_global_to_local) {
     SCANN_RETURN_IF_ERROR(leaf_mutators_[token1]->RemoveDatapoint(sub_index1));
     if (sub_index1 == (datapoints_by_token[token1].size() - 1)) {
@@ -1184,26 +1238,6 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::UpdateDatapoint(
     if (token_remove == kInvalidToken) token_remove = token1;
   }
 
-  for (auto [token_idx, token] : Enumerate(tokens)) {
-    if (token == kInvalidToken) continue;
-    const DatapointPtr<T> maybe_residualized =
-        ma.GetMaybeResidual(dptr, token_idx);
-    auto& leaf_precomputed_artifacts = ma.leaf_precomputed_artifacts[token_idx];
-    SCANN_ASSIGN_OR_RETURN(
-        const DatapointIndex local_dp_idx,
-        leaf_mutators_[token]->AddDatapoint(
-            maybe_residualized, "",
-            MutationOptions{.precomputed_mutation_artifacts =
-                                leaf_precomputed_artifacts.get()}));
-
-    datapoints_by_token[token].push_back(dp_idx);
-    searcher_->leaf_size_upper_bound_ = std::max<uint32_t>(
-        searcher_->leaf_size_upper_bound_, datapoints_by_token[token].size());
-    DCHECK_EQ(local_dp_idx, datapoints_by_token[token].size() - 1);
-    new_global_to_local[new_global_to_local_idx++] = {token, local_dp_idx};
-    if (token_add == kInvalidToken) token_add = token;
-  }
-
   if (!mutation_stats_.empty() && token_add != kInvalidToken) {
     SCANN_RETURN_IF_ERROR(IngestUpdate(token_add, dptr, 1));
     CheckReassignment(token_add, mo);
@@ -1214,7 +1248,7 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::UpdateDatapoint(
     }
   }
   stats_collector().AddStats(ma.tokens, {dp_idx});
-  SCANN_RET_CHECK_LE(new_global_to_local_idx, new_global_to_local.size());
+  SCANN_RET_CHECK_LE(new_global_to_local_idx, entry.size());
   return dp_idx;
 }
 

@@ -32,8 +32,9 @@ set_tests_properties(api_exercise_avx2 PROPERTIES ENVIRONMENT SCANN_TEST_FORCE_A
 set_tests_properties(api_exercise api_exercise_threaded api_exercise_avx2 PROPERTIES TIMEOUT 900)
 
 # Regressions for mutation defects: a failed RetrainAndReindex must leave the
-# index usable (upstream left a dangling docid collection), and a tree with
-# bfloat16 brute-force leaves must support add / update / delete.
+# index usable (upstream left a dangling docid collection), a tree with
+# bfloat16 brute-force leaves must support add / update / delete, and a
+# failed update in a SOAR tree must change nothing.
 add_executable(scann_core_mutation_regressions cpp/mutation_regressions.cc)
 target_link_libraries(scann_core_mutation_regressions PRIVATE scann::core)
 add_test(NAME mutation_regressions COMMAND scann_core_mutation_regressions)
