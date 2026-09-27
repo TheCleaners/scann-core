@@ -403,9 +403,9 @@ std::vector<float> Clustered(size_t n, size_t dim, size_t clusters,
   return out;
 }
 
-// The same kinds of configs the equivalence fixtures cover, plus SOAR and a
-// bfloat16 reorder, on two synthetic datasets (one with a dimensionality
-// that isn't a multiple of 4).
+// The same kinds of configs the equivalence fixtures cover, plus SOAR, a
+// bfloat16 reorder and fixed-point (int8) tree centers, on two synthetic
+// datasets (one with a dimensionality that isn't a multiple of 4).
 std::vector<Fixture> SyntheticFixtures() {
   using scann_core::ConfigBuilder;
   using scann_core::DistanceMeasure;
@@ -427,6 +427,10 @@ std::vector<Fixture> SyntheticFixtures() {
   reorder_bf16.quantize = Quantization::kBfloat16;
   scann_core::TreeOptions soar = tree;
   soar.soar_lambda = 1.5;
+  // 8-bit fixed-point partition centers: batched query tokenization goes
+  // through the FP8 many-to-many kernels.
+  scann_core::TreeOptions fixed8 = tree;
+  fixed8.quantize_centroids = true;
 
   const size_t k = 10;
   struct Config {
@@ -447,6 +451,8 @@ std::vector<Fixture> SyntheticFixtures() {
        [&](ConfigBuilder& b) { b.Tree(tree).ScoreAh(ah_l2).Reorder(reorder); }},
       {"tree_soar_bf16reorder_dot", DistanceMeasure::kDotProduct,
        [&](ConfigBuilder& b) { b.Tree(soar).ScoreAh(ah).Reorder(reorder_bf16); }},
+      {"tree_fixed8_centers_dot", DistanceMeasure::kDotProduct,
+       [&](ConfigBuilder& b) { b.Tree(fixed8).ScoreAh(ah).Reorder(reorder); }},
   };
   std::vector<Fixture> out;
   for (const Data& d : datasets) {
