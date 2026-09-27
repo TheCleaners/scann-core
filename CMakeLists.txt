@@ -100,6 +100,9 @@ option(SCANN_BUILD_PYTHON "Build the pybind11 Python module and package" ${PROJE
 option(SCANN_BUILD_RUST_BINDINGS "Build the Rust bindings (via cxx)" ${PROJECT_IS_TOP_LEVEL})
 option(SCANN_BUILD_TESTS "Build the C++ tests" ${PROJECT_IS_TOP_LEVEL})
 option(SCANN_BUILD_EXAMPLES "Build the C++ examples" ${PROJECT_IS_TOP_LEVEL})
+# Off by default, and not part of the wheel: built against the TensorFlow
+# installed in Python_EXECUTABLE (see tf_op/CMakeLists.txt, docs/tensorflow.md).
+option(SCANN_BUILD_TF_OP "Build the TensorFlow custom op and the scann_tf_ops package (Linux; needs TensorFlow)" OFF)
 option(SCANN_USE_SYSTEM_DEPS
   "Try find_package() for each dependency before fetching it (versions are still required to match the pins exactly)" OFF)
 option(SCANN_RUST_BUILD_ENV_ONLY
@@ -286,6 +289,10 @@ endif()
 
 if(SCANN_BUILD_PYTHON)
   add_subdirectory(python)
+endif()
+
+if(SCANN_BUILD_TF_OP)
+  add_subdirectory(tf_op)
 endif()
 
 if(SCANN_BUILD_RUST_BINDINGS OR SCANN_RUST_BUILD_ENV_ONLY)

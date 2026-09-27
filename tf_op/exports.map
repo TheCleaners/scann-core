@@ -1,0 +1,7 @@
+/* The TensorFlow op library exports nothing: TensorFlow finds the ops and
+   kernels through the registrations its static initializers make, and
+   everything else (scann-core, abseil, protobuf, ...) must stay private so
+   it can't clash with TensorFlow's own copies. See CMakeLists.txt. */
+{
+  local: *;
+};
