@@ -30,9 +30,13 @@
 // two string tensors of names and contents. The Python side keeps them in
 // tf.Variables, so they are saved in SavedModels and checkpoints. A kernel
 // builds the searcher from them on first use (LoadArtifactsFromMemory) and
-// caches it in a registry keyed by the op's shared_name attr (a uuid per
+// caches it in a registry keyed by the op's index_id attr (a uuid per
 // index) and a fingerprint of the tensors; see Fingerprint below for what
-// the fingerprint does and doesn't detect.
+// the fingerprint does and doesn't detect. (The attr plays the role of a
+// resource's shared_name, but isn't called that: TensorFlow's Python
+// SavedModel loader appends "_load_<n>" to every shared_name attr, so a
+// loaded model's functions would no longer share the searcher with a
+// searcher_from_module() of the same model.)
 //
 // Ops (Python names via tf.load_op_library):
 //   ScannCoreSearch        scann_core_search
@@ -254,7 +258,7 @@ std::map<std::tuple<std::string, Fingerprint>, std::weak_ptr<Entry>>
     g_registry;
 std::atomic<int64_t> g_builds{0};
 
-std::shared_ptr<Entry> FindOrCreateEntry(const std::string& shared_name,
+std::shared_ptr<Entry> FindOrCreateEntry(const std::string& index_id,
                                          const Fingerprint& fp) {
   std::lock_guard<std::mutex> lock(g_registry_mu);
   for (auto it = g_registry.begin(); it != g_registry.end();) {
@@ -263,7 +267,7 @@ std::shared_ptr<Entry> FindOrCreateEntry(const std::string& shared_name,
     else
       ++it;
   }
-  std::weak_ptr<Entry>& slot = g_registry[{shared_name, fp}];
+  std::weak_ptr<Entry>& slot = g_registry[{index_id, fp}];
   std::shared_ptr<Entry> entry = slot.lock();
   if (!entry) {
     entry = std::make_shared<Entry>();
@@ -294,7 +298,7 @@ absl::StatusOr<std::unique_ptr<ScannInterface>> BuildSearcher(
 // --- Search kernels ---------------------------------------------------------
 
 struct SearchKernel {
-  std::string shared_name;
+  std::string index_id;
   std::mutex mu;
   Fingerprint fp;                // guarded by mu
   std::shared_ptr<Entry> entry;  // guarded by mu
@@ -304,12 +308,12 @@ void* CreateSearchKernel(TF_OpKernelConstruction* ctx) {
   auto* k = new SearchKernel;
   Status st;
   int32_t list_size = 0, total_size = 0;
-  TF_OpKernelConstruction_GetAttrSize(ctx, "shared_name", &list_size,
+  TF_OpKernelConstruction_GetAttrSize(ctx, "index_id", &list_size,
                                       &total_size, st.s);
   if (st.ok() && total_size > 0) {
-    k->shared_name.resize(total_size);
-    TF_OpKernelConstruction_GetAttrString(ctx, "shared_name",
-                                          k->shared_name.data(), total_size,
+    k->index_id.resize(total_size);
+    TF_OpKernelConstruction_GetAttrString(ctx, "index_id",
+                                          k->index_id.data(), total_size,
                                           st.s);
   }
   if (!st.ok()) TF_OpKernelConstruction_Failure(ctx, st.s);
@@ -331,7 +335,7 @@ std::shared_ptr<Entry> GetSearcher(SearchKernel* k, TF_OpKernelContext* ctx) {
     std::lock_guard<std::mutex> lock(k->mu);
     if (k->entry && k->fp == fp) return k->entry;
   }
-  std::shared_ptr<Entry> entry = FindOrCreateEntry(k->shared_name, fp);
+  std::shared_ptr<Entry> entry = FindOrCreateEntry(k->index_id, fp);
   {
     std::lock_guard<std::mutex> lock(entry->build_mu);
     if (!entry->scann) {
@@ -601,7 +605,7 @@ bool Register() {
               "queries: float32", "final_num_neighbors: int32",
               "pre_reordering_num_neighbors: int32",
               "leaves_to_search: int32"},
-             {"index: int32", "distance: float32"}, {"shared_name: string"},
+             {"index: int32", "distance: float32"}, {"index_id: string"},
              /*stateful=*/false, SearchShape);
   RegisterOp("ScannCoreSearchBatched",
              {"asset_names: string", "asset_contents: string",
@@ -609,7 +613,7 @@ bool Register() {
               "pre_reordering_num_neighbors: int32",
               "leaves_to_search: int32", "parallel: bool",
               "batch_size: int32"},
-             {"indices: int32", "distances: float32"}, {"shared_name: string"},
+             {"indices: int32", "distances: float32"}, {"index_id: string"},
              /*stateful=*/false, SearchBatchedShape);
   RegisterOp("ScannCoreStats", {}, {"live_searchers: int64", "builds: int64"},
              {}, /*stateful=*/true, ScalarsShape);

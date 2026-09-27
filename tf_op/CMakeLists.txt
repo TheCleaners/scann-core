@@ -16,6 +16,7 @@
 # not part of the wheel). See docs/tensorflow.md.
 #
 #   <build>/python/scann_tf_ops/_scann_tf_ops.so   the op library
+#   <build>/python/scann_tf_ops/__init__.py        its Python API
 #
 # It is built against the TensorFlow installed in Python_EXECUTABLE, but
 # only against its C API (tensorflow/c/kernels.h, ops.h): no TensorFlow C++
@@ -94,7 +95,17 @@ set_target_properties(scann_tf_ops PROPERTIES
   SKIP_BUILD_RPATH ON
   LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/exports.map")
 
-add_custom_target(scann_tf_ops_python ALL DEPENDS scann_tf_ops scann_python_package)
+# The scann_tf_ops Python package, next to the scann package:
+#   <build>/python/scann_tf_ops/{__init__.py,_scann_tf_ops.so}
+add_custom_command(
+  OUTPUT "${SCANN_TF_PY_OUT}/__init__.py"
+  COMMAND "${CMAKE_COMMAND}" -E copy
+          "${CMAKE_CURRENT_SOURCE_DIR}/python/scann_tf_ops/__init__.py"
+          "${SCANN_TF_PY_OUT}/__init__.py"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/python/scann_tf_ops/__init__.py"
+  VERBATIM)
+add_custom_target(scann_tf_ops_python ALL
+  DEPENDS "${SCANN_TF_PY_OUT}/__init__.py" scann_tf_ops scann_python_package)
 
 if(SCANN_BUILD_TESTS AND SCANN_PYTHON_RUNTIME_OK)
   # Loads the op library and searches a brute-force index with it.

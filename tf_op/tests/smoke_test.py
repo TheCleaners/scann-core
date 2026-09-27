@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory() as d:
 
 args = dict(asset_names=names, asset_contents=contents,
             final_num_neighbors=5, pre_reordering_num_neighbors=-1,
-            leaves_to_search=-1, shared_name="smoke")
+            leaves_to_search=-1, index_id="smoke")
 idx, dist = ops.scann_core_search_batched(queries=queries, parallel=False,
                                           batch_size=256, **args)
 want_idx, want_dist = pybind.searcher.search_batched(queries, 5, -1, -1, False,
