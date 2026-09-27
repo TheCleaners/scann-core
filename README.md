@@ -25,6 +25,20 @@ changed.
 > **scann-core is a derived work of ScaNN. It is not an official Google
 > product and is not affiliated with or endorsed by Google.**
 
+## Contents
+
+* [Install](#install)
+* [Layout](#layout)
+* [Building](#building): [dependencies](#dependencies),
+  [compile flags](#compile-flags),
+  [cross-compiling for aarch64](#cross-compiling-for-aarch64)
+* [Using it](#using-it): [C++](#c), [Python](#python), [Rust](#rust)
+* [Testing](#testing): [equivalence with upstream](#equivalence-with-upstream),
+  [sanitizers and static analysis](#sanitizers-and-static-analysis)
+* [Intentional differences from upstream](#intentional-differences-from-upstream)
+* [Documentation](#documentation)
+* [License](#license)
+
 ## Install
 
 | | |
