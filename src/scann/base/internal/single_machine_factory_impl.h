@@ -70,6 +70,14 @@ Status ValidateFactoryConfig(const ScannConfig& config,
                              const GenericSearchParameters& params,
                              TypeTag type_tag);
 
+// scann-core: for asymmetric hashing without residual quantization, sets
+// the AH projection's input_dim to the dataset's dimensionality when the
+// config leaves it out (as the Python ScannBuilder does whenever pca() or
+// truncate() is used). Upstream filled it in only for tree-AH with residual
+// quantization; otherwise the AH projection failed to build and training
+// ended in a bare "SCANN_RET_CHECK failure".
+void MaybeSetAhProjectionInputDim(ScannConfig* config, const Dataset* dataset);
+
 template <typename LeafSearcherT>
 class SingleMachineFactoryImplClass {
  public:
@@ -145,6 +153,7 @@ StatusOrSearcherUntyped SingleMachineFactoryUntypedImpl(
     opts.type_tag = dataset->TypeTag();
   }
   SCANN_RETURN_IF_ERROR(ValidateFactoryConfig(config, params, opts.type_tag));
+  MaybeSetAhProjectionInputDim(&config, dataset.get());
 
   SCANN_ASSIGN_OR_RETURN(
       auto searcher, SCANN_CALL_FUNCTION_BY_TAG(

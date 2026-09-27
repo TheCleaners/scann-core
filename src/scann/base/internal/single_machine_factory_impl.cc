@@ -111,5 +111,20 @@ Status ValidateFactoryConfig(const ScannConfig& config,
   return OkStatus();
 }
 
+void MaybeSetAhProjectionInputDim(ScannConfig* config, const Dataset* dataset) {
+  if (!dataset || dataset->dimensionality() == 0 ||
+      !config->hash().has_asymmetric_hash())
+    return;
+  if (config->has_partitioning() &&
+      config->hash().asymmetric_hash().use_residual_quantization())
+    return;
+  ProjectionConfig* proj =
+      config->mutable_hash()->mutable_asymmetric_hash()->mutable_projection();
+  if (proj->has_input_dim() || !proj->variable_blocks().empty() ||
+      proj->projection_type() == ProjectionConfig::VARIABLE_CHUNK)
+    return;
+  proj->set_input_dim(dataset->dimensionality());
+}
+
 }  // namespace internal
 }  // namespace research_scann
