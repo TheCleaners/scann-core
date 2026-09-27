@@ -26,7 +26,9 @@ isn't a one-line change:
   src/scann/scann_ops/cc/scann.h
       ParseTextProto reports text-format parse errors (upstream ignored
       them, so misspelled or malformed configs were accepted); the
-      ReshapeNNResult / ReshapeBatchedNNResult templates are const.
+      ReshapeNNResult / ReshapeBatchedNNResult templates are const;
+      default_num_neighbors() and NormalizeDatapoints() accessors (for the
+      scann_npy.cc changes below).
   src/scann/scann_ops/cc/scann.cc
       Initialize() validates dataset shapes (n_points == 0 divided by zero;
       a size that isn't a multiple of n_points silently produced a wrong
@@ -41,7 +43,14 @@ isn't a one-line change:
       (training a partitioner on it aborted on a QCHECK); batched search
       rejects NaN/infinity queries (upstream checked single queries only);
       leaves_to_search attaches tree parameters only for partitioned
-      configs (the int8 brute-force searcher misread them: segfault).
+      configs (the int8 brute-force searcher misread them: segfault);
+      with spherical partitioning, Initialize() normalizes the dataset's
+      rows (upstream only tagged it unit-norm, while later upserts were
+      normalized in some configurations: the same vector scored differently
+      depending on when it was added), and NormalizeDatapoints() does the
+      same for upserts; SearchBatchedParallel() reports a query
+      dimensionality mismatch like SearchBatched() (upstream: a bare
+      RET_CHECK failure).
   src/scann/brute_force/scalar_quantized_brute_force.cc
       Searcher-specific parameters are dynamic_cast; parameters of another
       type are ignored (upstream down_cast them unconditionally).
@@ -60,6 +69,13 @@ isn't a one-line change:
       replaced the live searcher's dataset and docids before building, so
       when retraining failed (e.g. fewer points than leaves) the kept
       searcher's mutator used a freed docid collection (heap-use-after-free).
+      Retraining into spherical partitioning normalizes and tags the
+      reconstructed dataset when it isn't tagged unit-norm (upstream failed
+      with "Input vectors must be unit L2-norm" for most such indexes); the
+      error for a searcher without float data says what it means.
+  src/scann/utils/single_machine_retraining.h
+      Declares the spherical-partitioning helpers used by the above and by
+      scann.cc.
   src/scann/base/health_stats_collector.h
       Health statistics no longer compare unprojected datapoints with
       projected (PCA/TRUNCATE) centroids (an out-of-bounds read on every
@@ -79,7 +95,11 @@ isn't a one-line change:
       re-attaches the mutation thread pool after a retrain, like Upsert();
       Upsert() validates every row (dimensionality, NaN/infinity, update
       index range) before mutating, so a bad row neither crashes a tree
-      index nor leaves a batch half-applied.
+      index nor leaves a batch half-applied. The constructor and Upsert()
+      reject more than 2^32 - 1 datapoints (upstream truncated the row count
+      to 32 bits); Upsert() normalizes vectors for spherical partitioning;
+      SearchBatched() with zero queries returns empty (0, k) results
+      (upstream failed with a misleading dimensionality error).
   src/scann/scann_ops/cc/scann_npy.h, src/scann/scann_ops/cc/scann_npy.cc
       ScannNumpy holds a reader/writer lock: searches and size() shared,
       everything else exclusive, always with the GIL released. Upstream
@@ -106,6 +126,11 @@ isn't a one-line change:
       step with the leaves). Incremental training on a projected tree or
       one with an upper tree is a config error with a clear message
       (upstream: a bare RET_CHECK failure).
+      UpdateDatapoint() is all-or-nothing: it first
+      appends the new vector to each of its leaves (undone if one fails),
+      then updates the base and removes the old leaf entries. Upstream
+      updated the base and the assignments step by step and returned at the
+      first failing leaf, leaving the datapoint half-updated.
   src/scann/utils/bfloat16_helpers.h
       Bfloat16Decompress() shifts as unsigned; left-shifting a negative
       int16 is undefined behavior in C++17.
@@ -177,7 +202,10 @@ isn't a one-line change:
       right docids. delete() on a searcher without docids raises the same
       ValueError as upsert() (upstream: AttributeError).
       search_batched()/search_batched_parallel() map result padding (NaN
-      distance) to None instead of docids[0].
+      distance) to None instead of docids[0]. upsert() rejects a docid
+      listed twice (upstream added a new one twice but mapped it once,
+      leaving a duplicate in docids). ScannSearcher keeps a copy of the
+      docids list it is given (upstream mutated the caller's list).
   python/scann/scann_ops/py/scann_builder.py
       create_config() raises ValueError for tree(incremental_threshold=...)
       together with pca(), truncate() or upper_tree(), which the C++ side

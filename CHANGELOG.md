@@ -5,6 +5,20 @@ All notable changes to scann-core. Versions follow
 
 ## 0.2.0-rc.2 (unreleased)
 
+### Changed
+- Spherical partitioning (`tree(spherical=True)`) stores unit vectors: the
+  dataset's rows are L2-normalized at build time, and so are upserted
+  vectors. Upstream only tagged the dataset unit-norm: points added later
+  were normalized in some configurations (float brute force, float
+  reordering) and stored as given in others, while the original points were
+  stored as given, so the same vector scored differently depending on when
+  it was added. Data that is already normalized, as spherical partitioning
+  expects, builds the same index as before.
+- Python `upsert()` rejects a docid listed more than once (ValueError),
+  before changing anything. Upstream added a new docid twice to the index
+  but mapped it once, leaving a duplicate in `docids`. The Rust `upsert`
+  rejects a repeated index the same way.
+
 ### Fixed
 - Raw config values that crashed the process are now errors when the index
   is built (a config string passed to Python `create_searcher`, Rust
@@ -31,10 +45,34 @@ All notable changes to scann-core. Versions follow
   the config is built; raw configs get a clear error.
 - Undefined behavior (null pointer arithmetic) in distances between an
   empty sparse datapoint and a dense one (UBSan).
+- A failed update of a datapoint in a tree index (e.g. its new SOAR spill
+  leaf rejecting it) left the datapoint half-updated: the base held the new
+  vector while some leaves held the old one, and its old spill assignment
+  could be gone. Updates are now all-or-nothing. (Since rc.1's input
+  validation, no such failure is known to be reachable from Python or
+  Rust; tree + bfloat16 leaves used to fail this way.)
+- `rebalance()` of a spherical tree failed with "Input vectors must be unit
+  L2-norm" for most scoring configurations; it now works wherever the index
+  can be retrained. Retraining an index that keeps only quantized data
+  (int8 or bfloat16 brute force, including tree + bfloat16, or AH without
+  reordering) still fails, now with an error that says why.
+- Python `search_batched`/`search_batched_parallel` with zero queries
+  return empty `(0, k)` results instead of failing with a misleading
+  dimensionality error. The parallel path reports a query dimensionality
+  mismatch clearly instead of with a bare `SCANN_RET_CHECK_EQ failure`.
+- The Python searcher keeps its own copy of the `docids` passed to
+  `build()`. Upstream kept the caller's list, which `upsert()` then
+  appended to and `delete()` reordered.
+- A Python dataset with more than 2^32 - 1 rows is rejected instead of
+  having its row count truncated to 32 bits; upserts that would grow an
+  index past that are rejected too (Python and Rust).
 
 ### Added
 - `config_regressions` (C++) and `python_config_validation` tests; the CI
   sanitizer job runs `config_regressions` too.
+- Tests: `python_wrapper_edge_cases`; a failed-update case in
+  `mutation_regressions`; Rust tests for repeated upsert ids, empty
+  batches and spherical upserts.
 
 ## 0.2.0-rc.1 (2026-09-27)
 

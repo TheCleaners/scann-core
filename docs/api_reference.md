@@ -161,10 +161,16 @@ between ~20k–100k, tree + AH + reorder above ~100k.
 - **`spherical`** — `False` (default) uses ordinary Euclidean k-means
   (centroid = mean of cluster). `True` uses spherical k-means (centroid =
   L2-normalized mean direction), the right objective for cosine/angular
-  similarity. **You must L2-normalize your own vectors before calling
-  `.tree(spherical=True)`.** ScaNN only *tags* the dataset as unit-norm
-  internally — it does not renormalize your vectors, and will not error if
-  you forget. Silently wrong clustering, no exception.
+  similarity. **A spherical index stores unit vectors:** scann-core
+  L2-normalizes the dataset's rows at build time and every upserted vector,
+  so scores are computed against the normalized vectors whatever
+  `distance_measure` you chose (for `dot_product`, that makes them cosine
+  similarities, up to the query's norm). Normalize your data yourself if you
+  want to know exactly what is stored; already-normalized rows are kept
+  bit for bit. Upstream ScaNN only *tagged* the dataset as unit-norm without
+  normalizing it, and then normalized upserted vectors in some
+  configurations but not others, so the same vector could score differently
+  depending on when it was added.
 - **Partitioning training always uses squared L2, regardless of
   `distance_measure`.** Even if you built with `distance_measure="dot_product"`,
   cluster training and database-point-to-leaf assignment both run on
@@ -362,7 +368,11 @@ resulting config supports incremental updates (`NONE` / `ONLINE` /
   pre_reorder_num_neighbors=None, leaves_to_search=None)`** — same semantics,
   but the "use the build-time default" sentinel is `None` here instead of
   `-1` (internally converted). Runs single-threaded over the batch. Returns
-  2D arrays shaped `[num_queries, final_num_neighbors]`.
+  2D arrays shaped `[num_queries, final_num_neighbors]`. With docids, the
+  indices come back as a list of lists of docids instead. Zero queries (a
+  `(0, dim)` array) return empty results shaped `[0, k]` (`k` being
+  `final_num_neighbors` or the build-time default), or an empty list with
+  docids; upstream failed with a misleading dimensionality error.
 - **`search_batched_parallel(queries, ..., batch_size=256)`** — same as
   `search_batched` but parallelized in chunks of `batch_size`; the batch size
   is a chunking hint, not a hard constraint.
@@ -411,11 +421,16 @@ searcher2 = scann.scann_ops_pybind.load_searcher(artifacts_dir)
 
 These all require `docids` to have been set at build time
 (`builder(...).build(docids=[...])`) — a list of strings, one per datapoint,
-duplicates rejected at construction.
+duplicates rejected at construction. The searcher keeps its own copy
+(`searcher.docids`); upstream used your list, and upserts and deletes then
+changed it.
 
 - **`upsert(docids, database, batch_size=1)`** — insert-or-update by docid.
   Accepts a single docid/vector or lists/arrays (1D vectors are
-  auto-promoted to a single row). Every `batch_size`-sized chunk may trigger
+  auto-promoted to a single row). Each docid may appear once per call: a
+  repeated one raises `ValueError` before anything changes (upstream added
+  a repeated new docid to the index twice but mapped it once, leaving a
+  duplicate in `searcher.docids`). Every `batch_size`-sized chunk may trigger
   internal incremental maintenance, and if that determines the index needs
   rebuilding, it transparently calls a full `rebalance()` for you — **an
   upsert call can silently become an expensive full retrain**, not a cheap
@@ -430,7 +445,10 @@ duplicates rejected at construction.
   yet a lightweight incremental rebalance). `config`, if given, is a
   text-proto string to retrain with a different configuration than the one
   the searcher currently has; leave it as `None`/empty to keep the same
-  config.
+  config. Retraining needs the datapoints' float values, so it fails with
+  `RuntimeError` for indexes that keep only quantized data (int8 or
+  bfloat16 brute force, tree or not, and AH without reordering). A failed
+  `rebalance()` leaves the searcher unchanged.
 
 ### Diagnostics
 
@@ -478,6 +496,9 @@ you want cosine similarity, L2-normalize your vectors and use
 | `ValueError: Upsert vector has dimensionality X, but the dataset has Y` | A vector passed to `upsert` has the wrong number of dimensions. Nothing is changed. |
 | `ValueError: Upsert batch_size must be >= 1.` / `RuntimeError: ... batch_size must be >= 1` | `batch_size=0` (or negative) passed to `upsert` / `search_batched_parallel`. Upstream crashed the process with a division by zero. |
 | `KeyError: Docids to delete are not unique: [...]` | The same docid appears twice in one `delete` call. Nothing is deleted. |
+| `ValueError: Docids to upsert are not unique: [...]` | The same docid appears twice in one `upsert` call. Nothing is changed. |
+| `ValueError: Dataset has N rows; ScaNN supports at most 4294967295` | Datapoint indices are 32-bit. Upstream silently truncated the row count. `upsert` rejects growing an index past that too. |
+| `RuntimeError: Failed to retrain searcher: Retraining (rebalance) needs the datapoints' float values, ...` | `rebalance()` on an index that keeps only quantized data. The searcher is unchanged. |
 
 An `upsert` or `delete` rejected with one of the errors above leaves the
 searcher unchanged, docids included: they are checked before anything is
