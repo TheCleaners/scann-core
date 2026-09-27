@@ -20,7 +20,7 @@
 # only: emulated timings mean nothing.
 #
 # Run it in a throwaway x86-64 container (it installs packages):
-#   docker run --rm --platform linux/amd64 -v $PWD:/src -w /src ubuntu:24.04 \
+#   docker run --rm --platform linux/amd64 -v $PWD:/src -w /src ubuntu:26.04 \
 #     scripts/cross-aarch64.sh
 #
 # Environment: CLANG_VERSION (default 19), BUILD_DIR (default build-aarch64).
@@ -34,7 +34,7 @@ if [ "$(id -u)" = 0 ] && command -v apt-get >/dev/null; then
   echo 'Acquire::Retries "10"; Acquire::http::Timeout "60";' > /etc/apt/apt.conf.d/80retries
   apt-get update -qq >/dev/null
   apt-get install -y -qq "clang-$CLANG_VERSION" "lld-$CLANG_VERSION" \
-    g++-aarch64-linux-gnu qemu-user cmake ninja-build git ca-certificates >/dev/null
+    g++-aarch64-linux-gnu qemu-user cmake ninja-build git ca-certificates file >/dev/null
 fi
 
 echo "::group::configure + build (aarch64, clang-$CLANG_VERSION)"

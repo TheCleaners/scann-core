@@ -1,16 +1,15 @@
 # Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
 # SPDX-License-Identifier: Apache-2.0
 
-# On a v* tag: build Linux wheels (manylinux, x86-64; CPython 3.10-3.14 and
-# free-threaded 3.14t and 3.15t) and the sdist, create a
+# On a v* tag: build Linux wheels (manylinux, x86-64 and aarch64; CPython
+# 3.10-3.15 and free-threaded 3.14t and 3.15t) and the sdist, create a
 # GitHub release with them, and publish to PyPI and crates.io.
 #
-# Publishing needs one-time setup, and each publish job waits for approval
-# in its environment:
-#   * PyPI: add this repository as a trusted publisher of `scann-core`
-#     (workflow release.yml, environment `pypi`); no token needed.
-#   * crates.io: an API token as the secret CARGO_REGISTRY_TOKEN in the
-#     environment `crates-io`.
+# Publishing needs API tokens as repository (or environment) secrets:
+#   * PyPI: PYPI_API_TOKEN;
+#   * crates.io: CARGO_REGISTRY_TOKEN.
+# The publish jobs run in the environments `pypi` and `crates-io`; add
+# required reviewers there (repository settings) to approve each publish.
 name: Release
 
 on:
@@ -23,20 +22,27 @@ permissions:
 
 jobs:
   wheels:
-    runs-on: ubuntu-24.04
+    name: wheels / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: pypa/cibuildwheel@v4.2.1
         env:
           # cp314t/cp315t: free-threaded CPython (the module declares it
           # doesn't need the GIL). 3.15 is covered from its release candidates
           # on, since the ABI is final by then.
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315t-*"
-          CIBW_ARCHS_LINUX: x86_64
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315-* cp315t-*"
+          CIBW_ARCHS_LINUX: ${{ matrix.arch }}
           CIBW_SKIP: "*-musllinux_*"
-          # AlmaLinux 9 packages clang >= 19 (the compiler results are
-          # verified against upstream with).
+          # AlmaLinux 9 packages clang >= 19 (the compiler the equivalence
+          # checks against upstream use).
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
           CIBW_BEFORE_ALL_LINUX: dnf install -y clang
           CIBW_ENVIRONMENT_LINUX: CC=clang CXX=clang++
           # The concurrency stress test also checks that free-threaded builds
@@ -48,17 +54,18 @@ jobs:
             s = scann.scann_ops_pybind.builder(db, 5, 'squared_l2').tree(20, 5).score_ah(2).reorder(50).build();
             assert s.search(db[3])[0][0] == 3; print(scann.__version__)" &&
             python tests/python/test_concurrency.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: wheels
+          name: wheels-${{ matrix.arch }}
           path: wheelhouse/*.whl
 
   sdist:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v5
-      - run: pipx run build --sdist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv build --sdist --out-dir dist
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -66,11 +73,11 @@ jobs:
   github-release:
     needs: [wheels, sdist]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -83,27 +90,28 @@ jobs:
   pypi:
     needs: [wheels, sdist]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: pypi
-    permissions:
-      id-token: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
   crates-io:
     needs: [wheels, sdist]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: crates-io
     steps:
-      - uses: actions/checkout@v5
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-22 cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
       - env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          CC: clang-20
-          CXX: clang++-20
+          CC: clang-22
+          CXX: clang++-22
         run: cargo publish --locked

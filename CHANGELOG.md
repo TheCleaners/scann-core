@@ -36,6 +36,15 @@ All notable changes to scann-core. Versions follow
   (cibuildwheel 4.2.1). On the tutorial's index, concurrent `search()` calls
   from 64 plain Python threads reach 327k QPS, against about 100k with the
   GIL.
+- Release wheels for Linux aarch64 (built on native Arm runners) and for
+  CPython 3.15, alongside x86-64 and 3.10-3.14.
+- CI on Ubuntu 26.04 (GitHub Actions):
+  - x86-64 with clang 19 and 22, and GCC 13 and 15;
+  - aarch64 natively;
+  - the aarch64 cross build under QEMU;
+  - the Python tests on CPython 3.10-3.15t (`scripts/python-versions.sh`).
+
+  Builds are cached with ccache.
 - `benchmarks/glove.py` and `docs/benchmarks.md`: build time, recall,
   throughput and latency against the upstream wheel, on x86-64 and
   Graviton4.

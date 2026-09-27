@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # What CI runs (.github/workflows/ci.yml), runnable locally too, e.g. in a
-# container: docker run --rm -v $PWD:/src -w /src ubuntu:24.04 scripts/ci.sh
+# container: docker run --rm -v $PWD:/src -w /src ubuntu:26.04 scripts/ci.sh
 #
 #   1. configure, build and run every test (C++, Python, Rust);
 #   2. build examples/fetchcontent against this checkout;

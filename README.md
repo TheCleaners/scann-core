@@ -36,16 +36,17 @@ changed.
 All three build the C++ library from source, which needs:
 
 * **Linux on x86-64 or aarch64.**
-  * x86-64 is built and tested in CI.
-  * aarch64 isn't in CI yet. It is tested natively on AWS Graviton4
-    (Neoverse V2), where all tests pass (C++, Python and Rust).
+  * Both are built and tested in CI (GitHub Actions, Ubuntu 26.04), aarch64
+    on native Arm runners. aarch64 was also tested on AWS Graviton4
+    (Neoverse V2).
   * The C++ tests also run under QEMU on six emulated Arm CPUs, from Neon-only
     Cortex-A57 to SVE2 (see [Cross-compiling for aarch64](#cross-compiling-for-aarch64)).
   * The SIMD kernels (AVX2/AVX-512 on x86-64, Neon/SVE on aarch64) are
     chosen at run time from the CPU's features.
   * The macOS code paths exist, inherited from upstream, but are untested.
-* **clang ≥ 19 or GCC ≥ 13.** Tested with clang 19, 21, 23 and 24 and
-  GCC 13, 14 and 16 (CI runs clang 19 and 20, GCC 13 and 14). clang is
+* **clang ≥ 19 or GCC ≥ 13.** Tested with clang 19–24 and GCC 13–16. CI
+  runs the oldest and newest that Ubuntu 26.04 packages: clang 19 and 22,
+  and GCC 13 and 15. clang is
   upstream's compiler, and the one the
   [equivalence checks](#equivalence-with-upstream) use. GCC builds give the same recall (checked on GloVe-100),
   with last-bit differences in distances. They are slower: the partitioned
@@ -77,6 +78,7 @@ scann-core/
 ├── tests/                C++/Python tests, upstream-equivalence harness
 ├── benchmarks/           GloVe-100 benchmark (docs/benchmarks.md)
 ├── scripts/ci.sh         what CI runs (also runnable locally)
+├── scripts/python-versions.sh  the Python tests on CPython 3.10-3.15t
 ├── scripts/cross-aarch64.sh  aarch64 cross-build + tests under QEMU
 ├── Cargo.toml            the Rust crate (sources in rust/)
 ├── pyproject.toml        the Python package (scikit-build-core)
@@ -208,7 +210,7 @@ throwaway container. It runs the tests on six emulated CPUs with different
 feature sets, covering both the Neon and the SVE kernels:
 
 ```sh
-docker run --rm --platform linux/amd64 -v $PWD:/src -w /src ubuntu:24.04 scripts/cross-aarch64.sh
+docker run --rm --platform linux/amd64 -v $PWD:/src -w /src ubuntu:26.04 scripts/cross-aarch64.sh
 ```
 
 Emulated timings mean nothing. For speed, see the Graviton4 numbers in
@@ -328,6 +330,10 @@ runs everything that needs nothing beyond the build:
 
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
+[`scripts/python-versions.sh`](scripts/python-versions.sh) runs them on
+every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
+with interpreters from [uv](https://docs.astral.sh/uv/). It compiles the
+C++ library once and rebuilds only the Python module for each version.
 
 The comparison against the upstream wheel is separate, since it needs that
 wheel installed: `tests/equivalence/run.py --build-dir build --python <wheel
