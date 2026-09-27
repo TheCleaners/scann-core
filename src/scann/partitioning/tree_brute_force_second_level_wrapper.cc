@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/partitioning/tree_brute_force_second_level_wrapper.h"
 
@@ -112,6 +116,26 @@ StatusOrPtr<TreeXHybridSMMD<float>> CreateTopLevelSearcher(
     const KMeansTreeLikePartitioner<T>& base,
     const BottomUpTopLevelPartitioner& config,
     vector<std::vector<DatapointIndex>> token_to_datapoints) {
+  // scann-core: the quantized searchers below LOG(FATAL) (process abort) on
+  // a distance measure they don't support; report a config error instead.
+  const auto tag =
+      base.query_tokenization_distance()->specially_optimized_distance_tag();
+  if (config.quantization() == BottomUpTopLevelPartitioner::FIXED8 &&
+      tag != DistanceMeasure::DOT_PRODUCT && tag != DistanceMeasure::COSINE &&
+      tag != DistanceMeasure::SQUARED_L2) {
+    return InvalidArgumentError(
+        "bottom_up_top_level_partitioner with FIXED8 quantization requires a "
+        "DotProductDistance, CosineDistance or SquaredL2Distance query "
+        "tokenization distance.");
+  }
+  if (config.quantization() == BottomUpTopLevelPartitioner::BFLOAT16 &&
+      tag != DistanceMeasure::DOT_PRODUCT &&
+      tag != DistanceMeasure::SQUARED_L2) {
+    return InvalidArgumentError(
+        "bottom_up_top_level_partitioner with BFLOAT16 quantization requires "
+        "a DotProductDistance or SquaredL2Distance query tokenization "
+        "distance.");
+  }
   auto result = std::make_unique<TreeXHybridSMMD<float>>(
       MakeDummyShared(&base.LeafCenters()), nullptr, config.num_centroids(),
       numeric_limits<float>::infinity());

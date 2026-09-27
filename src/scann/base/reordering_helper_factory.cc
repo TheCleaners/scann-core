@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/base/reordering_helper_factory.h"
 
@@ -134,9 +138,17 @@ StatusOrHelper<float> BuildFixedPointReorderingHelper<float>(
           "and squared L2 distance.");
     }
   } else {
-    DCHECK(dataset);
+    // scann-core: upstream only DCHECKed the dataset (a null reference, e.g.
+    // for a reloaded index whose int8 reordering data wasn't serialized),
+    // and a NaN quantile passed the range check (undefined float -> integer
+    // conversion when quantizing).
+    if (!dataset) {
+      return InvalidArgumentError(
+          "Fixed-point reordering needs the float dataset or a pre-quantized "
+          "fixed-point dataset.");
+    }
     const float fp_quantile = config.fixed_point_multiplier_quantile();
-    if (fp_quantile > 1.0f || fp_quantile <= 0.0f) {
+    if (!(fp_quantile > 0.0f && fp_quantile <= 1.0f)) {
       return InvalidArgumentError(
           "exact_reordering.fixed_point.fixed_point_multiplier_quantile must "
           "be in the range (0.0, 1.0].");
