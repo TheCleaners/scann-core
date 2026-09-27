@@ -1,4 +1,4 @@
-# Copyright 2026 ebenali and TheCleaners.
+# Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,9 +47,9 @@ if(NOT _scann_cargo_version MATCHES "^version = \"${SCANN_CORE_VERSION}\"")
   message(FATAL_ERROR "Cargo.toml (${_scann_cargo_version}) doesn't match VERSION (${SCANN_CORE_VERSION})")
 endif()
 
-# Supported compilers: clang >= 19 (upstream's compiler, and the one results
-# are verified bit-identical to upstream with) and GCC >= 13. Older versions
-# are untested; MSVC lacks the GNU vector extensions ScaNN uses.
+# Supported compilers: clang >= 19 (upstream's compiler, and the one the
+# equivalence checks against upstream use) and GCC >= 13. Older versions are
+# untested; MSVC lacks the GNU vector extensions ScaNN uses.
 option(SCANN_ALLOW_UNSUPPORTED_COMPILER
   "Configure even with a compiler other than clang or GCC (expect build errors)" OFF)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")

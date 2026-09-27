@@ -1,5 +1,6 @@
-// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived work
-// of ScaNN, not an official Google product); see NOTICE.
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 // scann-core: the bfloat16 -> float conversions below bit-cast integer
 // vectors to float explicitly (_mm*_cast*); upstream relied on clang's
 // implicit vector conversions, which GCC rejects. Same bits.

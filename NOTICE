@@ -1,5 +1,5 @@
 scann-core
-Copyright 2026 ebenali and TheCleaners.
+Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
 
 scann-core is a derived work of ScaNN (Scalable Nearest Neighbors). It is
 not an official Google product and is not affiliated with, sponsored by or
@@ -8,8 +8,9 @@ is derived from.
 
 This product includes software from ScaNN, Copyright The Google Research
 Authors, licensed under the Apache License, Version 2.0 (see LICENSE).
-scann-core's own additions and modifications are Copyright ebenali and
-TheCleaners and are licensed under the same Apache License, Version 2.0.
+scann-core's own additions and modifications are Copyright Elias Benali
+(@ebenali) and TheCleaners and are licensed under the same Apache License,
+Version 2.0.
 
   Upstream:     https://github.com/google-research/google-research/tree/master/scann
   Extracted at: google-research commit 758b894eb02dc2a7097068031089a2803be147c6

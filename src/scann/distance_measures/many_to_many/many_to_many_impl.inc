@@ -1,5 +1,6 @@
-// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived work
-// of ScaNN, not an official Google product); see NOTICE.
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 // Includes changes contributed by Arm (Gerda Zsejke More, Li Zhang) in
 // google-research PR #3374 and follow-ups; see NOTICE.
 

@@ -403,8 +403,8 @@ pointing at the wrong vectors.
 Apache 2.0 (see [LICENSE](LICENSE)).
 
 * ScaNN: Copyright The Google Research Authors.
-* scann-core's additions and modifications: Copyright 2026 ebenali and
-  TheCleaners.
+* scann-core's additions and modifications: Copyright 2026 Elias Benali
+  ([@ebenali](https://github.com/ebenali)) and TheCleaners.
 
 Dependencies carry their own licenses (see [NOTICE](NOTICE)). scann-core is
 not an official Google product and is not affiliated with or endorsed by

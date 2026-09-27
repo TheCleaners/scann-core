@@ -53,5 +53,6 @@ your CPU has.
 ## License
 
 Apache 2.0. ScaNN is Copyright The Google Research Authors; scann-core's
-additions and modifications are Copyright 2026 ebenali and TheCleaners. See
+additions and modifications are Copyright 2026 Elias Benali
+([@ebenali](https://github.com/ebenali)) and TheCleaners. See
 [NOTICE](https://github.com/TheCleaners/scann-core/blob/main/NOTICE).

@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
-// work of ScaNN, not an official Google product); see NOTICE.
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 

@@ -1,4 +1,4 @@
-# Copyright 2026 ebenali and TheCleaners.
+# Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
 # SPDX-License-Identifier: Apache-2.0
 
 [build-system]
@@ -12,7 +12,7 @@ description = "ScaNN's vector search core without TensorFlow (derived from Googl
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "third_party/cnpy/LICENSE", "third_party/googletest/LICENSE"]
-authors = [{ name = "ebenali" }, { name = "TheCleaners" }]
+authors = [{ name = "Elias Benali (@ebenali)" }, { name = "TheCleaners" }]
 requires-python = ">=3.10"
 dependencies = ["numpy", "protobuf>=7.36.2"]
 keywords = ["vector search", "nearest neighbor", "ann", "scann", "embeddings"]
