@@ -102,6 +102,9 @@ the first release on crates.io (rc.1 was published to PyPI only).
   index past that are rejected too (Python and Rust).
 
 ### Added
+- `docs/integrations.md`: scann-core as a drop-in for the `scann` wheel.
+  LangChain's ScaNN vector store works unchanged (checked against the
+  upstream wheel; the new `python_langchain` test runs it in CI).
 - Release: the crate is built and verified in parallel with the wheels,
   with ccache; `cargo publish` only uploads. CI builds the packaged crate
   (`cargo package`) on pushes to main, which catches files missing from the
