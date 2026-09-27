@@ -87,6 +87,41 @@ bindings, tests, examples, other docs,
 python/scann/__init__.py and the empty python/scann/**/__init__.py files)
 is new in scann-core. Upstream's own repository has no NOTICE file.
 
+Arm (aarch64) support
+---------------------
+The Neon/SVE implementations and AArch64 run-time feature detection come
+from work by Arm engineers, contributed to ScaNN but not merged upstream as
+of 2026-09-26:
+  * google-research/google-research PR #3374, "scann: Add AArch64 run-time
+    feature detection" (Gerda Zsejke More, gerdazsejke.more@arm.com)
+  * lizhang-arm/google-research PR #1, "Arm: Add Neon implementations for
+    many to many functions" (Gerda Zsejke More)
+  * lizhang-arm/google-research PR #2, "Arm: Add Neon implementation for
+    ScaNN indexDatapointNoiseShaped" (Li Zhang, li.zhang2@arm.com)
+  * lizhang-arm/google-research PR #3, "scann: Add Arm implementation of
+    DenseDotProductInt8Float" (Li Zhang)
+Their commits were rebased onto the extraction commit above and kept with
+their original authorship. Files they add carry The Google Research
+Authors' header, as contributed; files they modify say so in their
+headers. On top of them, scann-core:
+  - merged the two independently created versions of
+    utils/intrinsics/mem_neon.h;
+  - moved the <arm_neon.h> include in
+    hashes/internal/asymmetric_hashing_impl_neon.cc inside its
+    `#if defined(__aarch64__)` guard (x86 builds failed otherwise).
+The first commit of PR #3374 also enables x86 CPU feature detection
+(PLATFORM_IS_X86), which upstream open-source builds lack; see its commit.
+
+Further aarch64 fixes to upstream files (needed with highway 1.4.0 and a
+baseline without the AES extension):
+  src/scann/distance_measures/many_to_many/int8_tile.cc
+      Includes hwy/foreach_target.h before int8_tile.h, as Highway
+      requires; otherwise the N_NEON dispatch target came out empty
+      ("use of undeclared identifier 'N_NEON'").
+  src/scann/utils/hwy-compact.cc
+      Static target HWY_NEON_WITHOUT_AES when AES isn't enabled (the code
+      doesn't use AES); HWY_NEON otherwise, as before.
+
 Third-party dependencies are downloaded at configure time (see
 cmake/Dependencies.cmake), except two vendored in third_party/ with their
 licenses: cnpy (MIT, Copyright (c) Carl Rogers, 2011) and googletest's

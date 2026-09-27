@@ -14,6 +14,8 @@
 //
 // Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
 // work of ScaNN, not an official Google product); see NOTICE.
+// Includes changes contributed by Arm (Gerda Zsejke More, Li Zhang) in
+// google-research PR #3374 and follow-ups; see NOTICE.
 
 #ifndef SCANN_UTILS_INTRINSICS_FLAGS_H_
 #define SCANN_UTILS_INTRINSICS_FLAGS_H_

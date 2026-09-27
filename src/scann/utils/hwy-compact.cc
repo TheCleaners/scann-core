@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by ebenali and TheCleaners for scann-core (a derived
+// work of ScaNN, not an official Google product); see NOTICE.
 
 #if defined(__x86_64__)
 
@@ -77,7 +80,15 @@ SCANN_OUTLINE HWY_ATTR size_t HwyCompact(uint32_t* indices, float* values,
 
 #define HWY_COMPILE_ONLY_STATIC
 
+// scann-core: HWY_NEON is Neon + AES. Without AES enabled (e.g.
+// -march=armv8-a+simd), functions compiled for it fail ("requires target
+// feature 'aes'"); this code doesn't use AES, so fall back to
+// HWY_NEON_WITHOUT_AES then. Unchanged when AES is enabled.
+#if defined(__ARM_FEATURE_AES)
 #define HWY_BASELINE_TARGETS HWY_NEON
+#else
+#define HWY_BASELINE_TARGETS HWY_NEON_WITHOUT_AES
+#endif
 
 #include <cstddef>
 #include <cstdint>

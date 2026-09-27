@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 for scann-core (a derived work of ScaNN, not an official
+// Google product). Includes changes contributed by Arm (Gerda Zsejke More,
+// Li Zhang) in google-research PR #3374 and follow-ups; see NOTICE.
 
 
 #include "scann/oss_wrappers/scann_cpu_info.h"

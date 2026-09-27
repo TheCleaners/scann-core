@@ -191,6 +191,55 @@ void ExpectIndicesBelow(const std::vector<NNResultsVector>& r, size_t limit,
                                  ") with ", limit, " points"));
 }
 
+// Exact top-k (indices, best first) by brute force in double precision, for
+// the fixture's distance measure.
+std::vector<std::vector<DatapointIndex>> ExactNeighbors(const Fixture& f) {
+  const bool squared_l2 =
+      f.config.find("SquaredL2Distance") < f.config.find("DotProductDistance");
+  std::vector<std::vector<DatapointIndex>> out(f.nq);
+  std::vector<std::pair<double, DatapointIndex>> scored(f.n);
+  for (size_t q = 0; q < f.nq; ++q) {
+    const float* qv = &f.queries[q * f.dim];
+    for (size_t i = 0; i < f.n; ++i) {
+      const float* x = &f.db[i * f.dim];
+      double d = 0;
+      for (size_t j = 0; j < f.dim; ++j)
+        d += squared_l2 ? (double(x[j]) - qv[j]) * (double(x[j]) - qv[j])
+                        : -double(x[j]) * qv[j];  // smaller is better
+      scored[i] = {d, static_cast<DatapointIndex>(i)};
+    }
+    std::partial_sort(scored.begin(), scored.begin() + f.k, scored.end());
+    for (size_t j = 0; j < f.k; ++j) out[q].push_back(scored[j].second);
+  }
+  return out;
+}
+
+double Recall(const std::vector<NNResultsVector>& found,
+              const std::vector<std::vector<DatapointIndex>>& exact) {
+  size_t hits = 0, total = 0;
+  for (size_t q = 0; q < found.size(); ++q) {
+    total += exact[q].size();
+    for (const auto& [index, distance] : found[q])
+      hits += std::count(exact[q].begin(), exact[q].end(), index);
+  }
+  return total ? static_cast<double>(hits) / total : 1.0;
+}
+
+// Recall against exact search: catches kernels that are wrong in the same
+// way in every search mode, which the mode-agreement checks can't. The
+// floors leave room for the approximation (and for the synthetic data's
+// near-ties), not for bugs: measured values are printed.
+void ExpectRecall(const Fixture& f, const std::vector<NNResultsVector>& found,
+                  const std::vector<std::vector<DatapointIndex>>& exact,
+                  const std::string& mode) {
+  const double r = Recall(found, exact);
+  const bool brute_force = f.name.find("brute_force") != std::string::npos;
+  const double floor = brute_force ? 0.99 : 0.60;
+  std::printf("   recall@%zu %-8s %.4f\n", f.k, mode.c_str(), r);
+  if (r < floor)
+    Fail(absl::StrCat(f.name, ": ", mode, " recall ", r, " < ", floor));
+}
+
 void ExerciseFixture(const Fixture& f, int training_threads) {
   std::printf("== %s (n=%zu dim=%zu nq=%zu k=%zu)\n", f.name.c_str(), f.n,
               f.dim, f.nq, f.k);
@@ -211,6 +260,9 @@ void ExerciseFixture(const Fixture& f, int training_threads) {
   ExpectEquivalent(batched, parallel, f.name + ": batched vs parallel", exact);
   ExpectEquivalent(single, batched, f.name + ": single vs batched", exact);
   ExpectIndicesBelow(single, f.n, f.name + ": search");
+  const auto exact_nn = ExactNeighbors(f);
+  ExpectRecall(f, single, exact_nn, "single");
+  ExpectRecall(f, batched, exact_nn, "batched");
 
   // Serialize -> load -> search again.
   const fs::path dir = fs::temp_directory_path() /
