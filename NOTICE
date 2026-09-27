@@ -258,6 +258,11 @@ isn't a one-line change:
       can't build (upstream failed only when initializing the searcher).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
+python/scann/tf.py is adapted from upstream's
+scann/scann/scann_ops/py/scann_ops.py (its builder() docstring, and the
+builder / create_searcher / ScannSearcher search API): the searcher is the
+pybind one, called through tf.numpy_function instead of a TensorFlow op, and
+serialize_to_module() / searcher_from_module() raise NotImplementedError.
 Everything else (build system, the C++ config builder in core/, Rust
 bindings, tests, examples, other docs,
 python/scann/__init__.py and the empty python/scann/**/__init__.py files)

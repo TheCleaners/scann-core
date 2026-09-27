@@ -57,7 +57,8 @@ jobs:
         run: scripts/ci.sh
 
   # The Python package and tests on every supported CPython, including the
-  # free-threaded builds (the C++ library is compiled once).
+  # free-threaded builds (the C++ library is compiled once). Python 3.12 also
+  # gets tensorflow-cpu, for python_tf (TF_PYTHON_VERSIONS in the script).
   python:
     name: python / 3.10-3.15t
     runs-on: ubuntu-26.04

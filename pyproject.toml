@@ -27,6 +27,11 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.optional-dependencies]
+# scann.tf (docs/tensorflow.md). TensorFlow <= 2.19 requires protobuf < 6;
+# 2.21 (protobuf >= 6.31.1, < 8) is the first tested with scann-core's.
+tf = ["tensorflow>=2.21"]
+
 [project.urls]
 Repository = "https://github.com/TheCleaners/scann-core"
 Documentation = "https://github.com/TheCleaners/scann-core/tree/main/docs"

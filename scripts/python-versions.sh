@@ -25,13 +25,17 @@
 #   PYTHON_VERSIONS="3.12 3.14t" scripts/python-versions.sh
 #
 # Environment: CC/CXX (default: clang/clang++), BUILD_DIR (default:
-# build-pyversions), PYTHON_VERSIONS (default: every supported version).
+# build-pyversions), PYTHON_VERSIONS (default: every supported version),
+# TF_PYTHON_VERSIONS (default: 3.12): the versions that also get
+# tensorflow-cpu, so that python_tf runs (and must not skip) there; it is
+# skipped on the others. Empty to install TensorFlow nowhere.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export CC="${CC:-clang}" CXX="${CXX:-clang++}"
 BUILD_DIR="${BUILD_DIR:-build-pyversions}"
 PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t}"
+TF_PYTHON_VERSIONS="${TF_PYTHON_VERSIONS-3.12}"
 command -v uv >/dev/null || { echo "scripts/python-versions.sh needs uv" >&2; exit 1; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -41,6 +45,11 @@ for v in $PYTHON_VERSIONS; do
   echo "::group::Python $v"
   uv venv -q --python "$v" "$WORK/$v"
   VIRTUAL_ENV="$WORK/$v" uv pip install -q numpy "protobuf>=7.36.2"
+  require_tf=
+  if [[ " $TF_PYTHON_VERSIONS " == *" $v "* ]]; then
+    VIRTUAL_ENV="$WORK/$v" uv pip install -q "protobuf>=7.36.2" "tensorflow-cpu>=2.21"
+    require_tf=1
+  fi
   py="$WORK/$v/bin/python"
   "$py" -c 'import sys, sysconfig; print(sys.version, "(free-threaded)" if sysconfig.get_config_var("Py_GIL_DISABLED") else "")'
   # -U drops the previous interpreter's cached FindPython results.
@@ -48,7 +57,8 @@ for v in $PYTHON_VERSIONS; do
     -DPython_EXECUTABLE="$py" -DSCANN_BUILD_RUST_BINDINGS=OFF \
     -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF >/dev/null
   cmake --build "$BUILD_DIR"
-  if ctest --test-dir "$BUILD_DIR" -R '^(python_|config_builder)' --output-on-failure; then
+  if SCANN_TEST_REQUIRE_TF=$require_tf \
+     ctest --test-dir "$BUILD_DIR" -R '^(python_|config_builder)' --output-on-failure; then
     passed+=("$v")
   else
     failed+=("$v")
