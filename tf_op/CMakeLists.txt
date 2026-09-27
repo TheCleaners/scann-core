@@ -107,12 +107,24 @@ add_custom_command(
 add_custom_target(scann_tf_ops_python ALL
   DEPENDS "${SCANN_TF_PY_OUT}/__init__.py" scann_tf_ops scann_python_package)
 
+if(SCANN_BUILD_TESTS AND CMAKE_NM AND CMAKE_READELF)
+  # Exports nothing, imports only TF_* C functions and the C/C++ runtime,
+  # needs libtensorflow_framework.so.2 without an rpath.
+  add_test(NAME tf_op_symbols
+           COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_symbols.py"
+                   "$<TARGET_FILE:scann_tf_ops>" "${CMAKE_NM}" "${CMAKE_READELF}")
+  set_tests_properties(tf_op_symbols PROPERTIES TIMEOUT 60)
+endif()
+
 if(SCANN_BUILD_TESTS AND SCANN_PYTHON_RUNTIME_OK)
-  # Loads the op library and searches a brute-force index with it.
-  add_test(NAME tf_op_smoke
-           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
-                   TF_CPP_MIN_LOG_LEVEL=2
-                   "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke_test.py"
-                   "${SCANN_TF_PY_OUT}/_scann_tf_ops.so")
-  set_tests_properties(tf_op_smoke PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  # scann_tf_ops against the pybind searcher: parity, build-once, stale
+  # variables, SavedModel in a fresh process, errors, concurrency. Skipped
+  # (exit code 77) when TensorFlow isn't importable.
+  function(scann_add_tf_op_test name script)
+    add_test(NAME ${name}
+             COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
+                     "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${script}")
+    set_tests_properties(${name} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+  endfunction()
+  scann_add_tf_op_test(python_tf_ops tests/test_scann_tf_ops.py)
 endif()

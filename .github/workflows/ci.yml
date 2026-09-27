@@ -79,6 +79,39 @@ jobs:
           CXX: clang++-22
         run: scripts/python-versions.sh
 
+  # The optional TensorFlow op (-DSCANN_BUILD_TF_OP=ON, tf_op/), built
+  # against tensorflow-cpu 2.21 in a venv: its symbol check, python_tf_ops
+  # and the op example (which must not skip). Downloads TensorFlow, so not on
+  # every pull request.
+  tf-op:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-22 cmake ninja-build
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: tf-op
+          max-size: 2G
+      - name: Build and test the op
+        env:
+          CC: clang-22
+          CXX: clang++-22
+          SCANN_TEST_REQUIRE_TF: "1"
+        run: |
+          uv venv -q --python 3.12 "$RUNNER_TEMP/tf"
+          VIRTUAL_ENV="$RUNNER_TEMP/tf" uv pip install -q numpy "protobuf>=7.36.2" "tensorflow-cpu~=2.21.0"
+          cmake -S . -B build -G Ninja -DPython_EXECUTABLE="$RUNNER_TEMP/tf/bin/python" \
+            -DSCANN_BUILD_TF_OP=ON -DSCANN_BUILD_RUST_BINDINGS=OFF \
+            -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF
+          cmake --build build
+          ctest --test-dir build -R '^(tf_op_|python_tf|example_py_tensorflow_op)' \
+            --output-on-failure --no-tests=error
+
   # aarch64 cross build, with the tests run under QEMU on emulated CPUs that
   # select different kernels (Neon only, dot product, SVE at 128-2048 bits,
   # SVE2). The native aarch64 job above only sees the runner's own CPU.
