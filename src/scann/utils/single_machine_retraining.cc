@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/utils/single_machine_retraining.h"
 
@@ -51,26 +55,38 @@ StatusOrSearcherUntyped RetrainAndReindexSearcherImpl(
         "Searchers passed to RetrainAndReindexSearcher must contain the "
         "original, uncompressed dataset, i.e. dataset() must not return null.");
   }
-  RetrainAndReindexFixup<float>(
-      searcher, std::const_pointer_cast<DenseDataset<float>>(dataset));
+  // scann-core: upstream ran RetrainAndReindexFixup on the live searcher here,
+  // replacing its dataset_ and docids_ with the reconstructed dataset before
+  // the factory ran (and without holding searcher_pointer_mutex). When the
+  // factory then failed (e.g. fewer points than leaves after deletions, or a
+  // config with more children than points), the caller kept that searcher,
+  // whose cached mutator still pointed into the docid collection the Fixup
+  // had freed: the next mutation was a heap-use-after-free. Build the new
+  // searcher from the reconstructed dataset directly and leave the old one
+  // untouched, so a failed retrain changes nothing. The new searcher gets
+  // exactly what upstream gave it on success: the reconstructed dataset's
+  // docids, and retraining_requires_dataset_ == false (the Fixup's default,
+  // which upstream then copied from the old searcher).
+  auto new_dataset = std::dynamic_pointer_cast<TypedDataset<T>>(
+      std::const_pointer_cast<DenseDataset<float>>(dataset));
+  if (!new_dataset) {
+    return UnimplementedError(
+        "RetrainAndReindexSearcher only supports float searchers.");
+  }
 
   StripPreprocessedArtifacts(&config);
   SingleMachineFactoryOptions opts;
   opts.parallelization_pool = std::move(parallelization_pool);
-  SCANN_ASSIGN_OR_RETURN(
-      auto result,
-      SingleMachineFactoryScann<T>(
-          config, std::const_pointer_cast<TypedDataset<T>>(searcher->dataset_),
-          opts));
+  SCANN_ASSIGN_OR_RETURN(auto result,
+                         SingleMachineFactoryScann<T>(config, new_dataset, opts));
 
   auto lock_mutex = [&searcher_pointer_mutex]() ABSL_NO_THREAD_SAFETY_ANALYSIS {
     if (searcher_pointer_mutex) searcher_pointer_mutex->WriterLock();
   };
   lock_mutex();
 
-  result->docids_ = std::move(searcher->docids_);
-  result->retraining_requires_dataset_ =
-      untyped_searcher->retraining_requires_dataset_;
+  result->docids_ = dataset->docids();
+  result->retraining_requires_dataset_ = false;
   return result;
 }
 

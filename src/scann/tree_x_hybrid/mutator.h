@@ -998,13 +998,31 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::AddDatapoint(
   size_t cur_global_to_local_idx = 0;
 
   for (auto [token_idx, token] : Enumerate(tokens)) {
-    SCANN_ASSIGN_OR_RETURN(
-        const DatapointIndex local_dp_idx,
+    StatusOr<DatapointIndex> local_dp_idx_or =
         leaf_mutators_[token]->AddDatapoint(
             ma.GetMaybeResidual(dptr, token_idx), "",
             MutationOptions{
                 .precomputed_mutation_artifacts =
-                    ma.leaf_precomputed_artifacts[token_idx].get()}));
+                    ma.leaf_precomputed_artifacts[token_idx].get()});
+    // scann-core: upstream returned here with the datapoint already added to
+    // the base, the global-to-local map and the leaves of earlier tokens, so
+    // size() counted a datapoint the leaves did not hold. Undo those
+    // additions; each is the last entry of its container, so removing it
+    // renumbers nothing.
+    if (!local_dp_idx_or.ok()) {
+      for (size_t i = 0; i < cur_global_to_local_idx; ++i) {
+        const auto [added_token, added_local_idx] = cur_global_to_local[i];
+        Status status =
+            leaf_mutators_[added_token]->RemoveDatapoint(added_local_idx);
+        if (!status.ok()) LOG(WARNING) << status;
+        searcher_->datapoints_by_token_[added_token].pop_back();
+      }
+      global_to_local.pop_back();
+      Status status = this->RemoveDatapointFromBase(cur_dp_idx).status();
+      if (!status.ok()) LOG(WARNING) << status;
+      return local_dp_idx_or.status();
+    }
+    const DatapointIndex local_dp_idx = *local_dp_idx_or;
 
     searcher_->datapoints_by_token_[token].push_back(cur_dp_idx);
     searcher_->leaf_size_upper_bound_ =
@@ -1233,7 +1251,13 @@ Status TreeXHybridMutator<Searcher>::RemoveDatapointImpl(
     if (token != kInvalidToken) tmp_tokens.push_back(token);
   stats_collector().SubtractStats(tmp_tokens, {dp_idx});
 
-  SCANN_RETURN_IF_ERROR(this->RemoveDatapointFromBase(dp_idx).status());
+  // scann-core: upstream removed the datapoint from the base (the tree's
+  // dataset and docids) here, before the leaves. When a leaf removal failed
+  // (as it did for every bfloat16 brute-force leaf), the base was left one
+  // datapoint short of the leaves and the global-to-local map, and later
+  // searches returned indices >= size(). The leaf loop below reads only the
+  // leaves and the token bookkeeping, not the base, so the base removal now
+  // follows it.
 
   MutableSpan<std::vector<DatapointIndex>> datapoints_by_token(
       searcher_->datapoints_by_token_);
@@ -1286,6 +1310,8 @@ Status TreeXHybridMutator<Searcher>::RemoveDatapointImpl(
     if (token_remove == kInvalidToken) token_remove = token;
     datapoints_by_token[token].pop_back();
   }
+
+  SCANN_RETURN_IF_ERROR(this->RemoveDatapointFromBase(dp_idx).status());
 
   if (dp_idx != old_size - 1) {
     global_to_local[dp_idx] = global_to_local[old_size - 1];

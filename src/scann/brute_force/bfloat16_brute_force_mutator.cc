@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include <cmath>
 #include <cstddef>
@@ -19,6 +23,7 @@
 #include "absl/strings/str_cat.h"
 #include "scann/brute_force/bfloat16_brute_force.h"
 #include "scann/data_format/datapoint.h"
+#include "scann/data_format/docid_collection.h"
 #include "scann/oss_wrappers/scann_status.h"
 #include "scann/utils/bfloat16_helpers.h"
 #include "scann/utils/common.h"
@@ -34,6 +39,20 @@ Bfloat16BruteForceSearcher::Mutator::Create(
 
   SCANN_ASSIGN_OR_RETURN(auto quantized_dataset_mutator,
                          searcher->bfloat16_dataset_->GetMutator());
+  // scann-core: give a searcher without docids an (empty) docid collection,
+  // as ScalarQuantizedBruteForceSearcher::Mutator::Create does. The leaves of
+  // a tree with bfloat16 brute force have neither a float dataset nor docids
+  // (the tree releases them), so upstream's AddDatapointToBase and
+  // RemoveDatapointFromBase had nothing to track the size with and returned
+  // kInvalidDatapointIndex, failing the RET_CHECKs in AddDatapoint and
+  // RemoveDatapoint below after the bfloat16 dataset was already changed:
+  // every add, update or delete on such a tree failed and corrupted it.
+  if (!searcher->docids()) {
+    SCANN_RETURN_IF_ERROR(
+        searcher->set_docids(make_unique<VariableLengthDocidCollection>(
+            VariableLengthDocidCollection::CreateWithEmptyDocids(
+                searcher->bfloat16_dataset_->size()))));
+  }
 
   return absl::WrapUnique<Bfloat16BruteForceSearcher::Mutator>(
       new Bfloat16BruteForceSearcher::Mutator(searcher,

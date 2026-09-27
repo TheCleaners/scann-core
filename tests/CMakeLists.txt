@@ -31,6 +31,14 @@ add_test(NAME api_exercise_avx2 COMMAND scann_core_api_exercise - 0)
 set_tests_properties(api_exercise_avx2 PROPERTIES ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
 set_tests_properties(api_exercise api_exercise_threaded api_exercise_avx2 PROPERTIES TIMEOUT 900)
 
+# Regressions for mutation defects: a failed RetrainAndReindex must leave the
+# index usable (upstream left a dangling docid collection), and a tree with
+# bfloat16 brute-force leaves must support add / update / delete.
+add_executable(scann_core_mutation_regressions cpp/mutation_regressions.cc)
+target_link_libraries(scann_core_mutation_regressions PRIVATE scann::core)
+add_test(NAME mutation_regressions COMMAND scann_core_mutation_regressions)
+set_tests_properties(mutation_regressions PROPERTIES TIMEOUT 900)
+
 # A Python test run with this build's package on PYTHONPATH.
 function(scann_add_python_test name script)
   add_test(NAME ${name}
