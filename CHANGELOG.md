@@ -75,6 +75,19 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
   - `int8_tile.cc` included its per-target header before
     `hwy/foreach_target.h`, which broke Highway's Neon pass;
   - `hwy-compact.cc` required AES for its static Neon target.
+- Builds without `NDEBUG` (Debug, or no build type) didn't compile: in
+  Highway's debug mode, ScaNN's Highway one-to-many kernels compile to
+  nothing, but are still called. Such builds now turn Highway's debug mode
+  off, which only disables Highway's internal assertions. Before, scann-core
+  hid this by forcing a Release build even as a subproject.
+- Used as a subproject (FetchContent/`add_subdirectory`), scann-core no
+  longer overrides the parent project's `BUILD_TESTING` or build type.
+- `SCANN_USE_SYSTEM_DEPS=ON` rejected a matching system zlib when CMake
+  reports both `ZLIB_VERSION` and `ZLIB_VERSION_STRING` (CMake >= 3.26).
+- The aarch64 toolchain file never found `qemu-aarch64-static`.
+- CMake builds run cargo with `--locked`, so they never rewrite `Cargo.lock`.
+- ctest timeouts (5 minutes for the Python tests, 15 for the C++ ones), so a
+  hang fails the test instead of stalling for ctest's default 25 minutes.
 
 ## 0.1.0 (2026-09-26)
 

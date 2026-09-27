@@ -21,11 +21,11 @@
 #   <build>/python/scann/scann_ops/cc/python/scann_pybind*.so
 #   <build>/python/scann/**/<name>_pb2.py        (the same 20 as the wheel)
 #
-# The three .py files under python/scann/scann_ops/py/ are byte-identical
-# copies of upstream's. The only intentional difference from the wheel is
-# scann/__init__.py, which omits the TensorFlow op import (scann-core does
-# not build the TF custom op, and importing TensorFlow just to discover
-# that would defeat the point of decoupling).
+# The three .py files under python/scann/scann_ops/py/ are upstream's;
+# scann_ops_pybind.py carries the fixes listed in NOTICE. scann/__init__.py
+# is scann-core's: it omits the TensorFlow op import (scann-core does not
+# build the TF custom op, and importing TensorFlow just to discover that
+# would defeat the point of decoupling).
 
 set(SCANN_PY_OUT "${PROJECT_BINARY_DIR}/python")
 

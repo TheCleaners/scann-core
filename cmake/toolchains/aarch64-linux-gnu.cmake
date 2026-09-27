@@ -21,7 +21,8 @@
 #   cmake -S . -B build-aarch64 -G Ninja \
 #         -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake
 #
-# Set SCANN_CLANG_SUFFIX (e.g. -19) to pick a versioned clang.
+# Set the environment variable SCANN_CLANG_SUFFIX (e.g. -19) to pick a
+# versioned clang.
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(_triple aarch64-linux-gnu)
@@ -42,7 +43,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-find_program(_scann_qemu qemu-aarch64 qemu-aarch64-static)
+find_program(_scann_qemu NAMES qemu-aarch64 qemu-aarch64-static)
 if(_scann_qemu)
   set(CMAKE_CROSSCOMPILING_EMULATOR "${_scann_qemu};-L;/usr/${_triple}")
 endif()

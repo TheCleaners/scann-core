@@ -69,10 +69,11 @@ set(_cargo_env
   "${CMAKE_COMMAND}" -E env
   "SCANN_CORE_BUILD_ENV=${SCANN_RUST_ENV_FILE}"
   "CXX=${CMAKE_CXX_COMPILER}")
+# --locked: never rewrite Cargo.lock in the source tree from a CMake build.
 set(_cargo_args
   --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml"
   --target-dir "${SCANN_RUST_TARGET_DIR}"
-  --release)
+  --release --locked)
 
 add_custom_target(scann_core_rust ALL
   COMMAND ${_cargo_env} "${CARGO_EXECUTABLE}" build --lib --examples ${_cargo_args}

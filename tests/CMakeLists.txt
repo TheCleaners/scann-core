@@ -23,6 +23,18 @@ add_executable(scann_core_api_exercise cpp/api_exercise.cc)
 target_link_libraries(scann_core_api_exercise PRIVATE scann::core)
 add_test(NAME api_exercise COMMAND scann_core_api_exercise - 1)
 add_test(NAME api_exercise_threaded COMMAND scann_core_api_exercise - 0)
+# Timeouts well above the normal run time (seconds natively; under QEMU and
+# sanitizers, a few minutes), so a hang fails instead of stalling ctest for
+# its default 25 minutes.
+set_tests_properties(api_exercise api_exercise_threaded PROPERTIES TIMEOUT 900)
+
+# A Python test run with this build's package on PYTHONPATH.
+function(scann_add_python_test name script)
+  add_test(NAME ${name}
+           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
+                   "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${script}" ${ARGN})
+  set_tests_properties(${name} PROPERTIES TIMEOUT 300)
+endfunction()
 
 set(SCANN_TEST_FIXTURES "" CACHE PATH
   "Optional: fixtures from tests/equivalence/run.py, also run through scann_core_api_exercise")
@@ -44,11 +56,8 @@ if(SCANN_CONFIG_BUILDER_EXPECTED)
            COMMAND scann_core_config_builder_test "${SCANN_CONFIG_BUILDER_EXPECTED}")
 elseif(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   set(_expected "${CMAKE_CURRENT_BINARY_DIR}/config_builder_expected")
-  add_test(NAME config_builder_expected
-           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
-                   "${Python_EXECUTABLE}"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/config_builder/make_expected.py"
-                   --out "${_expected}")
+  scann_add_python_test(config_builder_expected config_builder/make_expected.py
+                        --out "${_expected}")
   set_tests_properties(config_builder_expected PROPERTIES
     FIXTURES_SETUP config_builder_expected)
   add_test(NAME config_builder COMMAND scann_core_config_builder_test "${_expected}")
@@ -60,12 +69,7 @@ else()
 endif()
 
 if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
-  add_test(NAME python_docid_bookkeeping
-           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
-                   "${Python_EXECUTABLE}"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/python/test_docid_bookkeeping.py")
-  add_test(NAME python_concurrency
-           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
-                   "${Python_EXECUTABLE}"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/python/test_concurrency.py")
+  scann_add_python_test(python_docid_bookkeeping python/test_docid_bookkeeping.py)
+  # A deadlock between searches and updates would show up here as a hang.
+  scann_add_python_test(python_concurrency python/test_concurrency.py)
 endif()

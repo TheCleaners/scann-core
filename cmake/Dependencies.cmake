@@ -46,7 +46,15 @@ else()
 endif()
 
 # --- Dependency build options ----------------------------------------------
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+# Each dependency's own test suite is switched off below (ABSL_BUILD_TESTING,
+# protobuf_BUILD_TESTS, ...). BUILD_TESTING is forced off only when
+# scann-core is the top-level project, where it would otherwise default to ON
+# through abseil's include(CTest) and add CTest's dashboard targets. As a
+# subproject, BUILD_TESTING belongs to the parent project: forcing it here
+# would switch off the parent's tests.
+if(PROJECT_IS_TOP_LEVEL)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+endif()
 
 set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
 set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -150,7 +158,7 @@ if(SCANN_BUILD_PYTHON)
   # Runtime requirements of the Python package (not needed to build it).
   execute_process(
     COMMAND "${Python_EXECUTABLE}" -c
-      "import numpy, google.protobuf as p; v = tuple(int(x) for x in p.__version__.split('.')[:3]); raise SystemExit(0 if v >= (7, 36, 2) else 3)"
+      "import re, numpy, google.protobuf as p; v = tuple(int(x) for x in re.findall(r'\\d+', p.__version__)[:3]); raise SystemExit(0 if v >= (7, 36, 2) else 3)"
     RESULT_VARIABLE _scann_py_deps ERROR_QUIET OUTPUT_QUIET)
   if(_scann_py_deps EQUAL 0)
     set(SCANN_PYTHON_RUNTIME_OK TRUE)
@@ -189,7 +197,13 @@ endfunction()
 
 if(SCANN_USE_SYSTEM_DEPS)
   _scann_require_exact(absl "${absl_VERSION}" 20260817)
-  _scann_require_exact(zlib "${ZLIB_VERSION}${ZLIB_VERSION_STRING}" 1.3.2)
+  # FindZLIB reports ZLIB_VERSION (CMake >= 3.26); older versions only the
+  # now-deprecated ZLIB_VERSION_STRING.
+  if(DEFINED ZLIB_VERSION)
+    _scann_require_exact(zlib "${ZLIB_VERSION}" 1.3.2)
+  else()
+    _scann_require_exact(zlib "${ZLIB_VERSION_STRING}" 1.3.2)
+  endif()
   # protobuf's package version is the release number; its C++ runtime
   # reports 7.36.2 for the same release.
   _scann_require_exact(protobuf "${protobuf_VERSION}" 36.2 7.36.2)

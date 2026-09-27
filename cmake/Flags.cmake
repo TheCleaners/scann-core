@@ -24,12 +24,10 @@
 # --- Instruction set -------------------------------------------------------
 # Upstream's documented x86 build uses -mavx -mfma (and its PyPI wheels
 # require AVX+FMA); the ARM build uses -march=armv8-a+simd. That is the
-# portable default here. The equivalence tests in tests/ are run with
-# -DSCANN_ARCH_FLAGS="-march=native;-mtune=native" because that is what
-# the reference wheel on this machine was built with -- the ISA baseline
-# changes which code paths are compiled in (and FMA availability changes
-# floating-point contraction), so comparisons are only meaningful between
-# builds with the same value.
+# portable default here. The ISA baseline changes which code paths are
+# compiled in (and FMA availability changes floating-point contraction), so
+# bit-for-bit comparisons (tests/equivalence against the upstream wheel) are
+# only meaningful between builds with the same value: the default.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
   set(_scann_default_arch "-mavx;-mfma")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
@@ -74,6 +72,18 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 set(SCANN_GLOBAL_COMPILE_DEFINITIONS "")
+# Builds without NDEBUG (Debug, or no build type): Highway makes Lanes()
+# non-constexpr in its debug mode, so that code can't come to depend on it,
+# and ScaNN's Highway one-to-many kernels only exist when it is constexpr
+# (#if HWY_HAVE_CONSTEXPR_LANES in one_to_many_impl_highway.inc) while
+# one_to_many_asymmetric.h calls them unconditionally: ScaNN doesn't compile
+# ("use of undeclared identifier 'highway'"). Upstream only builds with
+# NDEBUG (Bazel -c opt). Turning Highway's debug mode off there disables
+# only Highway's internal assertions; release and sanitizer builds are
+# unaffected. scann-core's public headers don't include Highway, so this
+# stays inside scann-core's build.
+list(APPEND SCANN_GLOBAL_COMPILE_DEFINITIONS
+  "$<$<NOT:$<CONFIG:Release,RelWithDebInfo,MinSizeRel>>:HWY_IS_DEBUG_BUILD=0>")
 if(NOT SCANN_HWY_DISABLED_TARGETS STREQUAL "")
   list(APPEND SCANN_GLOBAL_COMPILE_DEFINITIONS "HWY_DISABLED_TARGETS=${SCANN_HWY_DISABLED_TARGETS}")
 endif()

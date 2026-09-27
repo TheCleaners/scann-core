@@ -25,10 +25,10 @@ if(NOT DEFINED CMAKE_C_FLAGS_RELEASE)
   set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "Flags used by the C compiler during RELEASE builds.")
 endif()
 
-# Prefer clang when no compiler was chosen (CC/CXX or -DCMAKE_<LANG>_COMPILER):
-# it's upstream's compiler, and the one results are verified against
-# upstream with. GCC >= 13 works too (see below).
-if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+# Prefer clang when no compiler was chosen (CC/CXX, -DCMAKE_<LANG>_COMPILER
+# or a toolchain file): it's upstream's compiler, and the one the
+# equivalence checks against upstream use. GCC >= 13 works too (see below).
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX} AND NOT CMAKE_TOOLCHAIN_FILE)
   find_program(_scann_clangxx clang++ NO_CACHE)
   find_program(_scann_clang clang NO_CACHE)
   if(_scann_clangxx AND _scann_clang AND NOT DEFINED ENV{CC} AND NOT DEFINED CMAKE_C_COMPILER)
@@ -85,7 +85,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+# Default to Release, but only as the top-level project: as a subproject,
+# the build type is the parent project's to choose.
+if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
@@ -108,7 +110,7 @@ if(NOT SCANN_BUILD_STATIC AND NOT SCANN_BUILD_SHARED)
   message(FATAL_ERROR "At least one of SCANN_BUILD_STATIC / SCANN_BUILD_SHARED must be ON")
 endif()
 if((SCANN_BUILD_RUST_BINDINGS OR SCANN_RUST_BUILD_ENV_ONLY) AND NOT SCANN_BUILD_STATIC)
-  message(FATAL_ERROR "SCANN_BUILD_RUST_BINDINGS=ON requires SCANN_BUILD_STATIC=ON (the crate links the static archive)")
+  message(FATAL_ERROR "The Rust bindings (SCANN_BUILD_RUST_BINDINGS or SCANN_RUST_BUILD_ENV_ONLY) require SCANN_BUILD_STATIC=ON (the crate links the static archive)")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
