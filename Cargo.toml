@@ -47,7 +47,11 @@ include = [
   "/core/**",
   "/src/**",
   "/third_party/**",
-  "/rust/**",
+  "/rust/CMakeLists.txt",
+  "/rust/README.md",
+  "/rust/build.rs",
+  "/rust/src/**",
+  "/rust/tests/**",
   "/examples/rust/**",
   "/docs/tutorial/code/rust/glove.rs",
 ]
