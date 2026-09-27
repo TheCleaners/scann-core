@@ -3,6 +3,35 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
+## 0.2.0-rc.2 (unreleased)
+
+### Added
+- C++: `ScannInterface::SerializeToDirectory(dir)` writes the whole index,
+  manifest included, so that an interrupted save can't leave a mixed
+  directory (see Fixed). The Python and Rust `serialize` use it.
+
+### Fixed
+- Loading a damaged or inconsistent index directory crashed the process
+  (segfault, SIGFPE, abort, uncaught C++ exceptions) or loaded silently
+  wrong data. Of 57 damaged variants of small indexes, the upstream wheel
+  crashed on 9 and loaded 13 inconsistent ones; all 22 are now errors (7
+  others are self-consistent and still load, e.g. a missing tokenization
+  is recomputed). The loader checks `.npy` headers, dtypes and shapes, row
+  counts and dimensionalities across files, token ranges, the partitioner,
+  the AH codes and SOAR assets. Files swapped between two indexes of
+  identical shape still can't be detected. New test: `artifact_loading`.
+- `serialize()` wrote into the directory in place, config first, so an
+  interrupted re-save left a new config next to the old files. It now
+  stages the files and commits them behind a marker that makes loading
+  fail until the save completes. It also removes the previous index's
+  files that the new one lacks; before, a stale `scann_docids.pkl` was
+  attached to an index saved without docids. New test:
+  `python_serialization`.
+- A tree with every point deleted serialized to a directory that couldn't
+  be loaded; so did any tree with bfloat16 brute-force leaves.
+- A failed AH lookup table in a tree search threw from `.value()` instead
+  of returning an error.
+
 ## 0.2.0-rc.1 (2026-09-27)
 
 Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
