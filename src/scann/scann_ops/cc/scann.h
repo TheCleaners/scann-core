@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -58,6 +59,15 @@ class ScannInterface {
   static StatusOr<ScannArtifacts> LoadArtifacts(
       const std::string& artifacts_dir,
       const std::string& scann_assets_pbtxt = "");
+  // scann-core: LoadArtifacts(artifacts_dir) from the directory's files in
+  // memory. `files` maps each file name, as SerializeToDirectory writes it
+  // (scann_config.pb, scann_assets.pbtxt and the assets it lists), to its
+  // contents; other entries are ignored. An asset path from the manifest is
+  // looked up as is, then by its last component, so both relative_path
+  // serializations and absolute ones load. The contents are only read
+  // during the call. The TensorFlow op (tf_op/) loads indexes this way.
+  static StatusOr<ScannArtifacts> LoadArtifactsFromMemory(
+      const absl::flat_hash_map<std::string, absl::string_view>& files);
 
   static StatusOr<std::unique_ptr<SingleMachineSearcherBase<float>>>
   CreateSearcher(ScannArtifacts artifacts);

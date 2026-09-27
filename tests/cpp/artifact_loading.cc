@@ -23,6 +23,8 @@
 //    headers, wrong dtypes and shapes, out-of-range tokens, files swapped
 //    between indexes (as an interrupted in-place re-serialize leaves them),
 //    and manifest errors.
+//  - Every directory loaded here is also loaded from memory
+//    (LoadArtifactsFromMemory), which must agree with loading the files.
 //  - A tree with every point deleted must serialize to a directory that
 //    loads (upstream wrote no data for it), and so must a tree with
 //    bfloat16 brute-force leaves.
@@ -48,6 +50,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -170,23 +173,70 @@ std::string BuildAndSave(const std::string& name, const Spec& spec, size_t n,
   return dir;
 }
 
-// LoadArtifacts + Initialize, then a search and a mutation, as a user would.
-absl::Status Load(const std::string& dir, size_t* n_points = nullptr) {
-  auto artifacts = ScannInterface::LoadArtifacts(dir);
+std::string ReadFile(const std::string& path);
+
+// Initialize from loaded artifacts, then a search, as a user would.
+absl::Status InitializeAndSearch(
+    absl::StatusOr<ScannInterface::ScannArtifacts> artifacts,
+    size_t* n_points, NNResultsVector* res) {
   if (!artifacts.ok()) return artifacts.status();
   ScannInterface s;
   absl::Status st = s.Initialize(*std::move(artifacts));
   if (!st.ok()) return st;
-  if (n_points) *n_points = s.n_points();
+  *n_points = s.n_points();
   Vec q = RandomData(1, s.dimensionality(), 99);
-  NNResultsVector res;
-  st = s.Search(Ptr(q), &res, 10, -1, kLeaves);
+  st = s.Search(Ptr(q), res, 10, -1, kLeaves);
   if (!st.ok()) return st;
-  for (const auto& [idx, dist] : res)
+  for (const auto& [idx, dist] : *res)
     if (idx >= s.n_points())
       return absl::InternalError(absl::StrCat("result index ", idx,
                                               " out of range"));
   return absl::OkStatus();
+}
+
+// The same neighbors, and distances up to rounding: two loads of the same
+// SOAR + AH index regrown from empty can differ in the last bits of a
+// distance.
+bool SameResults(const NNResultsVector& a, const NNResultsVector& b,
+                 size_t n_a, size_t n_b) {
+  if (n_a != n_b || a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (a[i].first != b[i].first ||
+        std::abs(a[i].second - b[i].second) >
+            1e-5f * std::max(1.0f, std::abs(a[i].second)))
+      return false;
+  return true;
+}
+
+// LoadArtifacts + Initialize + a search. The same directory is also loaded
+// from memory (LoadArtifactsFromMemory, which the TensorFlow op uses), which
+// must succeed or fail alike and find the same neighbors.
+absl::Status Load(const std::string& dir, size_t* n_points = nullptr) {
+  size_t n = 0;
+  NNResultsVector res;
+  absl::Status st =
+      InitializeAndSearch(ScannInterface::LoadArtifacts(dir), &n, &res);
+
+  std::vector<std::string> contents;
+  absl::flat_hash_map<std::string, absl::string_view> files;
+  for (const auto& e : fs::directory_iterator(dir))
+    if (e.is_regular_file()) contents.push_back(ReadFile(e.path().string()));
+  size_t i = 0;
+  for (const auto& e : fs::directory_iterator(dir))
+    if (e.is_regular_file())
+      files[e.path().filename().string()] = contents[i++];
+  size_t mem_n = 0;
+  NNResultsVector mem_res;
+  const absl::Status mem_st = InitializeAndSearch(
+      ScannInterface::LoadArtifactsFromMemory(files), &mem_n, &mem_res);
+  if (st.ok() != mem_st.ok())
+    Fail(absl::StrCat(dir, ": loading from files: ", st.ToString(),
+                      "; from memory: ", mem_st.ToString()));
+  else if (st.ok() && !SameResults(res, mem_res, n, mem_n))
+    Fail(absl::StrCat(dir, ": loaded from memory, the index differs"));
+
+  if (st.ok() && n_points) *n_points = n;
+  return st;
 }
 
 void ExpectError(const std::string& dir, const std::string& what,

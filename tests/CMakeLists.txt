@@ -43,7 +43,8 @@ set_tests_properties(mutation_regressions PROPERTIES TIMEOUT 900)
 # Damaged or inconsistent index directories (generated at run time) fail to
 # load with an error instead of crashing or loading garbage; all-deleted
 # and bfloat16-leaf trees round-trip; SerializeToDirectory replaces an index
-# in one commit.
+# in one commit. Every directory is also loaded from memory
+# (LoadArtifactsFromMemory, used by the TensorFlow op), with the same result.
 add_executable(scann_core_artifact_loading cpp/artifact_loading.cc)
 target_link_libraries(scann_core_artifact_loading PRIVATE scann::core)
 add_test(NAME artifact_loading COMMAND scann_core_artifact_loading)

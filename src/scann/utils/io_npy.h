@@ -21,6 +21,8 @@
 
 #include <cstddef>
 #include <fstream>
+#include <istream>
+#include <streambuf>
 #include <string>
 #include <utility>
 #include <vector>
@@ -95,21 +97,67 @@ Status DatasetToNumpy(absl::string_view filename, const DenseDataset<T>& data) {
 
 namespace npy_internal {
 
-// scann-core: opens `filename` as a .npy file of dtype `expected_descr` (as
-// numpy_type_name returns it, e.g. "'<f4'") and validates it: magic,
-// version, header length, a well-formed header dict, dtype kind, word size
-// and byte order, C order, a shape whose element and byte counts don't
-// overflow, and a data size equal to the rest of the file. Returns the
-// shape, with `in` positioned at the data. Upstream parsed the header with
-// cnpy, which reads past its buffer for a bad header length, throws
-// std::out_of_range for a dimension above INT_MAX, and ignores the dtype's
-// kind and byte order (an int32 or big-endian file was read as float32);
-// nothing compared the shape with the file size.
+// scann-core: reads and validates the .npy header at the start of `in` (named
+// `name` in errors), for dtype `expected_descr` (as numpy_type_name returns
+// it, e.g. "'<f4'"): magic, version, header length, a well-formed header
+// dict, dtype kind, word size and byte order, C order, a shape whose element
+// and byte counts don't overflow, and a data size equal to the rest of the
+// stream (which must be seekable). Returns the shape, with `in` positioned
+// at the data. Upstream parsed the header with cnpy, which reads past its
+// buffer for a bad header length, throws std::out_of_range for a dimension
+// above INT_MAX, and ignores the dtype's kind and byte order (an int32 or
+// big-endian file was read as float32); nothing compared the shape with the
+// file size.
+StatusOr<std::vector<size_t>> ReadNpyHeader(absl::string_view name,
+                                            absl::string_view expected_descr,
+                                            size_t word_size,
+                                            std::istream& in);
+
+// scann-core: opens `filename` and reads its header with ReadNpyHeader.
 StatusOr<std::vector<size_t>> OpenNpy(absl::string_view filename,
                                       absl::string_view expected_descr,
                                       size_t word_size, std::ifstream& in);
 
+// Reads the data of an array of `shape`, after its header.
+template <typename T>
+StatusOr<pair<std::vector<T>, std::vector<size_t>>> ReadNpyData(
+    absl::string_view name, std::vector<size_t> shape, std::istream& in) {
+  size_t total_size = 1;
+  for (size_t s : shape) total_size *= s;
+  vector<T> buffer(total_size);
+  if (total_size > 0 && !in.read(reinterpret_cast<char*>(buffer.data()),
+                                 total_size * sizeof(T)))
+    return InternalError(absl::StrCat("I/O error reading ", name));
+  return std::make_pair(std::move(buffer), std::move(shape));
+}
+
 }  // namespace npy_internal
+
+// scann-core: a read-only, seekable stream buffer over bytes the caller
+// owns (which must outlive it), for reading in-memory files as streams.
+class ConstMemoryStreamBuf : public std::streambuf {
+ public:
+  ConstMemoryStreamBuf(const char* data, size_t size) {
+    char* p = const_cast<char*>(data);
+    setg(p, p, p + size);
+  }
+
+ protected:
+  pos_type seekoff(off_type off, std::ios_base::seekdir dir,
+                   std::ios_base::openmode which) override {
+    if (!(which & std::ios_base::in)) return pos_type(off_type(-1));
+    off_type base = 0;
+    if (dir == std::ios_base::cur) base = gptr() - eback();
+    if (dir == std::ios_base::end) base = egptr() - eback();
+    const off_type pos = base + off;
+    if (pos < 0 || pos > egptr() - eback()) return pos_type(off_type(-1));
+    setg(eback(), eback() + pos, egptr());
+    return pos_type(pos);
+  }
+  pos_type seekpos(pos_type pos, std::ios_base::openmode which) override {
+    return seekoff(off_type(pos), std::ios_base::beg, which);
+  }
+};
 
 template <typename T>
 StatusOr<pair<std::vector<T>, std::vector<size_t>>> NumpyToVectorAndShape(
@@ -118,13 +166,20 @@ StatusOr<pair<std::vector<T>, std::vector<size_t>>> NumpyToVectorAndShape(
   SCANN_ASSIGN_OR_RETURN(
       std::vector<size_t> shape,
       npy_internal::OpenNpy(filename, numpy_type_name<T>(), sizeof(T), in));
-  size_t total_size = 1;
-  for (size_t s : shape) total_size *= s;
-  vector<T> buffer(total_size);
-  if (total_size > 0 && !in.read(reinterpret_cast<char*>(buffer.data()),
-                                 total_size * sizeof(T)))
-    return InternalError(absl::StrCat("I/O error reading ", filename));
-  return std::make_pair(std::move(buffer), std::move(shape));
+  return npy_internal::ReadNpyData<T>(filename, std::move(shape), in);
+}
+
+// scann-core: NumpyToVectorAndShape for the contents of a .npy file in
+// memory (`name` identifies it in errors).
+template <typename T>
+StatusOr<pair<std::vector<T>, std::vector<size_t>>> NumpyBytesToVectorAndShape(
+    absl::string_view name, absl::string_view bytes) {
+  ConstMemoryStreamBuf buf(bytes.data(), bytes.size());
+  std::istream in(&buf);
+  SCANN_ASSIGN_OR_RETURN(
+      std::vector<size_t> shape,
+      npy_internal::ReadNpyHeader(name, numpy_type_name<T>(), sizeof(T), in));
+  return npy_internal::ReadNpyData<T>(name, std::move(shape), in);
 }
 
 }  // namespace research_scann

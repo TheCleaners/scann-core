@@ -29,7 +29,8 @@ isn't a one-line change:
       ReshapeNNResult / ReshapeBatchedNNResult templates are const;
       default_num_neighbors() and NormalizeDatapoints() accessors (for the
       scann_npy.cc changes below).
-      Declares SerializeToDirectory() (see scann.cc).
+      Declares SerializeToDirectory() and LoadArtifactsFromMemory() (see
+      scann.cc).
   src/scann/scann_ops/cc/scann.cc
       Initialize() validates dataset shapes (n_points == 0 divided by zero;
       a size that isn't a multiple of n_points silently produced a wrong
@@ -68,13 +69,18 @@ isn't a one-line change:
       Serialize() wrote scann_config.pb first). Without relative_path it
       records absolute asset paths even for a relative directory (upstream
       recorded dir/name, which loaded as dir/dir/name).
+      LoadArtifactsFromMemory() is new: LoadArtifacts() from an index
+      directory's files held in memory (used by the TensorFlow op in
+      tf_op/), with the same validation.
   src/scann/utils/io_npy.h, src/scann/utils/io_npy.cc
       NumpyToVectorAndShape() validates the .npy file (magic, version,
       header length, header dict, dtype kind, size and byte order, C order,
       shape overflow, data size against the file size) with its own parser
       instead of cnpy::parse_npy_header, which read past its buffer for a
       bad header length, threw std::out_of_range for dimensions above
-      INT_MAX, and ignored the dtype's kind and byte order.
+      INT_MAX, and ignored the dtype's kind and byte order. The header
+      reader works on any seekable stream, and NumpyBytesToVectorAndShape()
+      reads a .npy file's contents from memory.
   src/scann/utils/io_oss_wrapper.cc
       File writes are flushed and checked, so a failed write (e.g. a full
       disk) is reported instead of being lost in the stream's destructor.

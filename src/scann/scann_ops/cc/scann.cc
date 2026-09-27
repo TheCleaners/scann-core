@@ -44,6 +44,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "google/protobuf/message.h"
 #include "scann/base/single_machine_base.h"
 #include "scann/data_format/dataset.h"
 #include "scann/oss_wrappers/scann_status.h"
@@ -188,10 +189,56 @@ Status CheckSerializationComplete(absl::string_view assets_pbtxt) {
   return OkStatus();
 }
 
+// scann-core: where LoadArtifacts reads the asset files from: the file
+// system, or a caller's in-memory copies of the files
+// (LoadArtifactsFromMemory).
+class AssetReader {
+ public:
+  using Files = absl::flat_hash_map<std::string, absl::string_view>;
+
+  AssetReader() = default;
+  explicit AssetReader(const Files* files) : files_(files) {}
+
+  template <typename T>
+  StatusOr<pair<vector<T>, vector<size_t>>> Npy(absl::string_view path) const {
+    if (files_ == nullptr) return NumpyToVectorAndShape<T>(path);
+    SCANN_ASSIGN_OR_RETURN(absl::string_view bytes, Get(path));
+    return NumpyBytesToVectorAndShape<T>(path, bytes);
+  }
+
+  Status Proto(absl::string_view path,
+               google::protobuf::Message* message) const {
+    if (files_ == nullptr) return ReadProtobufFromFile(path, message);
+    SCANN_ASSIGN_OR_RETURN(absl::string_view bytes, Get(path));
+    if (!message->ParseFromString(bytes))
+      return InvalidArgumentError(
+          absl::StrCat("Failed to parse ", message->GetTypeName(),
+                       " proto from ", path));
+    return OkStatus();
+  }
+
+  // The file `path`, or the file named like its last component: the
+  // manifest of an index serialized with relative_path=False lists absolute
+  // paths.
+  StatusOr<absl::string_view> Get(absl::string_view path) const {
+    auto it = files_->find(path);
+    if (it == files_->end())
+      it = files_->find(
+          std::filesystem::path(std::string(path)).filename().string());
+    if (it == files_->end())
+      return NotFoundError(
+          absl::StrCat("The index files have no ", path, "."));
+    return it->second;
+  }
+
+ private:
+  const Files* files_ = nullptr;
+};
+
 template <typename T>
-StatusOr<pair<vector<T>, vector<size_t>>> LoadNpyOfRank(absl::string_view path,
-                                                        size_t rank) {
-  SCANN_ASSIGN_OR_RETURN(auto v, NumpyToVectorAndShape<T>(path));
+StatusOr<pair<vector<T>, vector<size_t>>> LoadNpyOfRank(
+    const AssetReader& reader, absl::string_view path, size_t rank) {
+  SCANN_ASSIGN_OR_RETURN(auto v, reader.Npy<T>(path));
   if (v.second.size() != rank)
     return InvalidArgumentError(absl::StrCat(path, " has ", v.second.size(),
                                              " dimensions; expected ", rank,
@@ -202,8 +249,9 @@ StatusOr<pair<vector<T>, vector<size_t>>> LoadNpyOfRank(absl::string_view path,
 // A row-major (n, d) .npy file as a dataset. Keeps d when n == 0. (An empty
 // index can have an empty dataset of unknown dimensionality, (0, 0).)
 template <typename T>
-StatusOr<shared_ptr<DenseDataset<T>>> LoadDenseNpy(absl::string_view path) {
-  SCANN_ASSIGN_OR_RETURN(auto v, LoadNpyOfRank<T>(path, 2));
+StatusOr<shared_ptr<DenseDataset<T>>> LoadDenseNpy(const AssetReader& reader,
+                                                   absl::string_view path) {
+  SCANN_ASSIGN_OR_RETURN(auto v, LoadNpyOfRank<T>(reader, path, 2));
   const size_t n = v.second[0], d = v.second[1];
   if (d == 0 && n > 0)
     return InvalidArgumentError(absl::StrCat(path, " has 0 columns."));
@@ -322,8 +370,11 @@ Status ValidateHashedDataset(const CentersForAllSubspaces& codebook,
 
 }  // namespace
 
-StatusOr<ScannInterface::ScannArtifacts> ScannInterface::LoadArtifacts(
-    const ScannConfig& config, const ScannAssets& assets) {
+namespace {
+
+StatusOr<ScannInterface::ScannArtifacts> LoadArtifactsWith(
+    const AssetReader& reader, const ScannConfig& config,
+    const ScannAssets& assets) {
   SingleMachineFactoryOptions opts;
   const bool soar = HasSoar(config);
 
@@ -358,21 +409,22 @@ StatusOr<ScannInterface::ScannArtifacts> ScannInterface::LoadArtifacts(
       case ScannAsset::AH_CENTERS:
         opts.ah_codebook = std::make_shared<CentersForAllSubspaces>();
         SCANN_RETURN_IF_ERROR(
-            ReadProtobufFromFile(asset_path, opts.ah_codebook.get()));
+            reader.Proto(asset_path, opts.ah_codebook.get()));
         break;
       case ScannAsset::PARTITIONER:
         opts.serialized_partitioner = std::make_shared<SerializedPartitioner>();
-        SCANN_RETURN_IF_ERROR(ReadProtobufFromFile(
-            asset_path, opts.serialized_partitioner.get()));
+        SCANN_RETURN_IF_ERROR(
+            reader.Proto(asset_path, opts.serialized_partitioner.get()));
         break;
       case ScannAsset::TOKENIZATION_NPY: {
-        SCANN_ASSIGN_OR_RETURN(auto v, LoadNpyOfRank<int32_t>(asset_path, 1));
+        SCANN_ASSIGN_OR_RETURN(auto v,
+                               LoadNpyOfRank<int32_t>(reader, asset_path, 1));
         tokenization = std::move(v.first);
         break;
       }
       case ScannAsset::AH_DATASET_NPY: {
         SCANN_ASSIGN_OR_RETURN(opts.hashed_dataset,
-                               LoadDenseNpy<uint8_t>(asset_path));
+                               LoadDenseNpy<uint8_t>(reader, asset_path));
         break;
       }
       case ScannAsset::AH_DATASET_SOAR_NPY: {
@@ -382,33 +434,36 @@ StatusOr<ScannInterface::ScannArtifacts> ScannInterface::LoadArtifacts(
               "no SOAR spilling. The directory may mix files of different "
               "indexes.");
         SCANN_ASSIGN_OR_RETURN(soar_hashed,
-                               LoadNpyOfRank<uint8_t>(asset_path, 2));
+                               LoadNpyOfRank<uint8_t>(reader, asset_path, 2));
         break;
       }
       case ScannAsset::DATASET_NPY: {
-        SCANN_ASSIGN_OR_RETURN(dataset, LoadDenseNpy<float>(asset_path));
+        SCANN_ASSIGN_OR_RETURN(dataset,
+                               LoadDenseNpy<float>(reader, asset_path));
         break;
       }
       case ScannAsset::INT8_DATASET_NPY: {
         SCANN_ASSIGN_OR_RETURN(fp->fixed_point_dataset,
-                               LoadDenseNpy<int8_t>(asset_path));
+                               LoadDenseNpy<int8_t>(reader, asset_path));
         break;
       }
       case ScannAsset::INT8_MULTIPLIERS_NPY: {
-        SCANN_ASSIGN_OR_RETURN(auto v, LoadNpyOfRank<float>(asset_path, 1));
+        SCANN_ASSIGN_OR_RETURN(auto v,
+                               LoadNpyOfRank<float>(reader, asset_path, 1));
         fp->multiplier_by_dimension =
             make_shared<vector<float>>(std::move(v.first));
         break;
       }
       case ScannAsset::INT8_NORMS_NPY: {
-        SCANN_ASSIGN_OR_RETURN(auto v, LoadNpyOfRank<float>(asset_path, 1));
+        SCANN_ASSIGN_OR_RETURN(auto v,
+                               LoadNpyOfRank<float>(reader, asset_path, 1));
         fp->squared_l2_norm_by_datapoint =
             make_shared<vector<float>>(std::move(v.first));
         break;
       }
       case ScannAsset::BF16_DATASET_NPY: {
         SCANN_ASSIGN_OR_RETURN(opts.bfloat16_dataset,
-                               LoadDenseNpy<int16_t>(asset_path));
+                               LoadDenseNpy<int16_t>(reader, asset_path));
         break;
       }
       default:
@@ -559,6 +614,27 @@ StatusOr<ScannInterface::ScannArtifacts> ScannInterface::LoadArtifacts(
     opts.pre_quantized_fixed_point = fp;
   }
   return std::make_tuple(config, std::move(dataset), std::move(opts));
+}
+
+}  // namespace
+
+StatusOr<ScannInterface::ScannArtifacts> ScannInterface::LoadArtifacts(
+    const ScannConfig& config, const ScannAssets& assets) {
+  return LoadArtifactsWith(AssetReader(), config, assets);
+}
+
+StatusOr<ScannInterface::ScannArtifacts>
+ScannInterface::LoadArtifactsFromMemory(
+    const absl::flat_hash_map<std::string, absl::string_view>& files) {
+  const AssetReader reader(&files);
+  ScannAssets assets;
+  SCANN_ASSIGN_OR_RETURN(absl::string_view assets_pbtxt,
+                         reader.Get("scann_assets.pbtxt"));
+  SCANN_RETURN_IF_ERROR(CheckSerializationComplete(assets_pbtxt));
+  SCANN_RETURN_IF_ERROR(ParseTextProto(&assets, assets_pbtxt));
+  ScannConfig config;
+  SCANN_RETURN_IF_ERROR(reader.Proto("scann_config.pb", &config));
+  return LoadArtifactsWith(reader, config, assets);
 }
 
 std::string RewriteAssetFilenameIfRelative(const string& artifacts_dir,

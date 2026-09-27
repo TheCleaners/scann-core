@@ -107,13 +107,21 @@ StatusOr<std::vector<size_t>> OpenNpy(absl::string_view filename,
                                       absl::string_view expected_descr,
                                       size_t word_size, std::ifstream& in) {
   const std::string fname(filename);
+  in.open(fname, std::ifstream::binary);
+  if (!in.is_open())
+    return NotFoundError(absl::StrCat("Failed to open file ", fname));
+  return ReadNpyHeader(filename, expected_descr, word_size, in);
+}
+
+StatusOr<std::vector<size_t>> ReadNpyHeader(absl::string_view name,
+                                            absl::string_view expected_descr,
+                                            size_t word_size,
+                                            std::istream& in) {
+  const std::string fname(name);
   const auto bad = [&fname](absl::string_view why) {
     return InvalidArgumentError(
         absl::StrCat("Invalid .npy file ", fname, ": ", why));
   };
-  in.open(fname, std::ifstream::binary);
-  if (!in.is_open())
-    return NotFoundError(absl::StrCat("Failed to open file ", fname));
   in.seekg(0, std::ios::end);
   const std::streamoff file_size_signed = in.tellg();
   in.seekg(0, std::ios::beg);
