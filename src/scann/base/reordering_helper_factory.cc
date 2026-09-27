@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/base/reordering_helper_factory.h"
 
@@ -186,6 +190,12 @@ StatusOrHelper<T> ExactReorderingFactory(
     } else {
     }
   }
+  // scann-core: ExactReorderingHelper's constructor LOG(FATAL)s without a
+  // dataset (e.g. an index directory whose dataset.npy is missing).
+  if (!dataset)
+    return FailedPreconditionError(
+        "Exact reordering needs the original (float) dataset, which is "
+        "missing.");
   return {make_unique<ExactReorderingHelper<T>>(reordering_dist, dataset)};
 }
 

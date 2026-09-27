@@ -11,18 +11,23 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_UTILS_IO_NPY_H_
 #define SCANN_UTILS_IO_NPY_H_
 
 #include <cstddef>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
-#include "cnpy/cnpy.h"
 #include "scann/data_format/dataset.h"
 #include "scann/oss_wrappers/scann_status.h"
 #include "scann/utils/common.h"
@@ -88,28 +93,37 @@ Status DatasetToNumpy(absl::string_view filename, const DenseDataset<T>& data) {
                      data.dimensionality());
 }
 
+namespace npy_internal {
+
+// scann-core: opens `filename` as a .npy file of dtype `expected_descr` (as
+// numpy_type_name returns it, e.g. "'<f4'") and validates it: magic,
+// version, header length, a well-formed header dict, dtype kind, word size
+// and byte order, C order, a shape whose element and byte counts don't
+// overflow, and a data size equal to the rest of the file. Returns the
+// shape, with `in` positioned at the data. Upstream parsed the header with
+// cnpy, which reads past its buffer for a bad header length, throws
+// std::out_of_range for a dimension above INT_MAX, and ignores the dtype's
+// kind and byte order (an int32 or big-endian file was read as float32);
+// nothing compared the shape with the file size.
+StatusOr<std::vector<size_t>> OpenNpy(absl::string_view filename,
+                                      absl::string_view expected_descr,
+                                      size_t word_size, std::ifstream& in);
+
+}  // namespace npy_internal
+
 template <typename T>
 StatusOr<pair<std::vector<T>, std::vector<size_t>>> NumpyToVectorAndShape(
     absl::string_view filename) {
-  OpenSourceableFileReader reader(filename);
-  std::string header;
-  SCANN_RETURN_IF_ERROR(reader.ReadLine(header));
-
-  size_t word_size;
-  vector<size_t> shape;
-  bool fortran_order;
-  cnpy::parse_npy_header(reinterpret_cast<const unsigned char*>(header.c_str()),
-                         word_size, shape, fortran_order);
-  if (fortran_order) return FailedPreconditionError("Numpy file isn't C-style");
-  if (word_size != sizeof(T))
-    return FailedPreconditionError("word_size != sizeof(T): %d != %d",
-                                   word_size, sizeof(T));
-
+  std::ifstream in;
+  SCANN_ASSIGN_OR_RETURN(
+      std::vector<size_t> shape,
+      npy_internal::OpenNpy(filename, numpy_type_name<T>(), sizeof(T), in));
   size_t total_size = 1;
   for (size_t s : shape) total_size *= s;
   vector<T> buffer(total_size);
-  SCANN_RETURN_IF_ERROR(reader.Read(total_size * sizeof(T),
-                                    reinterpret_cast<char*>(buffer.data())));
+  if (total_size > 0 && !in.read(reinterpret_cast<char*>(buffer.data()),
+                                 total_size * sizeof(T)))
+    return InternalError(absl::StrCat("I/O error reading ", filename));
   return std::make_pair(std::move(buffer), std::move(shape));
 }
 

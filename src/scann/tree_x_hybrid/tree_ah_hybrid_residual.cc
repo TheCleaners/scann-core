@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -886,11 +890,15 @@ Status TreeAHHybridResidual::FindNeighborsInternal1(
     DCHECK(query_preprocessing_results->lookup_table());
     lookup_table = query_preprocessing_results->lookup_table();
   } else {
+    // scann-core: upstream called .value(), which throws (or aborts) instead
+    // of returning the error.
+    SCANN_ASSIGN_OR_RETURN(
+        auto created_table,
+        asymmetric_queryer_->CreateLookupTable(
+            maybe_projected_query, lookup_type_tag_,
+            fixed_point_lut_conversion_options_));
     lookup_table = make_shared<AsymmetricHashingOptionalParameters>(
-        asymmetric_queryer_
-            ->CreateLookupTable(maybe_projected_query, lookup_type_tag_,
-                                fixed_point_lut_conversion_options_)
-            .value());
+        std::move(created_table));
   }
 
   if (params.pre_reordering_crowding_enabled()) {
