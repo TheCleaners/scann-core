@@ -410,7 +410,8 @@ pointing at the wrong vectors.
 * The Python module is safe to share between threads, and runs without the
   GIL on free-threaded Python (see [Threads](#threads)).
 * Rust batched search returns exactly the neighbours found per query. The
-  Python API pads short rows with index 0 and NaN distance.
+  Python API pads short rows with index 0 and NaN distance (docid `None`
+  when the searcher has docids; upstream returned `docids[0]`).
 * `ConfigBuilder` (C++/Rust) returns errors where Python's builder silently
   ignores options, and keeps `upper_tree(soar_lambda=0)` (Python turns it
   into 1.5).

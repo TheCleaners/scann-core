@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/partitioning/kmeans_tree_partitioner.h"
 
@@ -393,6 +397,14 @@ Datapoint<FloatT> ResidualizeImpl(const DatapointPtr<T>& dptr,
 template <typename T>
 StatusOr<Datapoint<float>> KMeansTreePartitioner<T>::ResidualizeToFloat(
     const DatapointPtr<T>& dptr, int32_t token) const {
+  // scann-core: upstream indexed the centers with `token` unchecked. A
+  // NaN/infinity datapoint tokenizes to -1, so adding one to a residual AH
+  // tree read out of bounds (heap overflow) before anything rejected it.
+  if (token < 0 || token >= n_tokens())
+    return InvalidArgumentError(
+        absl::StrCat("Invalid partition token ", token, " (", n_tokens(),
+                     " partitions); does the datapoint contain NaN or "
+                     "infinity?"));
   const DatapointPtr<float> center = kmeans_tree()->is_flat()
                                          ? LeafCenters()[token]
                                          : kmeans_tree()->CenterForToken(token);
@@ -1018,6 +1030,15 @@ Status KMeansTreePartitioner<T>::OrthogonalityAmplifiedTokenForDatapointBatched(
   if (primary_centroids.empty()) return OkStatus();
 
   const DenseDataset<float>& centers_dataset = LeafCenters();
+  // scann-core: upstream indexed the centers with the primary tokens
+  // unchecked. A NaN/infinity datapoint has no nearest center (token -1), so
+  // SOAR-tokenizing one for a mutation read out of bounds (segfault).
+  for (const auto& primary : primary_centroids)
+    if (primary.first >= centers_dataset.size())
+      return InvalidArgumentError(absl::StrCat(
+          "Invalid primary partition token ",
+          static_cast<int32_t>(primary.first), " (", centers_dataset.size(),
+          " partitions); does the datapoint contain NaN or infinity?"));
   auto create_normalized_residual_dataset =
       [&](size_t start, size_t end) -> DenseDataset<float> {
     CHECK_GT(end, start);

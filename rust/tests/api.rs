@@ -340,6 +340,73 @@ fn errors_not_crashes() {
     assert!(all.indices.len() <= 500 && all.indices.iter().all(|&i| i < 500));
 }
 
+fn is_non_finite_error<T: std::fmt::Debug>(r: Result<T, ScannError>) -> bool {
+    matches!(&r, Err(ScannError::Scann(m)) if m.contains("NaN or infinity"))
+}
+
+/// NaN/infinity inputs and tree-only options on other index types used to
+/// crash the process (segfault or QCHECK abort); they must be errors.
+#[test]
+fn non_finite_inputs_and_tree_options_are_errors() {
+    const N_SMALL: usize = 600;
+    let data = dataset(N_SMALL, DIM, 21);
+    let tree_bf = || {
+        ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM)
+            .tree(TreeOptions::new(12, 4).training_sample_size(N_SMALL as u64))
+            .score_brute_force(Quantization::Float32)
+            .training_threads(1)
+    };
+
+    // Building a tree on NaN data aborted in k-means training.
+    let mut bad_data = data.clone();
+    bad_data[7 * DIM + 2] = f32::NAN;
+    assert!(is_non_finite_error(tree_bf().build_index(&bad_data)));
+    bad_data[7 * DIM + 2] = f32::INFINITY;
+    assert!(is_non_finite_error(tree_bf().build_index(&bad_data)));
+
+    // Upserting NaN/inf into a tree read leaf_mutators_[-1]. A batch that
+    // fails on a later row must not apply the earlier ones.
+    let mut index = tree_bf().build_index(&data).unwrap();
+    let mut two = row(&data, 3).to_vec();
+    two.extend([f32::NAN; DIM]);
+    for (ids, vectors) in [
+        (vec![None], &two[DIM..]),
+        (vec![Some(5)], &two[DIM..]),
+        (vec![None, None], &two[..]),
+        (vec![Some(1), None], &two[..]),
+    ] {
+        for batch_size in [1, 2] {
+            assert!(is_non_finite_error(index.upsert(&ids, vectors, batch_size)));
+            assert_eq!(index.len(), N_SMALL);
+        }
+    }
+    let inf = vec![f32::NEG_INFINITY; DIM];
+    assert!(is_non_finite_error(index.upsert(&[None], &inf, 1)));
+    assert_eq!(index.len(), N_SMALL);
+    assert_eq!(index.search(row(&data, 3), SearchOptions::k(1)).unwrap().indices, vec![3]);
+
+    // Batched search never checked queries (single search does).
+    let mut queries = data[..4 * DIM].to_vec();
+    queries[DIM + 1] = f32::NAN;
+    assert!(is_non_finite_error(index.search_batched(&queries, SearchOptions::default())));
+    assert!(is_non_finite_error(index.search_batched_parallel(&queries, SearchOptions::default(), 1)));
+    assert!(index.search(&queries[DIM..2 * DIM], SearchOptions::default()).is_err());
+
+    // leaves_to_search on a non-tree index: the int8 brute-force searcher
+    // misread the tree parameters (segfault). It is ignored now.
+    let int8 = ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM)
+        .score_brute_force(Quantization::Int8)
+        .build_index(&data)
+        .unwrap();
+    let opts = SearchOptions::k(K).leaves_to_search(5);
+    let want = int8.search(row(&data, 0), SearchOptions::k(K)).unwrap();
+    assert_eq!(int8.search(row(&data, 0), opts).unwrap().indices, want.indices);
+    let batched = int8.search_batched(&data[..4 * DIM], opts).unwrap();
+    assert_eq!(batched[0].indices, want.indices);
+    let parallel = int8.search_batched_parallel(&data[..4 * DIM], opts, 2).unwrap();
+    assert_eq!(parallel[0].indices, want.indices);
+}
+
 #[test]
 fn builder_rejects_what_python_silently_ignores() {
     let b = || ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM);

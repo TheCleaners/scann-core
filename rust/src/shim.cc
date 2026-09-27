@@ -228,6 +228,15 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
     if (id >= static_cast<int64_t>(size))
       throw std::invalid_argument(
           absl::StrCat("upsert: index ", id, " out of range (", size, " points)"));
+  // Validate every row before mutating anything: a NaN/infinity vector gets
+  // partition token -1 in tree indexes (upstream's mutator then indexed
+  // leaf_mutators_[-1]), and a row failing partway through a batch would
+  // leave the earlier rows applied.
+  for (size_t i = 0; i < vectors.size(); ++i)
+    if (!std::isfinite(vectors[i]))
+      throw std::invalid_argument(absl::StrCat(
+          "upsert: vector at row ", i / dim,
+          " contains NaN or infinity; ScaNN only supports finite values"));
 
   const bool attach_pool = batch_size > 1;
   auto* mutator = GetMutator(idx);

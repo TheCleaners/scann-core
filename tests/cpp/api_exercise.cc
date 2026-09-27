@@ -384,6 +384,79 @@ void ExerciseBadInput(const Fixture& f) {
   }
 }
 
+// NaN/infinity data and queries must be errors. Upstream aborted building a
+// tree on NaN data (QCHECK in k-means), read out of bounds precomputing the
+// mutation of a NaN point in a tree (partition token -1), and answered NaN
+// batched queries with garbage.
+void ExerciseNonFinite(const Fixture& f) {
+  std::printf("== non-finite input (%s)\n", f.name.c_str());
+  {
+    ScannInterface s;
+    std::vector<float> db = f.db;
+    db[7 * f.dim + 2] = NAN;
+    if (s.Initialize(ConstSpan<float>(db), f.n, f.config, 1).ok())
+      Fail(f.name + ": dataset containing NaN was accepted");
+  }
+  ScannInterface s;
+  if (!Ok(s.Initialize(ConstSpan<float>(f.db), f.n, f.config, 1),
+          f.name + ": non-finite: Initialize"))
+    return;
+  std::vector<float> qv(f.queries.begin(), f.queries.begin() + 4 * f.dim);
+  qv[f.dim + 1] = INFINITY;
+  DenseDataset<float> qs(std::move(qv), 4);
+  std::vector<NNResultsVector> out(4);
+  if (s.SearchBatched(qs, MakeMutableSpan(out), f.k, -1, -1).ok())
+    Fail(f.name + ": batched query containing infinity was accepted");
+  if (s.SearchBatchedParallel(qs, MakeMutableSpan(out), f.k, -1, -1, 1).ok())
+    Fail(f.name + ": parallel batched query containing infinity was accepted");
+
+  auto mutator_or = s.GetMutator();
+  if (!mutator_or.ok()) return;
+  auto* m = *mutator_or;
+  std::vector<float> v(f.queries.begin(), f.queries.begin() + f.dim);
+  v[3] = NAN;
+  DenseDataset<float> batch;
+  Ok(batch.Append(Row(v, f.dim, 0), ""), f.name + ": Append");
+  auto pre = m->ComputePrecomputedMutationArtifacts(batch, s.parallel_query_pool());
+  using MutationOptions =
+      research_scann::UntypedSingleMachineSearcherBase::MutationOptions;
+  MutationOptions mo{.precomputed_mutation_artifacts = pre[0].get()};
+  if (m->AddDatapoint(Row(v, f.dim, 0), "", mo).ok())
+    Fail(f.name + ": adding a NaN datapoint was accepted");
+  if (m->UpdateDatapoint(Row(v, f.dim, 0), 5, {}).ok())
+    Fail(f.name + ": updating to a NaN datapoint was accepted");
+  if (s.n_points() != f.n) Fail(f.name + ": n_points changed by rejected mutations");
+  ExpectIndicesBelow(SearchBatched(s, f, false), f.n,
+                     f.name + ": search after rejected mutations");
+}
+
+// leaves_to_search on an index without partitioning is ignored. Upstream
+// passed tree parameters on regardless, and the int8 brute-force searcher
+// misread them as its own (segfault).
+void ExerciseLeavesOnBruteForceInt8(const Fixture& f) {
+  std::printf("== leaves_to_search on int8 brute force (using %s)\n",
+              f.name.c_str());
+  scann_core::ConfigBuilder b(f.k, scann_core::DistanceMeasure::kDotProduct,
+                              f.dim);
+  b.ScoreBruteForce(scann_core::Quantization::kInt8);
+  auto config = b.BuildText(f.n);
+  ScannInterface s;
+  if (!Ok(config.status(), "int8 brute force: ConfigBuilder") ||
+      !Ok(s.Initialize(ConstSpan<float>(f.db), f.n, *config, 1),
+          "int8 brute force: Initialize"))
+    return;
+  NNResultsVector want, got;
+  Ok(s.Search(Row(f.queries, f.dim, 0), &want, f.k, -1, -1), "int8: Search");
+  if (Ok(s.Search(Row(f.queries, f.dim, 0), &got, f.k, -1, 5),
+         "int8: Search with leaves"))
+    ExpectSame({want}, {got}, "int8: search with vs without leaves");
+  DenseDataset<float> qs(std::vector<float>(f.queries), f.nq);
+  std::vector<NNResultsVector> out(f.nq);
+  if (Ok(s.SearchBatched(qs, MakeMutableSpan(out), f.k, -1, 5),
+         "int8: SearchBatched with leaves"))
+    ExpectSame({want}, {out[0]}, "int8: batched search with vs without leaves");
+}
+
 // Unit-norm points around `clusters` random centres, row-major n x dim.
 std::vector<float> Clustered(size_t n, size_t dim, size_t clusters,
                              uint32_t seed) {
@@ -510,6 +583,13 @@ int main(int argc, char** argv) {
   }
   for (const auto& f : fixtures) ExerciseFixture(f, training_threads);
   ExerciseBadInput(fixtures.front());
+  ExerciseLeavesOnBruteForceInt8(fixtures.front());
+  // The tree configs of the first dataset (and every config for fixtures).
+  const std::string first_dataset = fixtures.front().name.substr(0, 2);
+  for (const auto& f : fixtures)
+    if (!synthetic || (f.name.rfind(first_dataset, 0) == 0 &&
+                       f.name.find("tree") != std::string::npos))
+      ExerciseNonFinite(f);
   std::printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
   return g_failures ? 1 : 0;
 }

@@ -105,6 +105,20 @@ class ScannSearcher(object):
       return contextlib.nullcontext()
     return self._docids_lock.read()
 
+  def _batched_docids(self, idx, dist):
+    """Maps batched result indices to docids (if any)."""
+    if self.docids is None:
+      return idx
+    # scann-core: a query with fewer than k results is padded with index 0
+    # and a NaN distance. Upstream mapped that padding to docids[0], a real
+    # but wrong docid; map it to None instead.
+    padded = np.isnan(dist)
+    if not padded.any():
+      return [[self.docids[j] for j in i] for i in idx]
+    return [[None if p else self.docids[j]
+             for j, p in zip(i, pi)]
+            for i, pi in zip(idx, padded)]
+
   def search(
       self,
       q,
@@ -141,9 +155,7 @@ class ScannSearcher(object):
           False,
           0,  # Ignored when parallel=False.
       )
-      idx = (
-          idx if self.docids is None else
-          [[self.docids[j] for j in i] for i in idx])
+      idx = self._batched_docids(idx, dist)
     return idx, dist
 
   def search_batched_parallel(
@@ -162,9 +174,7 @@ class ScannSearcher(object):
     with self._reading_docids():
       idx, dist = self.searcher.search_batched(queries, final_nn, pre_nn,
                                                leaves, True, batch_size)
-      idx = (
-          idx if self.docids is None else
-          [[self.docids[j] for j in i] for i in idx])
+      idx = self._batched_docids(idx, dist)
     return idx, dist
 
   def serialize(self, artifacts_dir, relative_path=False):

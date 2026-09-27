@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/brute_force/scalar_quantized_brute_force.h"
 
@@ -236,14 +240,15 @@ Status ScalarQuantizedBruteForceSearcher::FindNeighborsImpl(
   }
   DatapointPtr<float> preprocessed;
   unique_ptr<float[]> preproc_buf;
-  const auto* tree_sq_preproc_query =
-      params.searcher_specific_optional_parameters();
-  if (tree_sq_preproc_query) {
-    const auto* casted =
-        down_cast<const TreeScalarQuantizationPreprocessedQuery*>(
-            tree_sq_preproc_query);
-    DCHECK(casted)
-        << "Downcast to TreeScalarQuantizationPreprocessedQuery failed.";
+  // scann-core: upstream down_cast any searcher-specific parameters to
+  // TreeScalarQuantizationPreprocessedQuery. ScannInterface attached
+  // TreeXOptionalParameters for leaves_to_search on a brute-force index, and
+  // the bogus cast then read a garbage query pointer (segfault). Only use
+  // parameters that really are a preprocessed query; ignore anything else.
+  const auto* casted =
+      dynamic_cast<const TreeScalarQuantizationPreprocessedQuery*>(
+          params.searcher_specific_optional_parameters());
+  if (casted) {
     preprocessed =
         MakeDatapointPtr(casted->PreprocessedQuery(), query.nonzero_entries());
   } else {
@@ -283,14 +288,11 @@ Status ScalarQuantizedBruteForceSearcher::PropagateDistances(
     NNResultsVector* result) const {
   DatapointPtr<float> preprocessed;
   unique_ptr<float[]> preproc_buf;
-  const auto* tree_sq_preproc_query =
-      params.searcher_specific_optional_parameters();
-  if (tree_sq_preproc_query) {
-    const auto* casted =
-        down_cast<const TreeScalarQuantizationPreprocessedQuery*>(
-            tree_sq_preproc_query);
-    DCHECK(casted)
-        << "Downcast to TreeScalarQuantizationPreprocessedQuery failed.";
+  // scann-core: dynamic_cast instead of down_cast; see FindNeighborsImpl.
+  const auto* casted =
+      dynamic_cast<const TreeScalarQuantizationPreprocessedQuery*>(
+          params.searcher_specific_optional_parameters());
+  if (casted) {
     preprocessed =
         MakeDatapointPtr(casted->PreprocessedQuery(), query.nonzero_entries());
   } else {

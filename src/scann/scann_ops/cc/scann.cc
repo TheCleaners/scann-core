@@ -95,6 +95,19 @@ Status CheckDenseShape(ConstSpan<T> data, DatapointIndex n_points,
   return OkStatus();
 }
 
+// scann-core: returns InvalidArgumentError naming the first row of the
+// row-major `data` (rows of `dim` values) that holds a NaN or infinity.
+Status CheckAllFinite(ConstSpan<float> data, DimensionIndex dim,
+                      absl::string_view what) {
+  for (size_t i = 0; i < data.size(); ++i) {
+    if (!std::isfinite(data[i]))
+      return InvalidArgumentError(absl::StrCat(
+          what, " row ", dim == 0 ? 0 : i / dim,
+          " contains NaN or infinity; ScaNN only supports finite values."));
+  }
+  return OkStatus();
+}
+
 Status AddTokenizationToOptions(SingleMachineFactoryOptions& opts,
                                 ConstSpan<int32_t> tokenization,
                                 const int spilling_mult = 1) {
@@ -369,6 +382,12 @@ Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
     return InvalidArgumentError(
         "partitioning.query_spilling.max_spill_centers (the number of leaves "
         "to search) must be > 0.");
+  // scann-core: upstream accepted NaN/infinity in the dataset. Training a
+  // partitioner on it then died on a QCHECK in gmm_utils.cc (process abort),
+  // and non-finite points break every distance computed against them.
+  if (dataset != nullptr)
+    SCANN_RETURN_IF_ERROR(
+        CheckAllFinite(dataset->data(), dataset->dimensionality(), "dataset"));
   SCANN_ASSIGN_OR_RETURN(dimensionality_, opts.ComputeConsistentDimensionality(
                                               config_, dataset.get()));
   SCANN_ASSIGN_OR_RETURN(scann_,
@@ -407,7 +426,11 @@ SearchParameters ScannInterface::GetSearchParameters(int final_nn,
   }
   params.set_pre_reordering_num_neighbors(pre_reorder_nn);
   params.set_post_reordering_num_neighbors(post_reorder_nn);
-  if (leaves > 0) {
+  // scann-core: upstream attached TreeXOptionalParameters whenever leaves > 0,
+  // even for non-tree searchers; the int8 brute-force searcher then
+  // down_cast them to its own parameter type and segfaulted. leaves_to_search
+  // only means something for a partitioned (tree) index; ignore it otherwise.
+  if (leaves > 0 && config_.has_partitioning()) {
     auto tree_params = std::make_shared<TreeXOptionalParameters>();
     tree_params->set_num_partitions_to_search_override(leaves);
     params.set_searcher_specific_optional_parameters(tree_params);
@@ -427,7 +450,8 @@ vector<SearchParameters> ScannInterface::GetSearchParametersBatched(
     pre_reorder_nn = final_nn;
   }
   std::shared_ptr<research_scann::TreeXOptionalParameters> tree_params;
-  if (leaves > 0) {
+  // scann-core: only for tree indexes; see GetSearchParameters.
+  if (leaves > 0 && config_.has_partitioning()) {
     tree_params = std::make_shared<TreeXOptionalParameters>();
     tree_params->set_num_partitions_to_search_override(leaves);
   }
@@ -484,6 +508,10 @@ Status ScannInterface::SearchBatched(const DenseDataset<float>& queries,
     return InvalidArgumentError(
         absl::StrCat("Queries have dimensionality ", queries.dimensionality(),
                      ", but the dataset has ", dimensionality_));
+  // scann-core: single-query FindNeighbors rejects NaN/infinity queries, but
+  // upstream's batched path never checked, returning garbage neighbors.
+  SCANN_RETURN_IF_ERROR(
+      CheckAllFinite(queries.data(), queries.dimensionality(), "query"));
   if (!std::isinf(scann_->default_pre_reordering_epsilon()) ||
       !std::isinf(scann_->default_post_reordering_epsilon()))
     return InvalidArgumentError("Batch querying isn't supported with epsilon");
@@ -500,6 +528,10 @@ Status ScannInterface::SearchBatchedParallel(const DenseDataset<float>& queries,
   if (batch_size < 1)
     return InvalidArgumentError(
         absl::StrCat("batch_size must be >= 1, got ", batch_size));
+  // scann-core: check every query up front (SearchBatched checks each chunk
+  // too) so a bad query fails the whole call before any chunk is searched.
+  SCANN_RETURN_IF_ERROR(
+      CheckAllFinite(queries.data(), queries.dimensionality(), "query"));
   const size_t numQueries = queries.size();
   // No pool when num_threads <= 0 (SetNumThreads(0), or the default of
   // GetNumCPUs() - 1 on a single-CPU machine); ParallelFor then runs inline.

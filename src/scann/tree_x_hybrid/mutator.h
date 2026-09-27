@@ -283,6 +283,24 @@ class TreeXHybridMutator
     return std::holds_alternative<GlobalToLocal1>(global_to_local_);
   }
 
+  // scann-core: upstream used partition tokens from tokenizing a new vector
+  // as leaf_mutators_ indices unchecked. A vector containing NaN/infinity
+  // tokenizes to -1 (no nearest centroid), so adding or updating one read
+  // leaf_mutators_[-1] and segfaulted.
+  bool IsValidToken(int32_t token) const {
+    return token >= 0 && static_cast<size_t>(token) < leaf_mutators_.size();
+  }
+
+  Status CheckTokens(ConstSpan<int32_t> tokens) const {
+    for (int32_t token : tokens)
+      if (!IsValidToken(token))
+        return InvalidArgumentError(absl::StrCat(
+            "Datapoint was assigned invalid partition ", token, " (",
+            leaf_mutators_.size(),
+            " partitions); does it contain NaN or infinity?"));
+    return OkStatus();
+  }
+
   Status UpdateCentroid(DatapointPtr<float> x, int32_t token,
                         bool stats_update);
 
@@ -835,6 +853,8 @@ unique_ptr<UntypedSingleMachineSearcherBase::PrecomputedMutationArtifacts>
 TreeXHybridMutator<Searcher>::ComputeLeafPrecomputedMutationArtifacts(
     int32_t token, const DatapointPtr<T>& maybe_residual,
     const DatapointPtr<T>& original) const {
+  // scann-core: no leaf for an invalid token; Add/UpdateDatapoint reject it.
+  if (!IsValidToken(token)) return nullptr;
   if (std::is_same<Searcher, TreeAHHybridResidual>::value) {
     return down_cast<typename asymmetric_hashing2::Searcher<T>::Mutator*>(
                leaf_mutators_[token])
@@ -946,6 +966,8 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::AddDatapoint(
                         "TreeXHybridMutator::AddDatapoint.  (Type = %s)",
                         typeid(*ma).name()));
   }
+  // scann-core: reject invalid tokens before mutating anything.
+  SCANN_RETURN_IF_ERROR(CheckTokens(dc->tokens));
   SCANN_RETURN_IF_ERROR(UpgradeGlobalToLocalIfNeeded(dc->tokens.size()));
   return SCANN_DISPATCH_ON_GLOBAL_TO_LOCAL(AddDatapoint, dptr, docid, *dc, mo);
 }
@@ -1046,6 +1068,8 @@ StatusOr<DatapointIndex> TreeXHybridMutator<Searcher>::UpdateDatapoint(
                         "TreeXHybridMutator::AddDatapoint.  (Type = %s)",
                         typeid(*ma).name()));
   }
+  // scann-core: reject invalid tokens before mutating anything.
+  SCANN_RETURN_IF_ERROR(CheckTokens(dc->tokens));
   SCANN_RETURN_IF_ERROR(UpgradeGlobalToLocalIfNeeded(dc->tokens.size()));
   return SCANN_DISPATCH_ON_GLOBAL_TO_LOCAL(UpdateDatapoint, dptr, index, *dc,
                                            mo);

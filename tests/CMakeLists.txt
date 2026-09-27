@@ -73,6 +73,9 @@ endif()
 
 if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_docid_bookkeeping python/test_docid_bookkeeping.py)
+  # NaN/infinity data, queries and upserts, and tree options on non-tree
+  # indexes: errors, not crashes.
+  scann_add_python_test(python_input_validation python/test_input_validation.py)
   # A deadlock between searches and updates would show up here as a hang.
   scann_add_python_test(python_concurrency python/test_concurrency.py)
   # Grow from empty and retrain into a SOAR tree (google-research#2712).

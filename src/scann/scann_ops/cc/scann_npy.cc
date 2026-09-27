@@ -19,6 +19,7 @@
 #include "scann/scann_ops/cc/scann_npy.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -83,19 +84,38 @@ vector<DatapointIndex> ScannNumpy::Upsert(
     throw std::invalid_argument("Upsert batch_size must be >= 1.");
   pybind11::gil_scoped_release gil_release;
   absl::MutexLock lock(&mu_);
-  // scann-core: reject wrong-sized vectors up front; upstream failed deep in
-  // the mutator with an uninformative "SCANN_RET_CHECK failure".
-  for (const auto& vec : vecs)
+  if (indices.size() != vecs.size())
+    throw std::runtime_error("Upsert input size must match.");
+  // scann-core: validate every row before mutating anything. Upstream
+  // checked nothing here: a wrong-sized vector failed deep in the mutator
+  // with an uninformative "SCANN_RET_CHECK failure"; a NaN/infinity vector
+  // got partition token -1 in tree indexes and the mutator then indexed
+  // leaf_mutators_[-1] (segfault); and any row failing partway through a
+  // batch left the earlier rows applied, so the index and the caller's docid
+  // bookkeeping diverged.
+  const DatapointIndex n_points = scann_.n_points();
+  for (size_t row : Seq(vecs.size())) {
+    const auto& vec = vecs[row];
     if (vec.size() != scann_.dimensionality())
       throw std::invalid_argument(absl::StrCat(
           "Upsert vector has dimensionality ", vec.size(),
-          ", but the dataset has ", scann_.dimensionality()));
+          ", but the dataset has ", scann_.dimensionality(), " (row ", row,
+          ")"));
+    const float* data = vec.data();
+    for (size_t d : Seq(vec.size()))
+      if (!std::isfinite(data[d]))
+        throw std::invalid_argument(absl::StrCat(
+            "Upsert vector at row ", row,
+            " contains NaN or infinity; ScaNN only supports finite values."));
+    if (indices[row].has_value() && indices[row].value() >= n_points)
+      throw std::invalid_argument(absl::StrCat(
+          "Upsert index ", indices[row].value(), " at row ", row,
+          " is out of range for an index with ", n_points, " points"));
+  }
   auto mutator =
       ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
   if (batch_size > 1)
     mutator->set_mutation_threadpool(scann_.parallel_query_pool());
-  if (indices.size() != vecs.size())
-    throw std::runtime_error("Upsert input size must match.");
 
   DatapointIndex n = vecs.size();
   vector<DatapointIndex> result;
