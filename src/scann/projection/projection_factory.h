@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -71,7 +75,10 @@ StatusOr<unique_ptr<ChunkingProjection<T>>> ChunkingProjectionFactory(
   ProjectionConfig canonicalized_config = config;
   if (config.projection_type() != ProjectionConfig::VARIABLE_CHUNK &&
       config.projection_type() != ProjectionConfig::IDENTITY_CHUNK &&
-      config.has_num_dims_per_block() && !config.has_num_blocks()) {
+      // scann-core: skip num_dims_per_block <= 0 (division by zero below);
+      // ChunkingProjection::BuildFromConfig reports it.
+      config.has_num_dims_per_block() && config.num_dims_per_block() > 0 &&
+      !config.has_num_blocks()) {
     canonicalized_config.set_num_blocks(
         DivRoundUp(config.input_dim(), config.num_dims_per_block()));
   }

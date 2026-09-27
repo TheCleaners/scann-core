@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/projection/chunking_projection.h"
 
@@ -53,18 +57,29 @@ StatusOr<unique_ptr<ChunkingProjection<T>>> BuildFromConfigImpl(
           return InvalidArgumentError(
               "variable_blocks mustn't contain blocks with negative sizes");
         }
+        // scann-core: the constructor CHECK-fails (process abort) on these.
+        if (vblock.num_blocks() > 0 && vblock.num_dims_per_block() < 1) {
+          return InvalidArgumentError(absl::Substitute(
+              "variable_blocks: num_dims_per_block ($0) must be positive",
+              vblock.num_dims_per_block()));
+        }
         dims_per_block.insert(dims_per_block.end(), vblock.num_blocks(),
                               vblock.num_dims_per_block());
         num_blocks += vblock.num_blocks();
+      }
+      if (num_blocks < 1) {
+        return InvalidArgumentError(
+            "variable_blocks must contain at least one block");
       }
       return std::make_unique<ChunkingProjection<T>>(num_blocks,
                                                      dims_per_block);
     }
 
     case ProjectionConfig::IDENTITY_CHUNK:
-      if (!config.has_num_blocks()) {
+      // scann-core: also reject num_blocks < 1.
+      if (!config.has_num_blocks() || config.num_blocks() < 1) {
         return InvalidArgumentError(
-            "Must specify num_blocks for IDENTITY_CHUNK projection");
+            "Must specify a positive num_blocks for IDENTITY_CHUNK projection");
       }
       return std::make_unique<ChunkingProjection<T>>(config.num_blocks());
 
@@ -76,6 +91,21 @@ StatusOr<unique_ptr<ChunkingProjection<T>>> BuildFromConfigImpl(
             "num_dims_per_block must be specified for projection type CHUNK.");
       }
       const int32_t dims_per_block = config.num_dims_per_block();
+      // scann-core: upstream divided by num_dims_per_block = 0 below (SIGFPE)
+      // and CHECK-failed on num_blocks = 0 or input_dim = 0 in the
+      // constructor (process abort).
+      if (dims_per_block < 1) {
+        return InvalidArgumentError(absl::Substitute(
+            "num_dims_per_block ($0) must be positive", dims_per_block));
+      }
+      if (input_dim < 1) {
+        return InvalidArgumentError(absl::Substitute(
+            "input_dim ($0) must be positive", input_dim));
+      }
+      if (config.has_num_blocks() && config.num_blocks() < 1) {
+        return InvalidArgumentError(absl::Substitute(
+            "num_blocks ($0) must be positive", config.num_blocks()));
+      }
       const int32_t num_blocks = config.has_num_blocks()
                                      ? config.num_blocks()
                                      : DivRoundUp(input_dim, dims_per_block);
