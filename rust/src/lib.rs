@@ -120,6 +120,7 @@ fn rows(data: &[f32], dim: usize, what: &str) -> Result<usize> {
 /// Per-query search overrides. `None` uses the value from the config the
 /// index was built with (Python: passing `None`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[must_use = "search options do nothing until passed to a search"]
 pub struct SearchOptions {
     /// Neighbours to return.
     pub final_num_neighbors: Option<usize>,
@@ -458,6 +459,7 @@ fn nan_if_none(v: Option<f64>) -> f64 {
 
 /// Python: `ScannBuilder.tree()`. Defaults match Python's.
 #[derive(Debug, Clone, PartialEq)]
+#[must_use = "options do nothing until passed to ConfigBuilder"]
 pub struct TreeOptions {
     pub num_leaves: u32,
     pub num_leaves_to_search: u32,
@@ -566,6 +568,7 @@ impl TreeOptions {
 /// Python: `ScannBuilder.upper_tree()`: a second partitioning level above
 /// the tree. Requires [`ConfigBuilder::tree`].
 #[derive(Debug, Clone, PartialEq)]
+#[must_use = "options do nothing until passed to ConfigBuilder"]
 pub struct UpperTreeOptions {
     pub num_leaves: u32,
     pub num_leaves_to_search: u32,
@@ -625,6 +628,7 @@ impl UpperTreeOptions {
 /// Python: `ScannBuilder.score_ah()`: asymmetric-hashing (product
 /// quantization) scoring.
 #[derive(Debug, Clone, PartialEq)]
+#[must_use = "options do nothing until passed to ConfigBuilder"]
 pub struct AhOptions {
     pub dimensions_per_block: u32,
     /// Anisotropic quantization (dot product); `None` = plain k-means PQ.
@@ -688,6 +692,7 @@ impl AhOptions {
 /// Python: `ScannBuilder.reorder()`: rescore the top candidates exactly (or
 /// with a finer quantization).
 #[derive(Debug, Clone, PartialEq)]
+#[must_use = "options do nothing until passed to ConfigBuilder"]
 pub struct ReorderOptions {
     pub reordering_num_neighbors: u32,
     pub quantize: Quantization,
@@ -715,6 +720,7 @@ impl ReorderOptions {
 /// Python: `ScannBuilder.pca()`. Set at most one of `reduction_dim` and
 /// `pca_significance_threshold`; with neither, the threshold is 0.8.
 #[derive(Debug, Clone, PartialEq)]
+#[must_use = "options do nothing until passed to ConfigBuilder"]
 pub struct PcaOptions {
     pub reduction_dim: Option<u32>,
     pub pca_significance_threshold: Option<f64>,
@@ -742,6 +748,7 @@ impl PcaOptions {
 /// Where Python silently ignores an option (an upper tree or PCA without a
 /// tree, autopilot combined with manual options, an option set twice, ...)
 /// [`build`](Self::build) returns an error instead.
+#[must_use = "a ConfigBuilder does nothing until build() or build_index() is called"]
 pub struct ConfigBuilder {
     inner: cxx::UniquePtr<ffi::ConfigBuilder>,
     dimensionality: usize,

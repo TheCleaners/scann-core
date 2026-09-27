@@ -214,6 +214,11 @@ class ScannSearcher(object):
     """Delete datapoints from searcher."""
     if not isinstance(docids, list):
       docids = [docids]
+    # scann-core: upstream failed here with AttributeError (no docid_to_id)
+    # on a searcher built without docids; say why, as upsert() does.
+    if self.docids is None:
+      raise ValueError("Cannot delete because docids have not been specified "
+                       "when initializing.")
     with self._docids_lock.write():
       # scann-core: validate before changing anything; upstream raised midway
       # through the loop below, after updating the bookkeeping for earlier

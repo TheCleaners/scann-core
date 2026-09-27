@@ -41,6 +41,10 @@ loaded index gives identical results: True
 Loading involves no training: it's 0.5 s, mostly reading `dataset.npy`, and
 the loaded index returns exactly the same results.
 
+Only load index directories you trust: if the index has docids,
+`load_searcher` unpickles `scann_docids.pkl`, and unpickling can run
+arbitrary code.
+
 By default `scann_assets.pbtxt` records absolute paths. Pass
 `serialize(index_dir, relative_path=True)` to make the directory movable,
 for example to copy it to other machines. The format is the same across

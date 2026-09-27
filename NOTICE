@@ -97,7 +97,8 @@ isn't a one-line change:
       anything (upstream left docids out of sync with the index when either
       raised). The docid bookkeeping is guarded by a reader/writer lock, so
       a search overlapping an upsert or delete maps its results to the
-      right docids.
+      right docids. delete() on a searcher without docids raises the same
+      ValueError as upsert() (upstream: AttributeError).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 Everything else (build system, the C++ config builder in core/, Rust

@@ -73,6 +73,12 @@ def main():
   s.delete(["d0"])
   del rows["d0"]
   check_consistent(s, rows)
+
+  # Without docids, upsert() and delete() say why they can't work.
+  plain = (scann.scann_ops_pybind.builder(db, 1, "squared_l2")
+           .score_brute_force().build())
+  expect_raises(ValueError, lambda: plain.upsert(["x"], new[None]))
+  expect_raises(ValueError, lambda: plain.delete(["d0"]))
   print("PASSED")
 
 

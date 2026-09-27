@@ -394,6 +394,10 @@ searcher2 = scann.scann_ops_pybind.load_searcher(artifacts_dir)
   it prints a notice and **writes a new `scann_assets.pbtxt` into that
   directory** by inferring it from known filenames — a real, silent
   side-effecting migration of your directory, not a read-only operation.
+- **Only load indexes you trust.** `load_searcher` unpickles
+  `scann_docids.pkl` when it's present, and unpickling can run arbitrary
+  code. Treat an index directory like code, not like data. The C++ and Rust
+  loaders don't read that file.
 
 Round-trip pattern:
 

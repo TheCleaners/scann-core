@@ -115,7 +115,7 @@ print("concurrent search() calls, plain threads")
 for workers in (1, 8, 32, 64):
   threads = [
       threading.Thread(
-          target=lambda k=k: [loaded.search(q) for q in queries[k::workers]])
+          target=lambda k=k, n=workers: [loaded.search(q) for q in queries[k::n]])
       for k in range(workers)
   ]
   with Timer() as t:

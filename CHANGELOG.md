@@ -112,6 +112,10 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
   - `dimensions_per_block` above the dimensionality;
   - residual quantization without a tree;
   - out-of-range `Pca`/`Truncate` dimensions.
+- Python: `delete()` on a searcher built without docids raised
+  `AttributeError`; it now raises the same `ValueError` as `upsert()`.
+- Rust: option structs and `ConfigBuilder` are `#[must_use]`, so a dropped
+  builder call is a compiler warning.
 - Rust: `ScannIndex::health_stats(&self)` could race with itself when
   called from several threads (the C++ call updates cached figures in a
   `mutable` member), which safe Rust must never allow; calls are now
