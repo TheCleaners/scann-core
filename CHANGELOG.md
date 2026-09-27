@@ -112,6 +112,12 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
   - `dimensions_per_block` above the dimensionality;
   - residual quantization without a tree;
   - out-of-range `Pca`/`Truncate` dimensions.
+- Undefined behavior in the AVX2 LUT16 search kernel: its prefetch did
+  pointer arithmetic on a null pointer for the last partition (UBSan). It
+  only runs on CPUs without AVX-512, and only since scann-core uses the AVX2
+  kernels. `SCANN_TEST_FORCE_AVX2=1` makes the C++ API test use the AVX2
+  kernels on AVX-512 machines too (ctest `api_exercise_avx2`, and in the
+  CI sanitizer job).
 - Python: `delete()` on a searcher built without docids raised
   `AttributeError`; it now raises the same `ValueError` as `upsert()`.
 - Rust: option structs and `ConfigBuilder` are `#[must_use]`, so a dropped

@@ -38,6 +38,10 @@ isn't a one-line change:
       dimensionalities; a partitioning config with max_spill_centers = 0 is
       rejected (the searcher built, then every search failed with a bare
       RET_CHECK error).
+  src/scann/hashes/internal/lut16_avx2.inc
+      The "smart" prefetch of the next partition is skipped when there is
+      none (the last partition): upstream did pointer arithmetic on the null
+      next_partition pointer (undefined behavior, flagged by UBSan).
   src/scann/projection/projection_factory.cc
       PCA and TRUNCATE projections reject a projected dimensionality outside
       1..input_dim (PCA aborted the process through a CHECK failure,

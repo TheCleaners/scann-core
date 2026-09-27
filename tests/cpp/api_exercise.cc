@@ -47,6 +47,7 @@
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/dataset.h"
 #include "scann/scann_ops/cc/scann.h"
+#include "scann/utils/intrinsics/flags.h"
 #include "scann/utils/types.h"
 #include "scann_core/config_builder.h"
 
@@ -480,6 +481,16 @@ std::vector<Fixture> SyntheticFixtures() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // SCANN_TEST_FORCE_AVX2=1: run the AVX2 kernels on a CPU that has
+  // AVX-512 too (ScaNN would pick the AVX-512 ones), so the sanitizer runs
+  // cover both. Some code paths (e.g. LUT16 smart prefetching) exist only
+  // in the AVX2 kernels.
+  if (const char* e = std::getenv("SCANN_TEST_FORCE_AVX2"); e && *e == '1') {
+    research_scann::flags_internal::should_use_avx512 = false;
+    research_scann::flags_internal::should_use_avx512_vnni = false;
+    research_scann::flags_internal::should_use_amx = false;
+    std::printf("SCANN_TEST_FORCE_AVX2: AVX-512 kernels disabled\n");
+  }
   const bool synthetic = argc < 2 || std::string(argv[1]) == "-";
   const int training_threads = argc > 2 ? std::atoi(argv[2]) : 1;
   std::vector<Fixture> fixtures;

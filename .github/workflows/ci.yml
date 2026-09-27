@@ -127,7 +127,10 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1
-        run: build/tests/scann_core_api_exercise - 0
+        run: |
+          build/tests/scann_core_api_exercise - 0
+          # Again with the AVX2 kernels, which AVX-512 runners otherwise skip.
+          SCANN_TEST_FORCE_AVX2=1 build/tests/scann_core_api_exercise - 0
 
   # Rust lints and the minimum supported Rust version. DOCS_RS=1 makes
   # build.rs skip the C++ build, which neither check needs.

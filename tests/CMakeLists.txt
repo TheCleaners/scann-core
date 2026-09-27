@@ -26,7 +26,10 @@ add_test(NAME api_exercise_threaded COMMAND scann_core_api_exercise - 0)
 # Timeouts well above the normal run time (seconds natively; under QEMU and
 # sanitizers, a few minutes), so a hang fails instead of stalling ctest for
 # its default 25 minutes.
-set_tests_properties(api_exercise api_exercise_threaded PROPERTIES TIMEOUT 900)
+# The same with the AVX2 kernels on an AVX-512 machine (see the test's main()).
+add_test(NAME api_exercise_avx2 COMMAND scann_core_api_exercise - 0)
+set_tests_properties(api_exercise_avx2 PROPERTIES ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
+set_tests_properties(api_exercise api_exercise_threaded api_exercise_avx2 PROPERTIES TIMEOUT 900)
 
 # A Python test run with this build's package on PYTHONPATH.
 function(scann_add_python_test name script)

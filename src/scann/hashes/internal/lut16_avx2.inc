@@ -1,3 +1,6 @@
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 #include <cstdint>
 
 #include "absl/base/prefetch.h"
@@ -204,7 +207,11 @@ SCANN_AVX2_INLINE Avx2<int16_t, kNumQueries, 2> PrefetchDispatcher(
     constexpr PrefetchHint kHint = (kPrefetch == PrefetchStrategy::kSmart)
                                        ? PrefetchHint::kNta
                                        : PrefetchHint::kT0;
-    if ((*next_prefetch_idx) >= 0) {
+    // scann-core: upstream also took this branch for the last partition,
+    // where next_partition is null, and did pointer arithmetic on the null
+    // pointer (undefined behavior; UBSan: "applying non-zero offset to null
+    // pointer"). Prefetch sequentially instead when there's no next one.
+    if ((*next_prefetch_idx) >= 0 && next_partition != nullptr) {
       const uint8_t* prefetch_start =
           next_partition + (*next_prefetch_idx) * 16 * num_blocks;
       (*next_prefetch_idx)++;
@@ -239,7 +246,9 @@ SCANN_AVX2_INLINE Avx2<int32_t, kNumQueries, 4> Avx2LUT16MiddleLoopInt32(
         constexpr PrefetchHint kHint = (kPrefetch == PrefetchStrategy::kSmart)
                                            ? PrefetchHint::kNta
                                            : PrefetchHint::kT0;
-        if ((*next_prefetch_idx) >= 0) {
+        // scann-core: as in PrefetchDispatcher, no next partition to
+        // prefetch from on the last one.
+        if ((*next_prefetch_idx) >= 0 && next_partition != nullptr) {
           const uint8_t* prefetch_start =
               next_partition + (*next_prefetch_idx) * 16 * num_blocks + k * 16;
           return Avx2LUT16MiddleLoop<kNumQueries, PrefetchLookahead::kNonSeq,
