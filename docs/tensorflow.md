@@ -64,6 +64,8 @@ def retrieve(q):
   return searcher.search_batched_parallel(q, final_num_neighbors=5)
 ```
 
+Runnable version, with docids: [`examples/python/tensorflow_wrapper.py`](../examples/python/tensorflow_wrapper.py).
+
 What the search methods return:
 
 * A namedtuple of an int32 and a float32 tensor, named like upstream's op
@@ -241,6 +243,8 @@ def recommend(features, k=10):
 docids, scores = recommend(np.random.rand(2, 16).astype(np.float32))
 # docids[0][:3] == ['item-947', 'item-7436', 'item-7641']
 ```
+
+Both steps in one runnable script: [`examples/python/tensorflow_serving.py`](../examples/python/tensorflow_serving.py).
 
 Notes:
 

@@ -126,6 +126,11 @@ the first release on crates.io (rc.1 was published to PyPI only).
   query model, and why there is no TensorFlow op.
 - Test `python_tf`, skipped when TensorFlow isn't installed; CI runs it on
   Python 3.12 with `tensorflow-cpu`.
+- Examples: Python (`examples/python/`: quickstart, updating, serving from
+  threads, `scann.tf`, serving next to a TensorFlow SavedModel), and
+  updating in C++ and Rust. They check their own results and run as ctests
+  (`example_py_*`, `example_cpp_*`, `example_rust_*`), with the C++ and
+  Rust quickstarts.
 
 ## 0.2.0-rc.1 (2026-09-27)
 

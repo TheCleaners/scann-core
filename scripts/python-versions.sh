@@ -14,9 +14,10 @@
 # limitations under the License.
 
 # Builds the Python package for each supported CPython, including the
-# free-threaded builds, and runs the Python tests with each. The C++ library
-# is compiled once: for each interpreter the same build tree is reconfigured,
-# and only the pybind module and the generated protobuf modules are rebuilt.
+# free-threaded builds, and runs the Python tests (and the Python examples,
+# example_py_*) with each. The C++ library is compiled once: for each
+# interpreter the same build tree is reconfigured, and only the pybind
+# module and the generated protobuf modules are rebuilt.
 #
 # Interpreters come from uv (https://docs.astral.sh/uv/), which downloads
 # them when needed:
@@ -58,7 +59,7 @@ for v in $PYTHON_VERSIONS; do
     -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF >/dev/null
   cmake --build "$BUILD_DIR"
   if SCANN_TEST_REQUIRE_TF=$require_tf \
-     ctest --test-dir "$BUILD_DIR" -R '^(python_|config_builder)' --output-on-failure; then
+     ctest --test-dir "$BUILD_DIR" -R '^(python_|config_builder|example_py_)' --output-on-failure; then
     passed+=("$v")
   else
     failed+=("$v")

@@ -32,6 +32,8 @@ For background on *why* the techniques work, the tutorial links to
 [algorithms.md](../algorithms.md) and the
 [anisotropic quantization explainer](../anisotropic_quantization_explained.md);
 for every option's exact meaning, [api_reference.md](../api_reference.md).
+For short programs on synthetic data, with no download, see the
+[examples](../../README.md#examples).
 
 ## Setup
 

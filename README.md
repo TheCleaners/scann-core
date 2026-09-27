@@ -32,7 +32,8 @@ changed.
 * [Building](#building): [dependencies](#dependencies),
   [compile flags](#compile-flags),
   [cross-compiling for aarch64](#cross-compiling-for-aarch64)
-* [Using it](#using-it): [C++](#c), [Python](#python), [Rust](#rust)
+* [Using it](#using-it): [C++](#c), [Python](#python), [Rust](#rust),
+  [examples](#examples)
 * [Testing](#testing): [equivalence with upstream](#equivalence-with-upstream),
   [sanitizers and static analysis](#sanitizers-and-static-analysis)
 * [Intentional differences from upstream](#intentional-differences-from-upstream)
@@ -87,7 +88,7 @@ scann-core/
 ├── core/scann_core/      scann-core additions: ConfigBuilder
 ├── python/               pybind11 module + upstream Python package
 ├── rust/                 the Rust crate (cxx bridge, safe API, tests)
-├── examples/             C++ and Rust quickstarts, FetchContent consumer template
+├── examples/             Python, C++ and Rust examples, FetchContent consumer template
 ├── third_party/          vendored: cnpy, googletest's gtest_prod.h
 ├── tests/                C++/Python tests, upstream-equivalence harness
 ├── benchmarks/           ann-benchmarks runner, GloVe by default (docs/benchmarks.md)
@@ -255,8 +256,10 @@ research_scann::NNResultsVector res;
 s = index.Search(query_ptr, &res, /*final_nn=*/-1, /*pre_reorder_nn=*/-1, /*leaves=*/-1);
 ```
 
-Full program: [`examples/cpp/quickstart.cc`](examples/cpp/quickstart.cc)
-(`cmake --build build --target scann_core_example_quickstart`).
+Full programs: [`examples/cpp/quickstart.cc`](examples/cpp/quickstart.cc)
+(`cmake --build build --target scann_core_example_quickstart`) and
+[`examples/cpp/updating.cc`](examples/cpp/updating.cc) (adding, updating and
+removing points).
 `ConfigBuilder` produces the same configs as the Python builder, except that
 it returns an error where Python silently drops or ignores an option. See
 the header for the full list.
@@ -270,6 +273,8 @@ CMake build, `build/python/` is the same package, importable directly:
 ```sh
 PYTHONPATH=build/python python -c "import scann; print(scann.__version__)"
 ```
+
+Full programs: [`examples/python/`](#examples).
 
 `scann.scann_ops` (the TensorFlow op) is not included. `scann.tf` wraps the
 searcher for TensorFlow code instead (eager mode, `tf.function`, `tf.data`;
@@ -321,7 +326,9 @@ stats. It is `Send + Sync`: search takes `&self` and can run from many
 threads, and mutation takes `&mut self`. Shapes are validated before
 anything reaches C++, and every C++ error becomes a `ScannError`.
 
-Full program: [`examples/rust/quickstart.rs`](examples/rust/quickstart.rs).
+Full programs: [`examples/rust/quickstart.rs`](examples/rust/quickstart.rs)
+and [`examples/rust/updating.rs`](examples/rust/updating.rs) (upsert, delete,
+rebalance, re-saving).
 
 The crate's manifest is the repository root's `Cargo.toml`. Built on its own
 (`cargo build`, or as a dependency), its build script builds the C++ library
@@ -330,6 +337,27 @@ dependency sources for offline builds. Inside a CMake build, the
 `scann_core_rust` target builds the crate against the CMake-built libraries
 instead; for plain `cargo` or rust-analyzer to do the same, export
 `SCANN_CORE_BUILD_ENV=<build>/rust/scann_core_rust_build.env`.
+
+### Examples
+
+Short programs on synthetic data, meant to be copied from. Each runs in
+about a second and checks its own results, so they also run as tests
+(`example_*` below).
+
+| | |
+|---|---|
+| [`python/quickstart.py`](examples/python/quickstart.py) | build tree + AH + reorder, search one query and batches, recall against exact search, save with docids and load from a moved directory |
+| [`python/updating.py`](examples/python/updating.py) | upsert new and existing docids, delete, health stats, `rebalance()`, saving over an existing index |
+| [`python/serving_threads.py`](examples/python/serving_threads.py) | `search_batched_parallel` vs. Python threads calling `search()`, with or without the GIL |
+| [`python/tensorflow_wrapper.py`](examples/python/tensorflow_wrapper.py) | `scann.tf` eagerly and in `tf.function`, docids with `tf.gather` (needs TensorFlow) |
+| [`python/tensorflow_serving.py`](examples/python/tensorflow_serving.py) | a Keras query tower exported as a SavedModel, the index saved beside it, and a service that loads both (needs TensorFlow) |
+| [`cpp/quickstart.cc`](examples/cpp/quickstart.cc), [`rust/quickstart.rs`](examples/rust/quickstart.rs) | build with the config builder, search, add a point, save and reload |
+| [`cpp/updating.cc`](examples/cpp/updating.cc), [`rust/updating.rs`](examples/rust/updating.rs) | add, update and delete points by index, retrain, save over an existing index and reload |
+| [`fetchcontent/`](examples/fetchcontent) | a CMake project that pulls in scann-core with `FetchContent` (built by `scripts/ci.sh`, not a ctest) |
+
+Run a Python one with `PYTHONPATH=build/python python examples/python/quickstart.py`,
+the C++ ones from `build/examples/`, the Rust ones with
+`cargo run --release --example updating` (see [Rust](#rust)).
 
 ## Testing
 
@@ -358,12 +386,17 @@ runs everything that needs nothing beyond the build:
 | `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
 | `python_tf` | `scann.tf` returns exactly the pybind searcher's results as int32/float32 tensors, eagerly and in `tf.function` (unknown batch size, static shapes), from `tf.data` maps and concurrent threads; docids, padding, `serialize_to_module()` raising; `import scann` doesn't import TensorFlow. Skipped without TensorFlow |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
+| `example_py_quickstart`, `example_py_updating`, `example_py_serving_threads` | the Python [examples](#examples): recall above 0.9, identical results after reloading, every inserted or updated point found under its docid, a repeated upsert docid rejected, concurrent `search()` calls agreeing with a batched search |
+| `example_py_tensorflow_wrapper`, `example_py_tensorflow_serving` | the TensorFlow examples: `scann.tf` results equal the pybind searcher's; the SavedModel + index service returns docids with recall above 0.9. Skipped without TensorFlow |
+| `example_cpp_quickstart`, `example_cpp_updating` | the C++ examples (built with `SCANN_BUILD_EXAMPLES`) |
+| `example_rust_quickstart`, `example_rust_updating` | the Rust examples, with `cargo run --example` |
 
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
-`python_tf` also needs TensorFlow, and ctest reports it as skipped without
-it.
-[`scripts/python-versions.sh`](scripts/python-versions.sh) runs them on
+`python_tf` and the two TensorFlow examples also need TensorFlow, and ctest
+reports them as skipped without it.
+[`scripts/python-versions.sh`](scripts/python-versions.sh) runs them (and the
+Python examples) on
 every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
 with interpreters from [uv](https://docs.astral.sh/uv/), and installs
 `tensorflow-cpu` for 3.12 so that `python_tf` runs there. It compiles the
