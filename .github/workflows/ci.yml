@@ -151,3 +151,25 @@ jobs:
           msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
           rustup toolchain install "$msrv" --profile minimal
           cargo +"$msrv" check --all-targets --locked
+
+  # The crate as published: `cargo package` builds the packaged sources on
+  # their own, C++ library included, as a crates.io user would. Catches files
+  # missing from Cargo.toml's include list before a release, and fills the
+  # ccache that the release's `cargo publish` restores (key `crate`).
+  crate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-22 cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: crate
+          max-size: 2G
+      - name: cargo package
+        env:
+          CC: clang-22
+          CXX: clang++-22
+          CCACHE_BASEDIR: ${{ github.workspace }}
+        run: cargo package --locked
