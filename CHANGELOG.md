@@ -3,7 +3,9 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## 0.2.0 (2026-09-27)
+## 0.2.0-rc.1 (2026-09-27)
+
+Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
 
 ### Performance
 - x86-64: ScaNN's AVX2/AVX-512 kernels are now used. Upstream's open-source

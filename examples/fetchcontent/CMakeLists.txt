@@ -23,7 +23,7 @@ project(scann_core_consumer LANGUAGES C CXX)
 include(FetchContent)
 FetchContent_Declare(scann_core
   GIT_REPOSITORY https://github.com/TheCleaners/scann-core.git
-  GIT_TAG v0.2.0)
+  GIT_TAG v0.2.0-rc.1)
 # Pulled in as a subproject, scann-core builds only its libraries (no
 # Python/Rust bindings, tests or examples) unless asked to.
 FetchContent_MakeAvailable(scann_core)

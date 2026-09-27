@@ -38,9 +38,18 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
 endif()
 
 # The version lives in VERSION (also read by pyproject.toml; Cargo.toml
-# repeats it, which is checked right after project()).
+# repeats it, which is checked right after project()). It is a semver
+# version, optionally with a pre-release suffix: 0.2.0, 0.2.0-rc.1,
+# 0.2.0-beta.2. project() takes only the numeric part; Python gets the
+# PEP 440 spelling (0.2.0rc1, 0.2.0b2), as in the wheel's metadata.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SCANN_CORE_VERSION LIMIT_COUNT 1)
-project(scann_core VERSION ${SCANN_CORE_VERSION} LANGUAGES C CXX)
+if(NOT SCANN_CORE_VERSION MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)(-(alpha|beta|rc)\\.[0-9]+)?$")
+  message(FATAL_ERROR "VERSION (${SCANN_CORE_VERSION}) must be X.Y.Z or X.Y.Z-{alpha,beta,rc}.N")
+endif()
+project(scann_core VERSION ${CMAKE_MATCH_1} LANGUAGES C CXX)
+string(REGEX REPLACE "-alpha\\." "a" SCANN_CORE_VERSION_PEP440 "${SCANN_CORE_VERSION}")
+string(REGEX REPLACE "-beta\\." "b" SCANN_CORE_VERSION_PEP440 "${SCANN_CORE_VERSION_PEP440}")
+string(REGEX REPLACE "-rc\\." "rc" SCANN_CORE_VERSION_PEP440 "${SCANN_CORE_VERSION_PEP440}")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" _scann_cargo_version
      REGEX "^version = " LIMIT_COUNT 1)
 if(NOT _scann_cargo_version MATCHES "^version = \"${SCANN_CORE_VERSION}\"")
