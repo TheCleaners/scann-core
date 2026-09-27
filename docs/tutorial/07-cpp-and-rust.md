@@ -210,8 +210,9 @@ C++ side.
 
 Docids are a Python-side feature, stored in `scann_docids.pkl`. C++ and Rust
 identify points by index. If you delete, remember that the last point moves
-into the freed slot, so keep your own id mapping (Python's `upsert`/`delete`
-in `scann_ops_pybind.py` are a template for one).
+into the freed slot, so keep your own id mapping. In Rust, `delete` returns
+each point that moved as `(old index, new index)`; in C++, Python's
+`upsert`/`delete` in `scann_ops_pybind.py` are a template for one.
 
 That's the tutorial. For every option in detail, see
 [api_reference.md](../api_reference.md). For more on the ideas behind them,

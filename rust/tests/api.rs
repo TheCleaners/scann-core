@@ -215,6 +215,65 @@ fn mutation() {
     assert!(out.iter().flat_map(|n| &n.indices).all(|&i| (i as usize) < index.len()));
 }
 
+/// Exact index where every stored vector finds itself at distance 0.
+fn exact_l2_index(data: &[f32]) -> ScannIndex {
+    ConfigBuilder::new(1, DistanceMeasure::SquaredL2, DIM)
+        .score_brute_force(Quantization::Float32)
+        .build_index(data)
+        .unwrap()
+}
+
+#[test]
+fn delete_ids_refer_to_the_index_before_the_call() {
+    let data = dataset(200, DIM, 13);
+    let mut index = exact_l2_index(&data);
+    // A middle point, the last point, the one just below it, and the first:
+    // deleted one by one in this order, the second id would already be out
+    // of range.
+    let gone = [5u32, 199, 198, 0];
+    let moves = index.delete(&gone).unwrap();
+    assert_eq!(index.len(), 196);
+    assert_eq!(moves, vec![(196, 0), (197, 5)]);
+    let moved: std::collections::HashMap<u32, u32> = moves.iter().copied().collect();
+    for i in 0..200u32 {
+        let got = index.search(row(&data, i as usize), SearchOptions::default()).unwrap();
+        if gone.contains(&i) {
+            assert!(got.distances[0] > 1e-6, "deleted point {i} still found");
+        } else {
+            assert_eq!(got.indices, vec![moved.get(&i).copied().unwrap_or(i)], "point {i}");
+            assert!(got.distances[0] < 1e-6, "point {i}");
+        }
+    }
+    // Rejected before anything changes.
+    assert!(is_invalid_argument(index.delete(&[3, 3])));
+    assert!(is_invalid_argument(index.delete(&[1, 196])));
+    assert_eq!(index.len(), 196);
+
+    // A point that moves twice is reported once, from where it started.
+    let mut small = exact_l2_index(&data[..10 * DIM]);
+    assert_eq!(small.delete(&[7, 8]).unwrap(), vec![(9, 7)]);
+    assert_eq!(small.search(row(&data, 9), SearchOptions::default()).unwrap().indices, vec![7]);
+}
+
+#[test]
+fn health_stats_from_many_threads() {
+    let data = dataset(N, DIM, 14);
+    let mut index = tree_ah_index(&data);
+    index.initialize_health_stats().unwrap();
+    let want = index.health_stats().unwrap();
+    let (index, data) = (&index, &data);
+    std::thread::scope(|s| {
+        for t in 0..8 {
+            s.spawn(move || {
+                for i in 0..50 {
+                    assert_eq!(index.health_stats().unwrap(), want);
+                    index.search(row(data, (t * 50 + i) % N), SearchOptions::default()).unwrap();
+                }
+            });
+        }
+    });
+}
+
 #[test]
 fn concurrent_search_matches_serial() {
     let data = dataset(N, DIM, 9);

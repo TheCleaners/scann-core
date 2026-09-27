@@ -45,8 +45,10 @@
 
 mod bridge;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+use std::sync::Mutex;
 
 use bridge::ffi;
 
@@ -158,12 +160,19 @@ impl SearchOptions {
 ///
 /// Searching takes `&self` and may run concurrently from several threads;
 /// everything that changes the index takes `&mut self`.
-pub struct ScannIndex(cxx::UniquePtr<ffi::ScannIndex>);
+pub struct ScannIndex {
+    inner: cxx::UniquePtr<ffi::ScannIndex>,
+    /// Serializes `health_stats`: see the SAFETY note below.
+    health_stats_lock: Mutex<()>,
+}
 
-// SAFETY: ScannInterface has no thread affinity, and its const member
-// functions (the ones reachable through &self: search, size, health stats)
-// are safe to call concurrently -- ScaNN serves concurrent queries on one
-// searcher by design, and the Python binding releases the GIL around them.
+// SAFETY: ScannInterface has no thread affinity. What &self reaches:
+// search (ScaNN serves concurrent queries on one searcher by design, and
+// the Python binding releases the GIL around them), size and
+// dimensionality (plain reads), and health_stats. The last is a const
+// member function in C++, but it recomputes cached imbalance figures in a
+// `mutable` HealthStatsCollector, so two concurrent calls would race;
+// health_stats_lock serializes them (searches don't touch the collector).
 // All mutation goes through &mut self, so Rust's aliasing rules keep it
 // exclusive.
 unsafe impl Send for ScannIndex {}
@@ -179,6 +188,10 @@ impl fmt::Debug for ScannIndex {
 }
 
 impl ScannIndex {
+    fn wrap(inner: cxx::UniquePtr<ffi::ScannIndex>) -> Self {
+        ScannIndex { inner, health_stats_lock: Mutex::new(()) }
+    }
+
     /// Builds an index over `dataset` (row-major, `n x dimensionality`)
     /// with a text-format ScaNN config, e.g. from [`ConfigBuilder::build`].
     pub fn new(dataset: &[f32], dimensionality: usize, config: &str) -> Result<Self> {
@@ -201,14 +214,14 @@ impl ScannIndex {
             return invalid(format!("{n} datapoints exceed the 32-bit index space"));
         }
         let threads = to_i32(training_threads, "training_threads")?;
-        Ok(ScannIndex(ffi::scann_new(dataset, n as u64, config, threads)?))
+        Ok(ScannIndex::wrap(ffi::scann_new(dataset, n as u64, config, threads)?))
     }
 
     /// Loads an index written by [`serialize`](Self::serialize) -- or by
     /// Python's `searcher.serialize(dir)`; the on-disk format is the same.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = path_str(dir.as_ref())?;
-        Ok(ScannIndex(ffi::scann_load(dir)?))
+        Ok(ScannIndex::wrap(ffi::scann_load(dir)?))
     }
 
     /// Writes the index to `dir` (which must exist), readable by
@@ -217,14 +230,14 @@ impl ScannIndex {
     /// directory can be moved.
     pub fn serialize(&mut self, dir: impl AsRef<Path>, relative_path: bool) -> Result<()> {
         let dir = path_str(dir.as_ref())?;
-        Ok(ffi::scann_serialize(self.0.pin_mut(), dir, relative_path)?)
+        Ok(ffi::scann_serialize(self.inner.pin_mut(), dir, relative_path)?)
     }
 
     /// Nearest neighbours of one query.
     pub fn search(&self, query: &[f32], options: SearchOptions) -> Result<Neighbors> {
         self.check_query(query.len())?;
         let (k, pre, leaves) = options.ffi()?;
-        Ok(ffi::scann_search(&self.0, query, k, pre, leaves)?)
+        Ok(ffi::scann_search(&self.inner, query, k, pre, leaves)?)
     }
 
     /// Nearest neighbours of each row of `queries` (row-major,
@@ -258,7 +271,7 @@ impl ScannIndex {
         let n = rows(queries, self.dimensionality(), "queries")?;
         let (k, pre, leaves) = options.ffi()?;
         let bs = to_i32(batch_size, "batch_size")?;
-        Ok(ffi::scann_search_batched(&self.0, queries, n as u64, k, pre, leaves, parallel, bs)?)
+        Ok(ffi::scann_search_batched(&self.inner, queries, n as u64, k, pre, leaves, parallel, bs)?)
     }
 
     fn check_query(&self, len: usize) -> Result<()> {
@@ -271,7 +284,7 @@ impl ScannIndex {
 
     /// Number of datapoints in the index.
     pub fn len(&self) -> usize {
-        ffi::scann_size(&self.0) as usize
+        ffi::scann_size(&self.inner) as usize
     }
 
     pub fn is_empty(&self) -> bool {
@@ -279,12 +292,12 @@ impl ScannIndex {
     }
 
     pub fn dimensionality(&self) -> usize {
-        ffi::scann_dimensionality(&self.0) as usize
+        ffi::scann_dimensionality(&self.inner) as usize
     }
 
     /// The config the index currently runs with, as ScaNN text format.
     pub fn config(&mut self) -> String {
-        ffi::scann_config(self.0.pin_mut())
+        ffi::scann_config(self.inner.pin_mut())
     }
 
     /// Resizes the query thread pool used by
@@ -292,13 +305,13 @@ impl ScannIndex {
     /// mutation. 0 disables the pool (everything runs on the calling thread).
     pub fn set_num_threads(&mut self, num_threads: usize) -> Result<()> {
         let n = to_i32(num_threads, "num_threads")?;
-        ffi::scann_set_num_threads(self.0.pin_mut(), n);
+        ffi::scann_set_num_threads(self.inner.pin_mut(), n);
         Ok(())
     }
 
     /// Reserves space for `n_points` datapoints in total.
     pub fn reserve(&mut self, n_points: usize) -> Result<()> {
-        Ok(ffi::scann_reserve(self.0.pin_mut(), n_points as u64)?)
+        Ok(ffi::scann_reserve(self.inner.pin_mut(), n_points as u64)?)
     }
 
     /// Adds the rows of `vectors`; returns their indices.
@@ -322,34 +335,64 @@ impl ScannIndex {
         }
         let ids: Vec<i64> = ids.iter().map(|id| id.map_or(-1, i64::from)).collect();
         let bs = to_i32(batch_size, "batch_size")?;
-        Ok(ffi::scann_upsert(self.0.pin_mut(), &ids, vectors, bs)?)
+        Ok(ffi::scann_upsert(self.inner.pin_mut(), &ids, vectors, bs)?)
     }
 
-    /// Deletes datapoints. As in ScaNN, the last datapoint is moved into
-    /// each freed slot, so indices above a deleted one can change.
-    pub fn delete(&mut self, ids: &[u32]) -> Result<()> {
+    /// Deletes the datapoints at `ids`, each an index as it is before the
+    /// call. As in ScaNN, the last datapoint moves into each freed slot, so
+    /// some remaining datapoints change index: the result lists each of
+    /// them as `(old index, new index)`, sorted by old index.
+    ///
+    /// Duplicate or out-of-range ids are rejected before anything changes.
+    pub fn delete(&mut self, ids: &[u32]) -> Result<Vec<(u32, u32)>> {
         let len = self.len();
         if let Some(&bad) = ids.iter().find(|&&id| id as usize >= len) {
             return invalid(format!("delete: index {bad} out of range ({len} points)"));
         }
-        Ok(ffi::scann_delete(self.0.pin_mut(), ids)?)
+        // Highest first: the datapoint that fills a freed slot then always
+        // comes from above every remaining id, so each id still refers to
+        // the datapoint it named before the call.
+        let mut order = ids.to_vec();
+        order.sort_unstable_by(|a, b| b.cmp(a));
+        if let Some(w) = order.windows(2).find(|w| w[0] == w[1]) {
+            return invalid(format!("delete: index {} listed more than once", w[0]));
+        }
+        ffi::scann_delete(self.inner.pin_mut(), &order)?;
+
+        // Replay the moves: current position -> original index, for the
+        // datapoints that moved.
+        let mut origin: HashMap<u32, u32> = HashMap::new();
+        let mut remaining = len as u32;
+        for &id in &order {
+            let last = remaining - 1;
+            let moved = origin.remove(&last).unwrap_or(last);
+            origin.remove(&id);
+            if id != last {
+                origin.insert(id, moved);
+            }
+            remaining -= 1;
+        }
+        let mut moves: Vec<(u32, u32)> = origin.into_iter().map(|(now, was)| (was, now)).collect();
+        moves.sort_unstable();
+        Ok(moves)
     }
 
     /// Retrains the partitioning and quantization on the current data, with
     /// `config` (text format) or, if `None`, the current config.
     pub fn rebalance(&mut self, config: Option<&str>) -> Result<()> {
-        Ok(ffi::scann_rebalance(self.0.pin_mut(), config.unwrap_or(""))?)
+        Ok(ffi::scann_rebalance(self.inner.pin_mut(), config.unwrap_or(""))?)
     }
 
     /// Partition balance and quantization error, as tracked by scann-core.
     pub fn health_stats(&self) -> Result<HealthStats> {
-        Ok(ffi::scann_health_stats(&self.0)?)
+        let _guard = self.health_stats_lock.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(ffi::scann_health_stats(&self.inner)?)
     }
 
     /// Recomputes the statistics behind [`health_stats`](Self::health_stats)
     /// from scratch.
     pub fn initialize_health_stats(&mut self) -> Result<()> {
-        Ok(ffi::scann_initialize_health_stats(self.0.pin_mut())?)
+        Ok(ffi::scann_initialize_health_stats(self.inner.pin_mut())?)
     }
 }
 

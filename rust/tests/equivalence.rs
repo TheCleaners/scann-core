@@ -17,6 +17,14 @@
 //! *reference wheel* (the Bazel-built scann 1.4.2, `scann.scann_ops_pybind`)
 //! produced for the same dataset, config and queries.
 //!
+//! Like the C++ fixture check (tests/cpp/api_exercise.cc), a case passes
+//! when the neighbour sets overlap by at least 90% on average and distances
+//! agree to 1e-5 wherever the neighbour lists are identical. Exact equality
+//! is the Python harness's job (tests/equivalence/run.py): on aarch64 the
+//! results are bit-identical, but on x86-64 scann-core runs AVX2/AVX-512
+//! kernels the wheel never does, so a trained partitioner can differ
+//! slightly (see README, "Equivalence with upstream").
+//!
 //! Fixtures are written by tests/equivalence/run.py; run via
 //! `cmake --build <build> --target scann_core_rust_test`.
 
@@ -92,7 +100,7 @@ fn matches_reference_wheel() {
             .unwrap_or_else(|e| panic!("{name}: build failed: {e}"));
         assert_eq!(index.len(), m.n);
 
-        let (mut identical, mut max_delta) = (0usize, 0f32);
+        let (mut identical, mut overlap, mut max_delta) = (0usize, 0f64, 0f32);
         for q in 0..m.nq {
             let query = &queries[q * m.dim..(q + 1) * m.dim];
             let res = index
@@ -100,6 +108,7 @@ fn matches_reference_wheel() {
                 .unwrap_or_else(|e| panic!("{name}: search failed: {e}"));
             let want_idx = &ref_idx[q * m.k..(q + 1) * m.k];
             let want_dist = &ref_dist[q * m.k..(q + 1) * m.k];
+            overlap += res.indices.iter().filter(|i| want_idx.contains(i)).count() as f64 / m.k as f64;
             if res.indices.as_slice() == want_idx {
                 identical += 1;
                 for (a, b) in res.distances.iter().zip(want_dist) {
@@ -107,11 +116,13 @@ fn matches_reference_wheel() {
                 }
             }
         }
+        let overlap = overlap / m.nq as f64;
         println!(
-            "rust {name:22} identical neighbour lists {identical}/{} max |dist delta| {max_delta:.3e}",
+            "rust {name:22} identical neighbour lists {identical}/{} overlap {overlap:.4} \
+             max |dist delta| {max_delta:.3e}",
             m.nq
         );
-        if identical != m.nq || max_delta > 1e-5 {
+        if overlap < 0.90 || max_delta > 1e-5 {
             failures.push(name);
         }
     }

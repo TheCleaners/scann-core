@@ -24,7 +24,8 @@ println!("{:?} {:?}", nn.indices, nn.distances);
 `ScannIndex` supports single, batched and parallel batched search, adding,
 updating and deleting points, retraining, and saving and loading. Indexes are
 interchangeable with scann-core's C++ and Python APIs (and upstream ScaNN's
-Python package). It is `Send + Sync`: search from as many threads as you like.
+Python package). It is `Send + Sync`: search from as many threads as you
+like; changing the index takes `&mut self`.
 
 ## Building
 
@@ -33,16 +34,17 @@ you need:
 
 * **CMake ≥ 3.27** and **clang ≥ 19** or **GCC ≥ 13** (clang is preferred
   when `CXX` isn't set);
-* **Linux x86-64** (the only platform tested so far);
+* **Linux on x86-64 or aarch64** (both tested in CI);
 * **network access** to download the C++ dependencies (abseil, protobuf,
   highway, Eigen, zlib). To build offline, point CMake at local copies:
   `SCANN_CORE_CMAKE_ARGS="-DFETCHCONTENT_SOURCE_DIR_ABSL=/src/abseil-cpp ..."`
   (see the repository README).
 
-The first build takes a few minutes; later builds reuse it. The default
-instruction set is AVX + FMA; pass
-`SCANN_CORE_CMAKE_ARGS="-DSCANN_ARCH_FLAGS=-march=native"` to use everything
-your CPU has.
+The first build takes a few minutes; later builds reuse it. The baseline
+instruction set is AVX + FMA on x86-64 and Armv8 Neon on aarch64; faster
+kernels (AVX2/AVX-512, SVE) are picked at run time when the CPU has them.
+`SCANN_CORE_CMAKE_ARGS="-DSCANN_ARCH_FLAGS=-march=native"` also lets the
+compiler use everything your CPU has for the rest of the code.
 
 ## Documentation
 

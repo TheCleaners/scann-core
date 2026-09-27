@@ -88,6 +88,21 @@ Release candidate for 0.2.0 (on PyPI as `0.2.0rc1`; `pip install --pre`).
 - CMake builds run cargo with `--locked`, so they never rewrite `Cargo.lock`.
 - ctest timeouts (5 minutes for the Python tests, 15 for the C++ ones), so a
   hang fails the test instead of stalling for ctest's default 25 minutes.
+- Rust: `ScannIndex::health_stats(&self)` could race with itself when
+  called from several threads (the C++ call updates cached figures in a
+  `mutable` member), which safe Rust must never allow; calls are now
+  serialized. Searches are unaffected.
+- Rust: `ScannIndex::delete` deleted the given indices one at a time, each
+  against the index as the previous deletion left it, so several indices
+  could fail halfway, or delete the wrong points (a duplicate deleted two).
+  Indices now refer to the index before the call, duplicates are rejected
+  up front, and the result lists every datapoint that moved as
+  `(old index, new index)`.
+- Rust: when cross-compiling (`cargo build --target ...`), the build script
+  no longer picks the host's `clang`.
+- The Rust equivalence test (opt-in, with fixtures) uses the C++ fixture
+  check's criterion (neighbour overlap >= 0.9), since on x86-64 results are
+  no longer bit-identical to the upstream wheel.
 
 ## 0.1.0 (2026-09-26)
 
