@@ -351,7 +351,7 @@ squared L2. Indexes serialized by either build load in the other.
 * **aarch64:** every deterministic config gives bit-identical neighbour
   lists and distances to the upstream wheel, for single and batched search.
   Checked on Graviton4.
-* **x86-64:** bit-identical as well in scann-core 0.1.0. Since then, the
+* **x86-64:** bit-identical as well in scann-core 0.1.0. Since 0.2.0, the
   CPU-detection fix makes scann-core run the AVX2/AVX-512 kernels that the
   wheel never does. Distances now differ in the last bits (≤ 2×10⁻⁷).
   * Neighbour lists are identical in 13 of the 14 config/search-mode pairs.

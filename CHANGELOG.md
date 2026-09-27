@@ -3,7 +3,7 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## Unreleased
+## 0.2.0 (2026-09-27)
 
 ### Performance
 - x86-64: ScaNN's AVX2/AVX-512 kernels are now used. Upstream's open-source

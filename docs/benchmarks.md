@@ -62,7 +62,7 @@ AMD Ryzen Threadripper PRO 7975WX (Zen 4: AVX-512 with VNNI), 32 cores /
 the default ISA flags (`-mavx -mfma`), the same as the upstream wheel's
 Bazel build.
 
-| config | | upstream `scann` 1.4.2 | scann-core 0.1.0 | **scann-core, current** |
+| config | | upstream `scann` 1.4.2 | scann-core 0.1.0 | **scann-core 0.2.0** |
 |---|---|---|---|---|
 | `tree_ah_reorder` | QPS | 323,600 | 329,600 | **487,100** (+51%) |
 | | latency | 0.109 ms | 0.108 ms | **0.074 ms** |
@@ -99,7 +99,7 @@ get the same speedup once that PR is merged.
 
 `-march=native` doesn't change this: the fallback kernels were chosen at
 run time, not compile time. (The [tutorial](tutorial/README.md) builds with
-`-march=native`, and its figures are from the current version.)
+`-march=native`, and its figures are from scann-core 0.2.0.)
 
 ## aarch64 (AWS Graviton4)
 
@@ -116,7 +116,7 @@ commits from lizhang-arm/google-research PRs #1–#3 reverted. It keeps
 PR #3374's run-time feature detection and scann-core's aarch64 build
 fixes, so it shows what those kernels add.
 
-| config | | upstream `scann` 1.4.2 | scann-core, no Arm kernels | **scann-core, current** |
+| config | | upstream `scann` 1.4.2 | scann-core, no Arm kernels | **scann-core 0.2.0** |
 |---|---|---|---|---|
 | `tree_ah_reorder` | build | 9.83 s | 10.14 s | **9.13 s** (−10%) |
 | | QPS | 68,900 | 71,070 | 71,750 (+1%) |
@@ -153,7 +153,7 @@ What the Arm kernels change:
   (20.9 ms against 17.8 ms per query; on x86 it's twice as fast). This is
   the obvious place for future aarch64 work.
 
-Against the upstream wheel, current scann-core is 4% faster at partitioned
+Against the upstream wheel, scann-core 0.2.0 is 4% faster at partitioned
 search, 7% faster at building, and 20% faster at float32 brute force. The
 wheel's single-query int8 brute force is 6% faster (19.7 against
 20.9 ms); in batch throughput, scann-core is 6% ahead.
