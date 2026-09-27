@@ -64,4 +64,8 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
            COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
                    "${Python_EXECUTABLE}"
                    "${CMAKE_CURRENT_SOURCE_DIR}/python/test_docid_bookkeeping.py")
+  add_test(NAME python_concurrency
+           COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
+                   "${Python_EXECUTABLE}"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/python/test_concurrency.py")
 endif()

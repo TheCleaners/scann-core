@@ -1,7 +1,8 @@
 # Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
 # SPDX-License-Identifier: Apache-2.0
 
-# On a v* tag: build Linux wheels (manylinux, x86-64) and the sdist, create a
+# On a v* tag: build Linux wheels (manylinux, x86-64; CPython 3.10-3.14 and
+# free-threaded 3.14t and 3.15t) and the sdist, create a
 # GitHub release with them, and publish to PyPI and crates.io.
 #
 # Publishing needs one-time setup, and each publish job waits for approval
@@ -25,9 +26,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - uses: pypa/cibuildwheel@v3.2
+      - uses: pypa/cibuildwheel@v4.2.1
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+          # cp314t/cp315t: free-threaded CPython (the module declares it
+          # doesn't need the GIL). 3.15 is covered from its release candidates
+          # on, since the ABI is final by then.
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315t-*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_SKIP: "*-musllinux_*"
           # AlmaLinux 9 packages clang >= 19 (the compiler results are
@@ -35,11 +39,15 @@ jobs:
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
           CIBW_BEFORE_ALL_LINUX: dnf install -y clang
           CIBW_ENVIRONMENT_LINUX: CC=clang CXX=clang++
+          # The concurrency stress test also checks that free-threaded builds
+          # keep the GIL disabled after importing scann.
+          CIBW_TEST_SOURCES: tests/python
           CIBW_TEST_COMMAND: >-
             python -c "import numpy as np, scann;
             db = np.random.default_rng(0).standard_normal((2000, 16)).astype(np.float32);
             s = scann.scann_ops_pybind.builder(db, 5, 'squared_l2').tree(20, 5).score_ah(2).reorder(50).build();
-            assert s.search(db[3])[0][0] == 3; print(scann.__version__)"
+            assert s.search(db[3])[0][0] == 3; print(scann.__version__)" &&
+            python tests/python/test_concurrency.py
       - uses: actions/upload-artifact@v4
         with:
           name: wheels

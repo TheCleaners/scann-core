@@ -31,6 +31,11 @@ All notable changes to scann-core. Versions follow
 - Cross-compiling: `cmake/toolchains/aarch64-linux-gnu.cmake` (clang +
   lld, with QEMU running protoc and the tests), and
   `scripts/cross-aarch64.sh`, which builds and tests in a container.
+- Free-threaded Python (3.14t, 3.15t). The module declares that it doesn't
+  need the GIL, and release wheels are built for cp314t and cp315t
+  (cibuildwheel 4.2.1). On the tutorial's index, concurrent `search()` calls
+  from 64 plain Python threads reach 327k QPS, against about 100k with the
+  GIL.
 - `benchmarks/glove.py` and `docs/benchmarks.md`: build time, recall,
   throughput and latency against the upstream wheel, on x86-64 and
   Graviton4.
@@ -43,9 +48,18 @@ All notable changes to scann-core. Versions follow
   k-means++ training can end up with a slightly different partitioner.
   Recall on GloVe-100 matches to the fourth decimal place. aarch64 results
   are bit-identical to the upstream wheel.
-- The tutorial's figures were re-measured with this version.
+- The tutorial's figures were re-measured with this version. Part 5 now
+  also measures plain threads, and shows free-threaded Python.
+- Copyright and package metadata name Elias Benali (@ebenali) and
+  TheCleaners.
 
 ### Fixed
+- Python searches could run concurrently with `upsert`/`delete` (searches
+  release the GIL), and could map their results to the wrong docids. Without
+  the GIL, concurrent upserts corrupted the index. `ScannNumpy` now holds a
+  reader/writer lock (searches shared, everything else exclusive), and the
+  docid bookkeeping has one too. Plain searches cost the same; searches with
+  docids cost about 1 µs more. New test: `python_concurrency`.
 - Upstream's aarch64 build:
   - `int8_tile.cc` included its per-target header before
     `hwy/foreach_target.h`, which broke Highway's Neon pass;

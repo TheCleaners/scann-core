@@ -2,7 +2,7 @@
 
 Script: [`code/part5_serving.py`](code/part5_serving.py)
 
-Building the part 3 index takes 3.3 s here. At larger scale, training takes
+Building the part 3 index takes 3.2 s here. At larger scale, training takes
 minutes or hours, so you build once, save, and load wherever you serve.
 
 ## Saving and loading
@@ -13,7 +13,7 @@ loaded = scann.scann_ops_pybind.load_searcher(index_dir)
 ```
 
 ```
-serialized in 0.3 s to /tmp/glove-index-oasp2b9q:
+serialized in 0.3 s to /tmp/glove-index-q0wxlsid:
   ah_codebook.pb                        0.0 MiB
   datapoint_to_token.npy                4.5 MiB
   dataset.npy                         451.5 MiB
@@ -84,40 +84,75 @@ Batching first:
 
 ```
 batch size vs. throughput / latency (search_batched_parallel, 64 threads)
-  batch     1:    11707 QPS,   0.085 ms per batch
-  batch     8:    64617 QPS,   0.124 ms per batch
-  batch    64:   182964 QPS,   0.350 ms per batch
-  batch   512:   236128 QPS,   2.168 ms per batch
-  batch  4096:   324594 QPS,  12.619 ms per batch
-  search() one query at a time:    13571 QPS, 0.074 ms per query
+  batch     1:    11222 QPS,   0.089 ms per batch
+  batch     8:    61310 QPS,   0.130 ms per batch
+  batch    64:   176586 QPS,   0.362 ms per batch
+  batch   512:   249586 QPS,   2.051 ms per batch
+  batch  4096:   293822 QPS,  13.940 ms per batch
+  search() one query at a time:    13331 QPS, 0.075 ms per query
 ```
 
 This is the classic trade-off: bigger batches give more throughput, and
 every query in the batch waits for the whole batch. With batches of 64, the
-machine does 183k QPS and a query waits at most about a third of a millisecond,
+machine does 177k QPS and a query waits at most about a third of a millisecond,
 plus however long it waited for the batch to fill.
 
 For a single query, plain `search()` is slightly faster than a batch of one
-(0.074 vs 0.085 ms), because it doesn't hand off to the thread pool.
+(0.075 vs 0.089 ms), because it doesn't hand off to the thread pool.
 
-Then concurrent `search()` calls from Python threads:
+Then concurrent `search()` calls from Python threads, first through a
+`ThreadPoolExecutor`, then with plain threads that each search their own
+share of the queries:
 
 ```
+Python 3.12.14, GIL enabled
 concurrent search() calls from a Python thread pool
-   1 threads:    12666 QPS
-   8 threads:    62683 QPS
-  32 threads:    60715 QPS
-  64 threads:    55700 QPS
+   1 threads:    12722 QPS
+   8 threads:    64877 QPS
+  32 threads:    55133 QPS
+  64 threads:    54306 QPS
+concurrent search() calls, plain threads
+   1 threads:    13608 QPS
+   8 threads:    96921 QPS
+  32 threads:   115389 QPS
+  64 threads:   103993 QPS
 ```
 
 ScaNN releases Python's global interpreter lock while it searches, so
-threads run in parallel: 8 threads give 4.9× the throughput. Beyond that
-the curve flattens around 60k QPS. The rest of each call, converting
-arguments and building result arrays, still holds the lock. At 0.07 ms per
-search, that serial part is the likely bottleneck.
+threads run in parallel: 8 plain threads give 7.1× the throughput of one.
+Beyond that the curve flattens around 100–115k QPS. The rest of each call,
+converting arguments and building result arrays, still holds the lock. At
+0.07 ms per search, that serial part is the likely bottleneck. The thread
+pool flattens earlier, around 55–65k, because handing each query to it
+takes the lock too.
 
-**In Python**, either keep about 8 request threads, or batch. Batching goes
-further: 325k QPS, against about 60k for threads. **From C++ or Rust**
+**On free-threaded Python** (3.14t and later) there is no global lock:
+scann-core's module declares that it doesn't need one, and it does its own
+locking. The same script, on the same machine:
+
+```
+Python 3.14.7, GIL disabled
+concurrent search() calls from a Python thread pool
+   1 threads:    12476 QPS
+   8 threads:    95911 QPS
+  32 threads:   115706 QPS
+  64 threads:   124659 QPS
+concurrent search() calls, plain threads
+   1 threads:    13671 QPS
+   8 threads:    99995 QPS
+  32 threads:   314045 QPS
+  64 threads:   327429 QPS
+```
+
+Plain threads now scale to 327k QPS on 64 threads, 24× one thread, on a
+par with batching and with Rust ([part 7](07-cpp-and-rust.md)). The thread
+pool still flattens, at about 125k: with one query per task, its shared
+work queue is now the bottleneck, not ScaNN. Give each thread a share of
+the work rather than one query at a time.
+
+**In Python with the GIL**, either keep about 8 request threads, or batch.
+Batching goes further: 294k QPS, against about 100k for threads. **On
+free-threaded Python** threads get as far as batching. **From C++ or Rust**
 there is no interpreter lock. [Part 7](07-cpp-and-rust.md) measures
 concurrent `search()` calls from Rust threads.
 

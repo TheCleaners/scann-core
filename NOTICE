@@ -40,6 +40,15 @@ isn't a one-line change:
       Upsert() rejects batch_size < 1 (division by zero) and wrong-sized
       vectors (upstream failed with an uninformative RET_CHECK); Delete()
       re-attaches the mutation thread pool after a retrain, like Upsert().
+  src/scann/scann_ops/cc/scann_npy.h, src/scann/scann_ops/cc/scann_npy.cc
+      ScannNumpy holds a reader/writer lock: searches and size() shared,
+      everything else exclusive, always with the GIL released. Upstream
+      relied on the GIL, but searches release it, so a search could run
+      concurrently with an upsert or delete; without the GIL, concurrent
+      upserts corrupted the index.
+  src/scann/scann_ops/cc/python/scann_pybind.cc
+      The module declares mod_gil_not_used(), so free-threaded Python keeps
+      the GIL disabled when it is imported.
   src/scann/utils/memory_logging.cc
       No longer dereferences empty std::optionals.
   src/scann/data_format/docid_collection.h
@@ -80,7 +89,9 @@ isn't a one-line change:
       upsert() updates the docid bookkeeping only after the index accepted
       the vectors, and delete() validates all docids before changing
       anything (upstream left docids out of sync with the index when either
-      raised).
+      raised). The docid bookkeeping is guarded by a reader/writer lock, so
+      a search overlapping an upsert or delete maps its results to the
+      right docids.
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 Everything else (build system, the C++ config builder in core/, Rust

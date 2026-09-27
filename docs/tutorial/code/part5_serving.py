@@ -91,10 +91,30 @@ print(f"  search() one query at a time: {2000 / t.seconds:8.0f} QPS, "
 # --- Serving concurrent requests: many threads calling search(). ------------
 # search() releases the GIL while it runs, so request-handler threads can
 # search one shared index concurrently.
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
-print("\nconcurrent search() calls from a Python thread pool")
+gil = sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else True
+print(f"\nPython {sys.version.split()[0]}, GIL {'enabled' if gil else 'disabled'}")
+print("concurrent search() calls from a Python thread pool")
 for workers in (1, 8, 32, 64):
   with ThreadPoolExecutor(workers) as pool, Timer() as t:
     list(pool.map(loaded.search, queries))
+  print(f"  {workers:2} threads: {len(queries) / t.seconds:8.0f} QPS")
+
+# The same without the pool: each thread searches its own share of the
+# queries, so no shared work queue sits between the threads.
+print("concurrent search() calls, plain threads")
+for workers in (1, 8, 32, 64):
+  threads = [
+      threading.Thread(
+          target=lambda k=k: [loaded.search(q) for q in queries[k::workers]])
+      for k in range(workers)
+  ]
+  with Timer() as t:
+    for thread in threads:
+      thread.start()
+    for thread in threads:
+      thread.join()
   print(f"  {workers:2} threads: {len(queries) / t.seconds:8.0f} QPS")

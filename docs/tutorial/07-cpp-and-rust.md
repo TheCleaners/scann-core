@@ -182,9 +182,9 @@ std::thread::scope(|s| {
 });
 ```
 
-Python's threads flattened out at about 60k QPS. Rust scales to 343k QPS on
-64 threads, 24× one thread and close to batched throughput (379–381k), with
-no batching at all. So a Rust service can simply run one search per request,
+Python's threads flattened out at about 100k QPS with the GIL, and reached
+327k on free-threaded Python. Rust scales to 343k QPS on 64 threads, 24× one
+thread and close to batched throughput (379–381k), with no batching at all. So a Rust service can simply run one search per request,
 on whatever thread handles it. Each query takes about 0.07 ms on an idle
 machine, and about 0.19 ms (64 threads ÷ 343,017 QPS) with all 64 hardware
 threads busy, since two hyperthreads share each core.

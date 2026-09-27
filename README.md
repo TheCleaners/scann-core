@@ -56,7 +56,8 @@ All three build the C++ library from source, which needs:
 * **CMake ≥ 3.27**, and network access to download the C++ dependencies
   (or local copies; see [Dependencies](#dependencies)).
 * For Python: Python ≥ 3.10 with numpy and protobuf ≥ 7.36.2 (pip installs
-  them). For Rust: Rust ≥ 1.88.
+  them). Free-threaded Python (3.14t, 3.15t) is supported: the module runs
+  without the GIL (see [Threads](#threads)). For Rust: Rust ≥ 1.88.
 
 The version is in [`VERSION`](VERSION); see [CHANGELOG.md](CHANGELOG.md).
 
@@ -255,6 +256,29 @@ PYTHONPATH=build/python python -c "import scann; print(scann.__version__)"
 
 `scann.scann_ops` (the TensorFlow op) is not included.
 
+#### Threads
+
+A searcher can be shared between Python threads:
+* Searches run in parallel with each other.
+* `upsert`, `delete`, `rebalance`, `reserve`, `set_num_threads` and
+  `serialize` each run on their own. A search sees the index before or after
+  an update, never during one.
+
+With the GIL, searches release it while they run, but the Python-side
+work around each call is serialized. On a 64-thread machine, concurrent
+`search()` calls plateau around 100k QPS.
+
+On free-threaded Python (3.14t and later), the module declares that it
+doesn't need the GIL, so importing it doesn't turn the GIL back on. The
+same threads then reach about 330k QPS, level with batched search. See
+[tutorial part 5](docs/tutorial/05-saving-and-serving.md#serving-batch-size-latency-and-throughput).
+
+Upstream relied on the GIL for thread safety, but its searches release it.
+A search could therefore run during an `upsert` or `delete`, and map its
+results to the wrong docids. scann-core adds a reader/writer lock in C++
+and one around the docid bookkeeping. Plain searches cost the same; a
+search on a searcher with docids costs about 1 µs more.
+
 ### Rust
 
 ```rust
@@ -299,6 +323,7 @@ runs everything that needs nothing beyond the build:
 | `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input |
 | `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
 | `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |
+| `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
@@ -375,6 +400,8 @@ pointing at the wrong vectors.
 * CMake instead of Bazel; dependencies are upgraded to current releases.
 * The bug fixes above: some inputs upstream accepted (bad configs,
   inconsistent shapes, `batch_size = 0`) are now errors.
+* The Python module is safe to share between threads, and runs without the
+  GIL on free-threaded Python (see [Threads](#threads)).
 * Rust batched search returns exactly the neighbours found per query. The
   Python API pads short rows with index 0 and NaN distance.
 * `ConfigBuilder` (C++/Rust) returns errors where Python's builder silently

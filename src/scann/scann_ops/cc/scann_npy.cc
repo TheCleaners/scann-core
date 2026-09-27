@@ -81,6 +81,8 @@ vector<DatapointIndex> ScannNumpy::Upsert(
     vector<np_row_major_arr<float>>& vecs, int batch_size) {
   if (batch_size < 1)
     throw std::invalid_argument("Upsert batch_size must be >= 1.");
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
   // scann-core: reject wrong-sized vectors up front; upstream failed deep in
   // the mutator with an uninformative "SCANN_RET_CHECK failure".
   for (const auto& vec : vecs)
@@ -130,7 +132,7 @@ vector<DatapointIndex> ScannNumpy::Upsert(
     RuntimeErrorIfNotOk("Error performing incremental maintenance ",
                         statusor.status());
     if (statusor.value().has_value()) {
-      Rebalance();
+      RebalanceLocked("");
       mutator =
           ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
       if (batch_size > 1)
@@ -141,6 +143,8 @@ vector<DatapointIndex> ScannNumpy::Upsert(
 }
 
 vector<DatapointIndex> ScannNumpy::Delete(vector<DatapointIndex> indices) {
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
   auto mutator =
       ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
   mutator->set_mutation_threadpool(scann_.parallel_query_pool());
@@ -152,7 +156,7 @@ vector<DatapointIndex> ScannNumpy::Delete(vector<DatapointIndex> indices) {
     RuntimeErrorIfNotOk("Error performing incremental maintenance ",
                         statusor.status());
     if (statusor.value().has_value()) {
-      Rebalance();
+      RebalanceLocked("");
       mutator =
           ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
       mutator->set_mutation_threadpool(scann_.parallel_query_pool());
@@ -163,6 +167,12 @@ vector<DatapointIndex> ScannNumpy::Delete(vector<DatapointIndex> indices) {
 }
 
 int ScannNumpy::Rebalance(const string& config) {
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
+  return RebalanceLocked(config);
+}
+
+int ScannNumpy::RebalanceLocked(const string& config) {
   auto statusor = scann_.RetrainAndReindex(config);
   if (!statusor.ok()) {
     RuntimeErrorIfNotOk("Failed to retrain searcher: ", statusor.status());
@@ -172,15 +182,23 @@ int ScannNumpy::Rebalance(const string& config) {
   return scann_.n_points();
 }
 
-size_t ScannNumpy::Size() const { return scann_.n_points(); }
+size_t ScannNumpy::Size() const {
+  pybind11::gil_scoped_release gil_release;
+  absl::ReaderMutexLock lock(&mu_);
+  return scann_.n_points();
+}
 
 void ScannNumpy::Reserve(size_t num_datapoints) {
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
   auto mutator =
       ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
   mutator->Reserve(num_datapoints);
 }
 
 void ScannNumpy::SetNumThreads(int num_threads) {
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
   scann_.SetNumThreads(num_threads);
 }
 
@@ -198,6 +216,9 @@ string ScannNumpy::SuggestAutopilot(absl::string_view config_str,
 }
 
 string ScannNumpy::Config() {
+  pybind11::gil_scoped_release gil_release;
+  // Exclusive: ScannInterface::config() refreshes a cached copy.
+  absl::MutexLock lock(&mu_);
   std::string config_str;
   google::protobuf::TextFormat::PrintToString(*scann_.config(), &config_str);
   return config_str;
@@ -210,19 +231,20 @@ ScannNumpy::Search(const np_row_major_arr<float>& query, int final_nn,
     throw std::invalid_argument("Query must be one-dimensional");
 
   DatapointPtr<float> ptr(nullptr, query.data(), query.size(), query.size());
-  NNResultsVector res;
+  vector<DatapointIndex> idx;
+  vector<float> dis;
   {
     pybind11::gil_scoped_release gil_release;
+    absl::ReaderMutexLock lock(&mu_);
+    NNResultsVector res;
     auto status = scann_.Search(ptr, &res, final_nn, pre_reorder_nn, leaves);
     RuntimeErrorIfNotOk("Error during search: ", status);
+    idx.resize(res.size());
+    dis.resize(res.size());
+    scann_.ReshapeNNResult(res, idx.data(), dis.data());
   }
-
-  pybind11::array_t<DatapointIndex> indices(res.size());
-  pybind11::array_t<float> distances(res.size());
-  auto idx_ptr = reinterpret_cast<DatapointIndex*>(indices.request().ptr);
-  auto dis_ptr = reinterpret_cast<float*>(distances.request().ptr);
-  scann_.ReshapeNNResult(res, idx_ptr, dis_ptr);
-  return {indices, distances};
+  return {pybind11::array_t<DatapointIndex>(idx.size(), idx.data()),
+          pybind11::array_t<float>(dis.size(), dis.data())};
 }
 
 std::pair<pybind11::array_t<DatapointIndex>, pybind11::array_t<float>>
@@ -237,8 +259,11 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
       DenseDataset<float>(std::move(queries_vec), queries.shape()[0]);
 
   std::vector<NNResultsVector> res(query_dataset.size());
+  vector<DatapointIndex> idx;
+  vector<float> dis;
   {
     pybind11::gil_scoped_release gil_release;
+    absl::ReaderMutexLock lock(&mu_);
     Status status;
     if (parallel)
       status = scann_.SearchBatchedParallel(query_dataset, MakeMutableSpan(res),
@@ -248,21 +273,23 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
       status = scann_.SearchBatched(query_dataset, MakeMutableSpan(res),
                                     final_nn, pre_reorder_nn, leaves);
     RuntimeErrorIfNotOk("Error during search: ", status);
-  }
 
-  for (const auto& nn_res : res)
-    final_nn = std::max<int>(final_nn, nn_res.size());
-  pybind11::array_t<DatapointIndex> indices(
-      {static_cast<long>(query_dataset.size()), static_cast<long>(final_nn)});
-  pybind11::array_t<float> distances(
-      {static_cast<long>(query_dataset.size()), static_cast<long>(final_nn)});
-  auto idx_ptr = reinterpret_cast<DatapointIndex*>(indices.request().ptr);
-  auto dis_ptr = reinterpret_cast<float*>(distances.request().ptr);
-  scann_.ReshapeBatchedNNResult(MakeConstSpan(res), idx_ptr, dis_ptr, final_nn);
-  return {indices, distances};
+    for (const auto& nn_res : res)
+      final_nn = std::max<int>(final_nn, nn_res.size());
+    idx.resize(query_dataset.size() * std::max(final_nn, 0));
+    dis.resize(idx.size());
+    scann_.ReshapeBatchedNNResult(MakeConstSpan(res), idx.data(), dis.data(),
+                                  final_nn);
+  }
+  std::vector<long> shape = {static_cast<long>(query_dataset.size()),
+                             static_cast<long>(final_nn)};
+  return {pybind11::array_t<DatapointIndex>(shape, idx.data()),
+          pybind11::array_t<float>(shape, dis.data())};
 }
 
 void ScannNumpy::Serialize(std::string path, bool relative_path) {
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
   StatusOr<ScannAssets> assets_or = scann_.Serialize(path, relative_path);
   RuntimeErrorIfNotOk("Failed to extract SingleMachineFactoryOptions: ",
                       assets_or.status());
@@ -274,7 +301,12 @@ void ScannNumpy::Serialize(std::string path, bool relative_path) {
 }
 
 pybind11::dict ScannNumpy::GetHealthStats() const {
-  auto r = scann_.GetHealthStats();
+  StatusOr<ScannInterface::ScannHealthStats> r;
+  {
+    pybind11::gil_scoped_release gil_release;
+    absl::MutexLock lock(&mu_);
+    r = scann_.GetHealthStats();
+  }
   RuntimeErrorIfNotOk("Error getting health stats: ", r.status());
 
   using namespace pybind11::literals;
@@ -288,6 +320,8 @@ pybind11::dict ScannNumpy::GetHealthStats() const {
 }
 
 void ScannNumpy::InitializeHealthStats() {
+  pybind11::gil_scoped_release gil_release;
+  absl::MutexLock lock(&mu_);
   Status status = scann_.InitializeHealthStats();
   RuntimeErrorIfNotOk("Error initializing health stats: ", status);
 }

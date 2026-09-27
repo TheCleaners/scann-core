@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_SCANN_OPS_CC_SCANN_NPY_H_
 #define SCANN_SCANN_OPS_CC_SCANN_NPY_H_
@@ -75,7 +79,17 @@ class ScannNumpy {
   void InitializeHealthStats();
 
  private:
-  ScannInterface scann_;
+  int RebalanceLocked(const string& config) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
+  // scann-core: makes a ScannNumpy safe to share between Python threads,
+  // including on free-threaded Python, where the module declares that it
+  // doesn't need the GIL. Searches and Size() hold mu_ shared; everything
+  // else that touches scann_ holds it exclusively. (Upstream relied on the
+  // GIL, but searches release it, so a search could already overlap an
+  // upsert or delete.) mu_ is only ever taken with the GIL released, and
+  // released before the GIL is reacquired, so the two can't deadlock.
+  mutable absl::Mutex mu_;
+  ScannInterface scann_ ABSL_GUARDED_BY(mu_);
 };
 
 }  // namespace research_scann

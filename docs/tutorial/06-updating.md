@@ -118,7 +118,7 @@ and drops out. Both take effect immediately, with no rebuild.
 Query 0's exact top 3 are 97478, 262700 and 846101 (part 1). This index
 missed 262700, a reminder that a 90%-recall index misses one result in ten.
 
-Two behaviours to know about:
+Three behaviours to know about:
 
 * `delete` raises `KeyError` for an unknown docid, and changes nothing if it
   does. A failed `upsert` (a vector of the wrong dimension, say) also leaves
@@ -126,5 +126,11 @@ Two behaviours to know about:
   docids pointing at the wrong vectors; scann-core fixed this.
 * Saving an updated index (`serialize`) saves its current contents and
   docids. Loading it gives you the updated index, not the original build.
+* Updates and searches can come from different threads, with or without
+  the GIL. Searches run in parallel with each other. An `upsert`,
+  `delete` or `rebalance` runs on its own: it waits for the searches in
+  progress to finish, and searches that start meanwhile wait for it. So a
+  search sees the index either before or after each update, never halfway
+  through one.
 
 **Next:** [Part 7: C++ and Rust](07-cpp-and-rust.md).

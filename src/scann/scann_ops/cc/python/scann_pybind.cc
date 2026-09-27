@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include <cstdint>
 #include <string>
@@ -20,7 +24,10 @@
 #include "pybind11/stl.h"
 #include "scann/scann_ops/cc/scann_npy.h"
 
-PYBIND11_MODULE(scann_pybind, py_module) {
+// scann-core: mod_gil_not_used() lets free-threaded Python (3.14t, ...) keep
+// the GIL disabled when this module is imported; ScannNumpy does its own
+// locking (see scann_npy.h).
+PYBIND11_MODULE(scann_pybind, py_module, pybind11::mod_gil_not_used()) {
   py_module.doc() = "pybind11 wrapper for ScaNN";
   pybind11::class_<research_scann::ScannNumpy>(py_module, "ScannNumpy")
       .def(pybind11::init<const std::string&, const std::string&>())

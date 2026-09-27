@@ -19,10 +19,12 @@
 
 """Wrapper around pybind module that provides convenience functions for instantiating ScaNN searchers."""
 
+import contextlib
 import os
 import pickle as pkl
 import numpy as np
 import sys
+import threading
 
 sys.path.append(
     os.path.join(
@@ -37,6 +39,52 @@ def _open(path, mode):
   return open(path, mode)
 
 
+class _ReadWriteLock:
+  """Many readers or one writer; waiting writers go first. Not reentrant.
+
+  scann-core: guards the docid bookkeeping. A search maps the index's ids
+  to docids after the C++ search returns, and delete() moves the last
+  docid into the freed slot, so without this a search overlapping a
+  delete (possible even with the GIL, which searches release) could
+  return the wrong docids.
+  """
+
+  def __init__(self):
+    self._cond = threading.Condition(threading.Lock())
+    self._readers = 0
+    self._writer = False
+    self._writers_waiting = 0
+
+  @contextlib.contextmanager
+  def read(self):
+    with self._cond:
+      while self._writer or self._writers_waiting:
+        self._cond.wait()
+      self._readers += 1
+    try:
+      yield
+    finally:
+      with self._cond:
+        self._readers -= 1
+        if not self._readers:
+          self._cond.notify_all()
+
+  @contextlib.contextmanager
+  def write(self):
+    with self._cond:
+      self._writers_waiting += 1
+      while self._writer or self._readers:
+        self._cond.wait()
+      self._writers_waiting -= 1
+      self._writer = True
+    try:
+      yield
+    finally:
+      with self._cond:
+        self._writer = False
+        self._cond.notify_all()
+
+
 class ScannSearcher(object):
   """Wrapper class around pybind module that provides a cleaner interface."""
 
@@ -44,10 +92,18 @@ class ScannSearcher(object):
     self.searcher = searcher
     # Simple docid mapping.
     self.docids = docids
+    self._docids_lock = _ReadWriteLock()
     if docids is not None:
       self.docid_to_id = {docid: id for id, docid in enumerate(docids)}
       if len(docids) != len(self.docid_to_id):
         raise ValueError("Duplicates found in docids.")
+
+  def _reading_docids(self):
+    # Searchers without docids keep no Python-side state; the C++ searcher
+    # does its own locking.
+    if self.docids is None:
+      return contextlib.nullcontext()
+    return self._docids_lock.read()
 
   def search(
       self,
@@ -57,10 +113,11 @@ class ScannSearcher(object):
       leaves_to_search=-1,
   ):
     """Single-query search; -1 for a param uses the searcher's default value."""
-    idx, dist = self.searcher.search(q, final_num_neighbors,
-                                     pre_reorder_num_neighbors,
-                                     leaves_to_search)
-    idx = idx if self.docids is None else [self.docids[j] for j in idx]
+    with self._reading_docids():
+      idx, dist = self.searcher.search(q, final_num_neighbors,
+                                       pre_reorder_num_neighbors,
+                                       leaves_to_search)
+      idx = idx if self.docids is None else [self.docids[j] for j in idx]
     return idx, dist
 
   def search_batched(
@@ -75,17 +132,18 @@ class ScannSearcher(object):
     pre_nn = (-1 if pre_reorder_num_neighbors is None else
               pre_reorder_num_neighbors)
     leaves = -1 if leaves_to_search is None else leaves_to_search
-    idx, dist = self.searcher.search_batched(
-        queries,
-        final_nn,
-        pre_nn,
-        leaves,
-        False,
-        0,  # Ignored when parallel=False.
-    )
-    idx = (
-        idx
-        if self.docids is None else [[self.docids[j] for j in i] for i in idx])
+    with self._reading_docids():
+      idx, dist = self.searcher.search_batched(
+          queries,
+          final_nn,
+          pre_nn,
+          leaves,
+          False,
+          0,  # Ignored when parallel=False.
+      )
+      idx = (
+          idx if self.docids is None else
+          [[self.docids[j] for j in i] for i in idx])
     return idx, dist
 
   def search_batched_parallel(
@@ -101,19 +159,21 @@ class ScannSearcher(object):
     pre_nn = (-1 if pre_reorder_num_neighbors is None else
               pre_reorder_num_neighbors)
     leaves = -1 if leaves_to_search is None else leaves_to_search
-    idx, dist = self.searcher.search_batched(queries, final_nn, pre_nn, leaves,
-                                             True, batch_size)
-    idx = (
-        idx
-        if self.docids is None else [[self.docids[j] for j in i] for i in idx])
+    with self._reading_docids():
+      idx, dist = self.searcher.search_batched(queries, final_nn, pre_nn,
+                                               leaves, True, batch_size)
+      idx = (
+          idx if self.docids is None else
+          [[self.docids[j] for j in i] for i in idx])
     return idx, dist
 
   def serialize(self, artifacts_dir, relative_path=False):
-    self.searcher.serialize(artifacts_dir, relative_path)
-    docids_fn = os.path.join(artifacts_dir, "scann_docids.pkl")
+    with self._reading_docids():
+      self.searcher.serialize(artifacts_dir, relative_path)
+      docids_fn = os.path.join(artifacts_dir, "scann_docids.pkl")
 
-    if self.docids is not None:
-      pkl.dump(self.docids, _open(docids_fn, "wb"))
+      if self.docids is not None:
+        pkl.dump(self.docids, _open(docids_fn, "wb"))
 
   def get_health_stats(self):
     return self.searcher.get_health_stats()
@@ -136,44 +196,46 @@ class ScannSearcher(object):
     if self.docids is None:
       raise ValueError("Cannot upsert because docids have not been specified "
                        "when initializing.")
-    indices = [self.docid_to_id.get(docid) for docid in docids]
-    # scann-core: update the docid bookkeeping only once the index has
-    # accepted the vectors; upstream updated it first, so a failed upsert
-    # left docids out of sync with the index.
-    _ = self.searcher.upsert(indices, database, batch_size)
+    with self._docids_lock.write():
+      indices = [self.docid_to_id.get(docid) for docid in docids]
+      # scann-core: update the docid bookkeeping only once the index has
+      # accepted the vectors; upstream updated it first, so a failed upsert
+      # left docids out of sync with the index.
+      _ = self.searcher.upsert(indices, database, batch_size)
 
-    for idx, docid in zip(indices, docids):
-      if idx is not None:
-        self.docids[idx] = docid
-      else:
-        self.docids.append(docid)
-        self.docid_to_id[docid] = len(self.docids) - 1
+      for idx, docid in zip(indices, docids):
+        if idx is not None:
+          self.docids[idx] = docid
+        else:
+          self.docids.append(docid)
+          self.docid_to_id[docid] = len(self.docids) - 1
 
   def delete(self, docids):
     """Delete datapoints from searcher."""
     if not isinstance(docids, list):
       docids = [docids]
-    # scann-core: validate before changing anything; upstream raised midway
-    # through the loop below, after updating the bookkeeping for earlier
-    # docids that were then never deleted from the index.
-    for docid in docids:
-      if docid not in self.docid_to_id:
-        raise KeyError(f"Docid not found: {docid} ")
-    if len(set(docids)) != len(docids):
-      raise KeyError(f"Docids to delete are not unique: {docids}")
-    indices = []
-    for docid in docids:
-      idx = self.docid_to_id[docid]
-      indices.append(idx)
-      old_idx = len(self.docids) - 1  # pyrefly: ignore[bad-argument-type]
-      if idx != old_idx:
-        old_docid = self.docids[
-            old_idx]  # pyrefly: ignore[unsupported-operation]
-        self.docids[idx] = old_docid  # pyrefly: ignore[unsupported-operation]
-        self.docid_to_id[old_docid] = idx
-      self.docids.pop()  # pyrefly: ignore[missing-attribute]
-      self.docid_to_id.pop(docid)
-    _ = self.searcher.delete(indices)
+    with self._docids_lock.write():
+      # scann-core: validate before changing anything; upstream raised midway
+      # through the loop below, after updating the bookkeeping for earlier
+      # docids that were then never deleted from the index.
+      for docid in docids:
+        if docid not in self.docid_to_id:
+          raise KeyError(f"Docid not found: {docid} ")
+      if len(set(docids)) != len(docids):
+        raise KeyError(f"Docids to delete are not unique: {docids}")
+      indices = []
+      for docid in docids:
+        idx = self.docid_to_id[docid]
+        indices.append(idx)
+        old_idx = len(self.docids) - 1  # pyrefly: ignore[bad-argument-type]
+        if idx != old_idx:
+          old_docid = self.docids[
+              old_idx]  # pyrefly: ignore[unsupported-operation]
+          self.docids[idx] = old_docid  # pyrefly: ignore[unsupported-operation]
+          self.docid_to_id[old_docid] = idx
+        self.docids.pop()  # pyrefly: ignore[missing-attribute]
+        self.docid_to_id.pop(docid)
+      _ = self.searcher.delete(indices)
 
   def rebalance(self, config=None):
     """Rebalances the searcher."""
