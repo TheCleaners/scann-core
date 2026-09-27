@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_BASE_HEALTH_STATS_COLLECTOR_H_
 #define SCANN_BASE_HEALTH_STATS_COLLECTOR_H_
@@ -27,6 +31,7 @@
 #include "scann/distance_measures/one_to_one/l2_distance.h"
 #include "scann/oss_wrappers/scann_status.h"
 #include "scann/partitioning/kmeans_tree_like_partitioner.h"
+#include "scann/partitioning/projecting_decorator.h"
 #include "scann/utils/common.h"
 #include "scann/utils/types.h"
 
@@ -125,6 +130,20 @@ class HealthStatsCollector {
   std::shared_ptr<Partitioner> centroids_;
   bool is_enabled_ = false;
 
+  // scann-core: false when the centroids live in a projected (PCA/TRUNCATE)
+  // space rather than the datapoints' space. Upstream only skipped the
+  // centroid statistics in Initialize() (when the dimensionalities differed)
+  // but StatsUpdate()/UpdatePartitionCentroid() still took distances between
+  // an unprojected datapoint and a projected centroid on every mutation,
+  // reading past the end of the centroid. Now every path treats such trees
+  // like upstream's Initialize() does: partition sizes and imbalance are
+  // tracked, the quantization error is not (it stays 0).
+  bool centroids_in_datapoint_space_ = false;
+  bool CentroidStatsAvailable(size_t datapoint_dims) const {
+    return centroids_in_datapoint_space_ &&
+           datapoint_dims == centroids_->LeafCenters().dimensionality();
+  }
+
   static constexpr bool kCentroidAndDPAreSameType =
       std::is_same_v<DataType, typename Searcher::DataType>;
 };
@@ -137,6 +156,11 @@ Status HealthStatsCollector<Searcher, InDataType, InAccamulationType,
   is_enabled_ = true;
   searcher_ = &searcher;
   SCANN_RETURN_IF_ERROR(InitializeCentroids(searcher));
+  if constexpr (kCentroidAndDPAreSameType) {
+    centroids_in_datapoint_space_ =
+        dynamic_cast<const ProjectingDecoratorInterface<
+            typename Searcher::DataType>*>(centroids_.get()) == nullptr;
+  }
 
   ConstSpan<std::vector<DatapointIndex>> datapoints_by_token =
       searcher.datapoints_by_token();
@@ -153,7 +177,7 @@ Status HealthStatsCollector<Searcher, InDataType, InAccamulationType,
     if (dataset && !dataset->empty()) {
       const auto& centroids = centroids_->LeafCenters();
 
-      if (dataset[0].dimensionality() == centroids[0].dimensionality()) {
+      if (CentroidStatsAvailable(dataset->dimensionality())) {
         const auto& ds = *dataset;
         InAccamulationType total_squared_qe = 0.0;
 
@@ -305,6 +329,8 @@ void HealthStatsCollector<
 
   if constexpr (kCentroidAndDPAreSameType) {
     if (sizes_by_token_[token] == 0) return;
+    // scann-core: see centroids_in_datapoint_space_.
+    if (!centroids_in_datapoint_space_) return;
 
     if (sum_qe_by_token_[token].dimensionality() == 0) {
       sum_qe_by_token_[token].ZeroFill(new_centroid.dimensionality());
@@ -365,7 +391,9 @@ void HealthStatsCollector<
     }
   };
   if constexpr (kCentroidAndDPAreSameType) {
-    if (dataset && !dataset->empty()) {
+    // scann-core: see centroids_in_datapoint_space_.
+    if (dataset && !dataset->empty() &&
+        CentroidStatsAvailable(dataset->dimensionality())) {
       const auto& centroids = centroids_->LeafCenters();
       Datapoint<DataType> dp;
       for (int32_t token : tokens) {

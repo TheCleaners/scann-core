@@ -77,4 +77,6 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_concurrency python/test_concurrency.py)
   # Grow from empty and retrain into a SOAR tree (google-research#2712).
   scann_add_python_test(python_rebalance_flow python/test_rebalance_flow.py)
+  # Mutating and rebalancing a tree with a PCA/TRUNCATE projection.
+  scann_add_python_test(python_projection_mutation python/test_projection_mutation.py)
 endif()
