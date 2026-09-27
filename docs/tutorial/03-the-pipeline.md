@@ -15,8 +15,8 @@ that with a three-stage pipeline:
 
 Each stage can be used on its own. Adding them one at a time shows what
 each contributes. Everything below uses the same 10,000 queries as part 2.
-For reference, exact brute force there gave **recall 1.0 at 12,097 QPS and
-10 ms per query**.
+For reference, exact brute force there gave **recall 1.0 at 15,054 QPS and
+9.5 ms per query**.
 
 ## The configurations
 
@@ -38,20 +38,20 @@ configs = [
 ```
 
 ```
-1. tree + brute force: built in 3.1 s
-1. tree + brute force              recall@10 0.9066    104279 QPS   0.700 ms/query
+1. tree + brute force: built in 3.0 s
+1. tree + brute force              recall@10 0.9059    154425 QPS   0.633 ms/query
 2. AH only: built in 1.5 s
-2. AH only                         recall@10 0.5613     24013 QPS   1.337 ms/query
+2. AH only                         recall@10 0.5612     49076 QPS   0.719 ms/query
 3. AH + reorder 100: built in 1.5 s
-3. AH + reorder 100                recall@10 0.9583     24130 QPS   1.318 ms/query
-4. tree + AH: built in 3.6 s
-4. tree + AH                       recall@10 0.6052    334980 QPS   0.099 ms/query
-5. tree + AH + reorder 100: built in 3.3 s
-5. tree + AH + reorder 100         recall@10 0.9000    294492 QPS   0.111 ms/query
+3. AH + reorder 100                recall@10 0.9583     45759 QPS   0.767 ms/query
+4. tree + AH: built in 3.2 s
+4. tree + AH                       recall@10 0.6093    565064 QPS   0.066 ms/query
+5. tree + AH + reorder 100: built in 3.1 s
+5. tree + AH + reorder 100         recall@10 0.8999    488873 QPS   0.078 ms/query
 ```
 
-The last line is the headline: **90% recall at 24× the throughput and 1/90th
-the latency of brute force**, trained in 3.3 seconds. Here's where each
+The last line is the headline: **90% recall at 32× the throughput and 1/120th
+the latency of brute force**, trained in 3.1 seconds. Here's where each
 piece of that comes from.
 
 ## Stage 1: partitioning (`.tree`)
@@ -68,13 +68,13 @@ to its nearest cluster centre.
 At query time, the query is compared against the 2000 centres, and only the
 `num_leaves_to_search` = 100 nearest partitions are searched: 5% of the data.
 
-Configuration 1 searches those partitions exactly. It finds **90.7%** of the
-true neighbours while touching 5% of the vectors, which is 8.6× faster than
-brute force. The other 9.3% are neighbours that sit in a partition whose
+Configuration 1 searches those partitions exactly. It finds **90.6%** of the
+true neighbours while touching 5% of the vectors, which is 10× faster than
+brute force. The other 9.4% are neighbours that sit in a partition whose
 centre wasn't among the query's 100 nearest. This usually happens near a
 cluster boundary.
 
-That 0.9066 is a **ceiling**. No scoring method can find a neighbour in a
+That 0.9059 is a **ceiling**. No scoring method can find a neighbour in a
 partition that was never searched, so with 100 of 2000 leaves, recall can't
 go above it. The only way to raise the ceiling is to search more leaves, which
 is the main dial in [part 4](04-tuning.md).
@@ -125,9 +125,9 @@ a good filter and a poor ranker**, and the pipeline uses it as a filter.
 This keeps the top 100 candidates from the scoring stage, rescores them with
 exact dot products, and returns the best 10. 100 exact dot products per
 query cost almost nothing. Compare configurations 4 and 5: throughput drops
-by 12%, and recall goes from 0.605 to 0.900.
+by 13%, and recall goes from 0.609 to 0.900.
 
-That brings recall up to 0.9000, against the partitioning ceiling of 0.9066.
+That brings recall up to 0.8999, against the partitioning ceiling of 0.9059.
 Once the right partitions are searched, AH plus reordering lose almost
 nothing, so **the partitioning decides recall, and AH decides speed**.
 
@@ -144,7 +144,7 @@ shows how to shrink that.
   scores per query.
 
 Configuration 1 (tree + exact) and configuration 3 (AH + reorder, no tree)
-are each only 2–9× faster than brute force. Together they are 24× faster.
+are each only 3–10× faster than brute force. Together they are 32× faster.
 
 **Next:** these were one set of parameters. [Part 4](04-tuning.md) explores
 the others.

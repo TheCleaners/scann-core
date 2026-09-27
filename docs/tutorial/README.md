@@ -1,7 +1,7 @@
 # scann-core tutorial
 
 A hands-on walk through ScaNN on a real dataset: from exact search to a tuned
-index serving a quarter of a million queries per second, then saving it,
+index serving nearly half a million queries per second, then saving it,
 updating it, and running it from C++ and Rust.
 
 | Part | You'll learn |
@@ -17,8 +17,11 @@ updating it, and running it from C++ and Rust.
 Every number in this tutorial comes from running the scripts in
 [`code/`](code/). There is one script per part, and each part shows its
 script's actual output. They were run on an AMD Threadripper PRO 7975WX
-(32 cores, 64 threads). Your absolute speeds will differ, but the
-comparisons between configurations should hold.
+(32 cores, 64 threads, AVX-512), built with `-march=native` and clang 23.
+Your absolute speeds will differ, but the comparisons between
+configurations should hold. [benchmarks.md](../benchmarks.md) has
+comparable numbers for the upstream wheel, and for aarch64 (AWS
+Graviton4).
 
 Each output is from a single run, with file paths shortened. Rerunning a
 script gives throughput within a few percent. Recall is usually identical,

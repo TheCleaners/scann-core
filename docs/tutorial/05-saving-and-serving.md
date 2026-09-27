@@ -2,7 +2,7 @@
 
 Script: [`code/part5_serving.py`](code/part5_serving.py)
 
-Building the part 3 index takes 3.6 s here. At larger scale, training takes
+Building the part 3 index takes 3.3 s here. At larger scale, training takes
 minutes or hours, so you build once, save, and load wherever you serve.
 
 ## Saving and loading
@@ -13,7 +13,7 @@ loaded = scann.scann_ops_pybind.load_searcher(index_dir)
 ```
 
 ```
-serialized in 0.3 s to /tmp/glove-index-q322epox:
+serialized in 0.3 s to /tmp/glove-index-oasp2b9q:
   ah_codebook.pb                        0.0 MiB
   datapoint_to_token.npy                4.5 MiB
   dataset.npy                         451.5 MiB
@@ -59,13 +59,13 @@ in part 2:
 
 ```
 reorder precision vs. index size
-  reorder float32 :  514.0 MiB on disk, recall@10 0.8996
-  reorder bfloat16:  288.3 MiB on disk, recall@10 0.8963
-  reorder int8    :  175.4 MiB on disk, recall@10 0.8864
+  reorder float32 :  514.0 MiB on disk, recall@10 0.8980
+  reorder bfloat16:  288.3 MiB on disk, recall@10 0.8974
+  reorder int8    :  175.4 MiB on disk, recall@10 0.8866
 ```
 
-bfloat16 nearly halves the index for 0.3 points of recall, and int8 cuts it
-by two-thirds for 1.3 points. If size is the constraint, bfloat16 is the
+bfloat16 nearly halves the index for less than 0.1 points of recall, and int8
+cuts it by two-thirds for 1.1 points. If size is the constraint, bfloat16 is the
 easy win. Any recall loss can be won back with a few more
 `leaves_to_search`, as in part 4.
 
@@ -84,40 +84,40 @@ Batching first:
 
 ```
 batch size vs. throughput / latency (search_batched_parallel, 64 threads)
-  batch     1:     7964 QPS,   0.126 ms per batch
-  batch     8:    49603 QPS,   0.161 ms per batch
-  batch    64:   123249 QPS,   0.519 ms per batch
-  batch   512:   164084 QPS,   3.120 ms per batch
-  batch  4096:   216150 QPS,  18.950 ms per batch
-  search() one query at a time:     8874 QPS, 0.113 ms per query
+  batch     1:    11707 QPS,   0.085 ms per batch
+  batch     8:    64617 QPS,   0.124 ms per batch
+  batch    64:   182964 QPS,   0.350 ms per batch
+  batch   512:   236128 QPS,   2.168 ms per batch
+  batch  4096:   324594 QPS,  12.619 ms per batch
+  search() one query at a time:    13571 QPS, 0.074 ms per query
 ```
 
 This is the classic trade-off: bigger batches give more throughput, and
 every query in the batch waits for the whole batch. With batches of 64, the
-machine does 123k QPS and a query waits at most about half a millisecond,
+machine does 183k QPS and a query waits at most about a third of a millisecond,
 plus however long it waited for the batch to fill.
 
 For a single query, plain `search()` is slightly faster than a batch of one
-(0.113 vs 0.126 ms), because it doesn't hand off to the thread pool.
+(0.074 vs 0.085 ms), because it doesn't hand off to the thread pool.
 
 Then concurrent `search()` calls from Python threads:
 
 ```
 concurrent search() calls from a Python thread pool
-   1 threads:     8508 QPS
-   8 threads:    53203 QPS
-  32 threads:    63425 QPS
-  64 threads:    56006 QPS
+   1 threads:    12666 QPS
+   8 threads:    62683 QPS
+  32 threads:    60715 QPS
+  64 threads:    55700 QPS
 ```
 
 ScaNN releases Python's global interpreter lock while it searches, so
-threads run in parallel: 8 threads give 6.3× the throughput. Beyond that
+threads run in parallel: 8 threads give 4.9× the throughput. Beyond that
 the curve flattens around 60k QPS. The rest of each call, converting
-arguments and building result arrays, still holds the lock. At 0.1 ms per
+arguments and building result arrays, still holds the lock. At 0.07 ms per
 search, that serial part is the likely bottleneck.
 
 **In Python**, either keep about 8 request threads, or batch. Batching goes
-further: 216k QPS, against about 60k for threads. **From C++ or Rust**
+further: 325k QPS, against about 60k for threads. **From C++ or Rust**
 there is no interpreter lock. [Part 7](07-cpp-and-rust.md) measures
 concurrent `search()` calls from Rust threads.
 

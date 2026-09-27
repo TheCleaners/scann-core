@@ -13,6 +13,11 @@ C++, Python and Rust APIs:
 * **Rust**: the `scann-core` crate, a safe API over the C++ library via
   [cxx](https://cxx.rs).
 
+It runs on x86-64 and aarch64 Linux. On x86-64 it's about 50% faster than the
+upstream wheel at the same recall: the wheel never detects the CPU, so its
+AVX2/AVX-512 kernels never run. On aarch64 it includes Arm's Neon/SVE
+kernels. See [docs/benchmarks.md](docs/benchmarks.md).
+
 Extracted from google-research commit `758b894e` (`scann/` subdirectory);
 see [NOTICE](NOTICE) for provenance and the list of upstream files that were
 changed.
@@ -30,13 +35,19 @@ changed.
 
 All three build the C++ library from source, which needs:
 
-* **Linux on x86-64.** That's the only platform built and tested so far. The
-  arm64 and macOS code paths exist, inherited from upstream, but are
-  untested.
+* **Linux on x86-64 or aarch64.**
+  * x86-64 is built and tested in CI.
+  * aarch64 isn't in CI yet. It is tested natively on AWS Graviton4
+    (Neoverse V2), where all tests pass (C++, Python and Rust).
+  * The C++ tests also run under QEMU on six emulated Arm CPUs, from Neon-only
+    Cortex-A57 to SVE2 (see [Cross-compiling for aarch64](#cross-compiling-for-aarch64)).
+  * The SIMD kernels (AVX2/AVX-512 on x86-64, Neon/SVE on aarch64) are
+    chosen at run time from the CPU's features.
+  * The macOS code paths exist, inherited from upstream, but are untested.
 * **clang ≥ 19 or GCC ≥ 13.** Tested with clang 19, 21, 23 and 24 and
   GCC 13, 14 and 16 (CI runs clang 19 and 20, GCC 13 and 14). clang is
-  upstream's compiler and the one results are verified bit-identical to
-  upstream with. GCC builds give the same recall (checked on GloVe-100),
+  upstream's compiler, and the one the
+  [equivalence checks](#equivalence-with-upstream) use. GCC builds give the same recall (checked on GloVe-100),
   with last-bit differences in distances. They are slower: the partitioned
   pipeline by about 5%, and batched brute-force search at about half of
   clang's throughput. Use clang for speed. When no compiler is chosen, clang
@@ -63,10 +74,12 @@ scann-core/
 ├── examples/             C++ example, FetchContent consumer template
 ├── third_party/          vendored: cnpy, googletest's gtest_prod.h
 ├── tests/                C++/Python tests, upstream-equivalence harness
+├── benchmarks/           GloVe-100 benchmark (docs/benchmarks.md)
 ├── scripts/ci.sh         what CI runs (also runnable locally)
+├── scripts/cross-aarch64.sh  aarch64 cross-build + tests under QEMU
 ├── Cargo.toml            the Rust crate (sources in rust/)
 ├── pyproject.toml        the Python package (scikit-build-core)
-└── docs/                 tutorial, API reference, algorithms, AVQ explainer
+└── docs/                 tutorial, benchmarks, API reference, algorithms, AVQ explainer
 ```
 
 ## Building
@@ -163,10 +176,43 @@ Carried over from the Bazel build:
 * The LUT16 template sharding (`{BATCH_SIZE}` = 1..9) of Bazel's
   `batch_size_sharder`.
 
+On aarch64 the default `-march=armv8-a+simd` covers every Armv8 CPU. The
+SVE kernels are compiled with a `target("+sve")` attribute and used only
+when the CPU has SVE, so `-march=native` isn't needed for them.
+
 Not carried over: `HWY_DISABLED_TARGETS=(HWY_AVX3_SPR|HWY_AVX10_2)`. It
 worked around highway 1.3.0 failing to compile vqsort with clang 23, and
 isn't needed with highway 1.4.0. Thin LTO isn't on by default
 (`SCANN_ENABLE_LTO`).
+
+### Cross-compiling for aarch64
+
+[`cmake/toolchains/aarch64-linux-gnu.cmake`](cmake/toolchains/aarch64-linux-gnu.cmake)
+cross-compiles with clang and lld, against the Debian/Ubuntu
+`aarch64-linux-gnu` sysroot. It uses `qemu-aarch64` to run the tools the
+build runs (protoc) and the tests:
+
+```sh
+cmake -S . -B build-aarch64 -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake \
+  -DSCANN_BUILD_PYTHON=OFF -DSCANN_BUILD_RUST_BINDINGS=OFF
+cmake --build build-aarch64
+QEMU_CPU=neoverse-n2 ctest --test-dir build-aarch64
+```
+
+`SCANN_CLANG_SUFFIX=-19` picks `clang-19`. The build needs `clang`, `lld`,
+`g++-aarch64-linux-gnu` and `qemu-user`.
+[`scripts/cross-aarch64.sh`](scripts/cross-aarch64.sh) does all of it in a
+throwaway container. It runs the tests on six emulated CPUs with different
+feature sets, covering both the Neon and the SVE kernels:
+
+```sh
+docker run --rm --platform linux/amd64 -v $PWD:/src -w /src ubuntu:24.04 scripts/cross-aarch64.sh
+```
+
+Emulated timings mean nothing. For speed, see the Graviton4 numbers in
+[docs/benchmarks.md](docs/benchmarks.md#aarch64-aws-graviton4). Python and
+Rust build natively on aarch64 the same way as on x86-64.
 
 ## Using it
 
@@ -266,18 +312,41 @@ to `ctest`. The Rust test picks them up automatically.
 
 ### Equivalence with upstream
 
-On a fixed seed with two datasets (5000×128 and 4000×768), every
-**deterministic** config gives bit-identical neighbour lists and distances
-to the upstream wheel, for single and batched search from Python and from
-Rust. The configs are brute force, AH + int8 reorder, autopilot, and
+The harness uses a fixed seed and two datasets (5000×128 and 4000×768). The
+**deterministic** configs are brute force, AH + int8 reorder, autopilot, and
 tree + AH + reorder with k-means++ initialization, for dot product and
 squared L2. Indexes serialized by either build load in the other.
+
+* **aarch64:** every deterministic config gives bit-identical neighbour
+  lists and distances to the upstream wheel, for single and batched search.
+  Checked on Graviton4.
+* **x86-64:** bit-identical as well in scann-core 0.1.0. Since then, the
+  CPU-detection fix makes scann-core run the AVX2/AVX-512 kernels that the
+  wheel never does. Distances now differ in the last bits (≤ 2×10⁻⁷).
+  * Neighbour lists are identical in 13 of the 14 config/search-mode pairs.
+  * The exception is k-means++ training on the 768-dimensional data. It
+    trains a slightly different partitioner: 183 of 200 queries give
+    identical neighbours, and recall is 0.962 against 0.982.
+  * The wheel gives the same 0.962 on aarch64, so this is ordinary training
+    variation.
+  * The harness, which demands exact equality, therefore reports a mismatch
+    for that config on x86-64. On GloVe the recall matches to the fourth
+    decimal place.
+  * Details in [docs/benchmarks.md](docs/benchmarks.md#correctness).
 
 Upstream's default `tree(random_init=True)` is **not reproducible even
 against itself**. The initial centers go into an `absl::flat_hash_set`,
 whose iteration order is randomized per process. For those configs the
-harness compares recall distributions over 8 trainings per build, and they
-agree within noise.
+harness compares recall distributions over 8 trainings per build, and
+checks that the means agree within 3 standard errors.
+
+On one config (tree + AH + reorder, dot product, 5000×128), scann-core's
+mean recall has come out 0.2–0.9 points lower than the wheel's in every run
+so far. On x86-64 that stays within the bound. On aarch64 it doesn't: the
+wheel's random init there is nearly deterministic (1–2 distinct indexes in
+8), which narrows the bound. That gives 0.991 ± 0.006 against 0.998 ± 0.002.
+It happens with and without Arm's kernels, and the k-means++ configs aren't
+affected. Why is still open.
 
 ### Sanitizers and static analysis
 
@@ -319,6 +388,9 @@ pointing at the wrong vectors.
   and speed, the partition/score/reorder pipeline, tuning, serving,
   updating, and C++ and Rust. Every number in it comes from running the
   scripts included with it.
+* [`docs/benchmarks.md`](docs/benchmarks.md): speed and recall against the
+  upstream wheel on x86-64 and aarch64 (Graviton4), and how to reproduce
+  them with [`benchmarks/glove.py`](benchmarks/glove.py).
 * [`docs/api_reference.md`](docs/api_reference.md): the config options and
   search parameters, and what they mean.
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric

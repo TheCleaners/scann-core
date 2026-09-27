@@ -75,9 +75,9 @@ for name, quantize in [("float32", scann.ReorderType.FLOAT32),
 ```
 
 ```
-brute force, float32               recall@10 1.0000     12097 QPS  10.033 ms/query
-brute force, bfloat16              recall@10 0.9948      1778 QPS   5.833 ms/query
-brute force, int8                  recall@10 0.9745      3239 QPS   6.143 ms/query
+brute force, float32               recall@10 1.0000     15054 QPS   9.541 ms/query
+brute force, bfloat16              recall@10 0.9948      1876 QPS   5.057 ms/query
+brute force, int8                  recall@10 0.9745      3417 QPS   4.703 ms/query
 ```
 
 * **bfloat16** keeps the top 16 bits of each float (the full exponent and 7
@@ -85,12 +85,12 @@ brute force, int8                  recall@10 0.9745      3239 QPS   6.143 ms/que
   and a quarter of the memory respectively, at a small cost in recall.
 * **Latency** follows memory size: one query has to read the entire dataset,
   so the half-size bfloat16 copy is nearly twice as fast as float32.
-* **Throughput** goes the other way: float32 is 4–7× *faster*. Batched
+* **Throughput** goes the other way: float32 is 4–8× *faster*. Batched
   float32 search uses a matrix-multiplication kernel that loads a block of
   data once and scores it against many queries. The quantized formats score
   one query at a time, so every query streams the whole dataset through
-  memory again. bfloat16 goes from about 170 QPS on one thread to only 1,778
-  on 64, and that is about 420 GB/s of vectors read. When 64 threads give
+  memory again. bfloat16 goes from about 200 QPS on one thread to only 1,876
+  on 64, and that is about 440 GB/s of vectors read. When 64 threads give
   a 10× speedup, the bottleneck is almost certainly the memory system, not
   the cores.
 
@@ -98,7 +98,7 @@ So "quantized = faster" isn't a rule. It depends on whether you are limited
 by memory traffic or by computation, and batching changes which one it is.
 You have to measure your own workload.
 
-Either way, exact search tops out around 12,000 QPS here. Every query
+Either way, exact search tops out around 15,000 QPS here. Every query
 touches all 1.18 million vectors. To go faster, a query has to touch fewer
 of them, or do less work per vector. Those are the two ideas behind ScaNN.
 

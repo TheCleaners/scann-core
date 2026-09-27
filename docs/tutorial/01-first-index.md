@@ -101,14 +101,14 @@ neighbors, distances = searcher.search_batched(queries)
 ```
 
 ```
-batched: (10000, 10) in 17.92 s
+batched: (10000, 10) in 14.56 s
 same as the ground truth for query 0: True
 ```
 
 `search_batched` takes a 2-D array of queries and returns one row of results
 per query.
 
-17.9 seconds for 10,000 queries works out to about 1.8 ms each, on a single
+14.6 seconds for 10,000 queries works out to about 1.5 ms each, on a single
 thread. That's 10,000 × 1.18 million × 100 ≈ 1.2 trillion multiply-adds,
 so it isn't slow for what it does. But it scales with the dataset: ten times the data means ten times
 the wait. The rest of the tutorial is about not doing all that work.

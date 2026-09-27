@@ -3,6 +3,54 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
+## Unreleased
+
+### Performance
+- x86-64: ScaNN's AVX2/AVX-512 kernels are now used. Upstream's open-source
+  builds compile CPU detection out (`PLATFORM_IS_X86` is never defined), so
+  the upstream wheel and scann-core 0.1.0 always ran the fallback kernels.
+  The fix comes from Arm's google-research PR #3374. On GloVe-100 this gives
+  about 50% more throughput than the upstream wheel at the same recall for
+  tree + AH + reorder, with a third less latency. int8 brute force is also
+  about 50% faster. See `docs/benchmarks.md`.
+
+### Added
+- aarch64 Linux support, with Arm's work from google-research PR #3374 and
+  lizhang-arm/google-research PRs #1–#3 (authors preserved; see NOTICE):
+  - run-time CPU feature detection (`getauxval`);
+  - Neon many-to-many distances;
+  - Neon residual statistics and `IndexDatapointNoiseShaped`, for AH with
+    anisotropic quantization;
+  - Neon and SVE int8 × float dot products.
+
+  On Graviton4, index builds are 7–10% faster than without these kernels,
+  and batched float32 brute force gets 22% more throughput.
+- Tested natively on AWS Graviton4 (C++, Python and Rust), and under QEMU
+  on six emulated CPUs from Cortex-A57 (Neon only) to SVE2 and 2048-bit
+  SVE.
+- Cross-compiling: `cmake/toolchains/aarch64-linux-gnu.cmake` (clang +
+  lld, with QEMU running protoc and the tests), and
+  `scripts/cross-aarch64.sh`, which builds and tests in a container.
+- `benchmarks/glove.py` and `docs/benchmarks.md`: build time, recall,
+  throughput and latency against the upstream wheel, on x86-64 and
+  Graviton4.
+- The C++ API test also checks recall against an exact search it computes
+  itself, and covers a tree with int8 (fixed-point) centers.
+
+### Changed
+- x86-64 results are no longer bit-identical to the upstream wheel, because
+  the two now run different kernels. Distances differ in the last bits, and
+  k-means++ training can end up with a slightly different partitioner.
+  Recall on GloVe-100 matches to the fourth decimal place. aarch64 results
+  are bit-identical to the upstream wheel.
+- The tutorial's figures were re-measured with this version.
+
+### Fixed
+- Upstream's aarch64 build:
+  - `int8_tile.cc` included its per-target header before
+    `hwy/foreach_target.h`, which broke Highway's Neon pass;
+  - `hwy-compact.cc` required AES for its static Neon target.
+
 ## 0.1.0 (2026-09-26)
 
 First release. scann-core is ScaNN's search core, extracted from

@@ -25,7 +25,7 @@ python part7_export.py
 ```
 
 ```
-wrote .npy files and ~/.cache/scann-core-tutorial/glove-index; recall@10 from Python: 0.8995
+wrote .npy files and ~/.cache/scann-core-tutorial/glove-index; recall@10 from Python: 0.9007
 ```
 
 Both programs are built by scann-core's CMake build:
@@ -107,14 +107,14 @@ Output:
 
 ```
 dataset 1183514 x 100, 10000 queries
-built in 3.5 s
-built in C++               recall@10 0.9004    288239 QPS
+built in 3.2 s
+built in C++               recall@10 0.8988    470672 QPS
 loaded in 0.5 s
-built in Python, loaded    recall@10 0.8995    278465 QPS
+built in Python, loaded    recall@10 0.9007    415904 QPS
 ```
 
-The loaded index gives **exactly** Python's recall (0.8995): it is the same
-index. The index built in C++ differs in the fourth decimal because training
+The loaded index gives **exactly** Python's recall (0.9007): it is the same
+index. The index built in C++ differs slightly (0.8988) because training
 uses random initialization, and so does every rebuild in Python.
 
 To link against scann-core in your own CMake project, `add_subdirectory` it
@@ -156,14 +156,14 @@ Output:
 
 ```
 dataset 1183514 x 100, 10000 queries
-built in 3.4 s
-built in Rust              recall@10 0.9000    271987 QPS
+built in 3.3 s
+built in Rust              recall@10 0.8999    380945 QPS
 loaded in 0.5 s
-built in Python, loaded    recall@10 0.8995    251480 QPS
-concurrent search() from  1 threads:     9377 QPS
-concurrent search() from  8 threads:    73717 QPS
-concurrent search() from 32 threads:   195701 QPS
-concurrent search() from 64 threads:   245820 QPS
+built in Python, loaded    recall@10 0.9007    379369 QPS
+concurrent search() from  1 threads:    14489 QPS
+concurrent search() from  8 threads:   105798 QPS
+concurrent search() from 32 threads:   281285 QPS
+concurrent search() from 64 threads:   343017 QPS
 ```
 
 The last four lines are the experiment Python couldn't do well in
@@ -182,11 +182,11 @@ std::thread::scope(|s| {
 });
 ```
 
-Python's threads flattened out at about 60k QPS. Rust scales to 246k QPS on
-64 threads, 26× one thread and close to batched throughput (251–272k), with
+Python's threads flattened out at about 60k QPS. Rust scales to 343k QPS on
+64 threads, 24× one thread and close to batched throughput (379–381k), with
 no batching at all. So a Rust service can simply run one search per request,
-on whatever thread handles it. Each query takes about 0.1 ms on an idle
-machine, and about 0.26 ms (64 threads ÷ 245,820 QPS) with all 64 hardware
+on whatever thread handles it. Each query takes about 0.07 ms on an idle
+machine, and about 0.19 ms (64 threads ÷ 343,017 QPS) with all 64 hardware
 threads busy, since two hyperthreads share each core.
 
 ## Python, C++ and Rust side by side

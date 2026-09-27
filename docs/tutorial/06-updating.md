@@ -37,23 +37,23 @@ for start in range(first, n, 10000):
 ```
 
 ```
-built on 828459 points in 3.0 s
-70% indexed                              size   828459  recall@10 0.6346  imbalance 0.267  quantization error 0.7931
-upserted 355055 points in 0.9 s (389734 points/s)
-after upserting the other 30%            size  1183514  recall@10 0.9018  imbalance 0.268  quantization error 0.7941
-rebalanced in 3.5 s
-after rebalance()                        size  1183514  recall@10 0.9005  imbalance 0.275  quantization error 0.7943
-(fresh build on everything: 3.6 s)
-built from scratch on 100%               size  1183514  recall@10 0.8998  imbalance 0.279  quantization error 0.7943
+built on 828459 points in 2.7 s
+70% indexed                              size   828459  recall@10 0.6351  imbalance 0.278  quantization error 0.7931
+upserted 355055 points in 0.9 s (394582 points/s)
+after upserting the other 30%            size  1183514  recall@10 0.9011  imbalance 0.279  quantization error 0.7940
+rebalanced in 3.1 s
+after rebalance()                        size  1183514  recall@10 0.8996  imbalance 0.276  quantization error 0.7942
+(fresh build on everything: 3.3 s)
+built from scratch on 100%               size  1183514  recall@10 0.8990  imbalance 0.276  quantization error 0.7942
 ```
 
 * **With 70% indexed, recall is 0.63.** About 30% of each query's true
   neighbours aren't in the index yet, and 0.7 × 0.90 ≈ 0.63. The index is
   working fine; it just can't find what it doesn't have.
-* **`upsert` added 355,055 points in 0.9 s**, about 390,000 per second.
+* **`upsert` added 355,055 points in 0.9 s**, about 395,000 per second.
   Each new point is assigned to its nearest existing partition and encoded
   with the existing AH codebook. Nothing is retrained.
-* **Afterwards, recall matches a fresh build** (0.9018 vs 0.8998; the
+* **Afterwards, recall matches a fresh build** (0.9011 vs 0.8990; the
   difference is run-to-run noise). The partitions and codebook learned from
   the first 70% describe the rest just as well.
 
@@ -83,12 +83,12 @@ stats["avg_quantization_error"]
 ```
 
 Call `initialize_health_stats()` once. Updates then keep the numbers
-current. Here neither moved (imbalance 0.267 → 0.268, quantization error
-0.7931 → 0.7941), which says what the recall already showed: no drift.
+current. Here neither moved (imbalance 0.278 → 0.279, quantization error
+0.7931 → 0.7940), which says what the recall already showed: no drift.
 
 When they do grow, `searcher.rebalance()` retrains the partitioning and the
 codebook on the index's current contents, with the same configuration. It
-took 3.5 s here, about the same as building from scratch (3.6 s), because
+took 3.1 s here, about the same as building from scratch (3.3 s), because
 it *is* a rebuild. The difference is that the searcher, its docids and your
 serving code stay in place. With nothing to fix, it changed nothing measurable.
 
@@ -108,8 +108,8 @@ searcher.upsert(top[1], -queries[0])  # same docid, new vector
 ```
 
 ```
-query 0 top-3 before: ['97478', '846101', '727732']
-query 0 top-3 after deleting 97478 and moving 846101 : ['727732', '544474', '1133489']
+query 0 top-3 before: ['97478', '846101', '671078']
+query 0 top-3 after deleting 97478 and moving 846101 : ['671078', '727732', '544474']
 ```
 
 The deleted point is gone. The moved point now points *away* from the query

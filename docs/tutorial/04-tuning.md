@@ -23,46 +23,46 @@ searcher.search_batched_parallel(queries, leaves_to_search=200,
 The script sweeps both over the part 3 index (2000 leaves):
 
 ```
-leaves  25 pre_reorder  50         recall@10 0.7701    722308 QPS   0.046 ms/query
-leaves  25 pre_reorder 100         recall@10 0.7830    650244 QPS   0.048 ms/query
-leaves  25 pre_reorder 200         recall@10 0.7849    529338 QPS   0.054 ms/query
-leaves  25 pre_reorder 400         recall@10 0.7851    386502 QPS   0.065 ms/query
-leaves  50 pre_reorder  50         recall@10 0.8298    539653 QPS   0.067 ms/query
-leaves  50 pre_reorder 100         recall@10 0.8482    462043 QPS   0.074 ms/query
-leaves  50 pre_reorder 200         recall@10 0.8516    393281 QPS   0.079 ms/query
-leaves  50 pre_reorder 400         recall@10 0.8520    303486 QPS   0.093 ms/query
-leaves 100 pre_reorder  50         recall@10 0.8761    333257 QPS   0.115 ms/query
-leaves 100 pre_reorder 100         recall@10 0.8995    307823 QPS   0.113 ms/query
-leaves 100 pre_reorder 200         recall@10 0.9053    285163 QPS   0.124 ms/query
-leaves 100 pre_reorder 400         recall@10 0.9062    225813 QPS   0.136 ms/query
-leaves 200 pre_reorder  50         recall@10 0.9090    184744 QPS   0.201 ms/query
-leaves 200 pre_reorder 100         recall@10 0.9379    177083 QPS   0.213 ms/query
-leaves 200 pre_reorder 200         recall@10 0.9464    169489 QPS   0.232 ms/query
-leaves 200 pre_reorder 400         recall@10 0.9479    150783 QPS   0.239 ms/query
-leaves 400 pre_reorder  50         recall@10 0.9301    103396 QPS   0.378 ms/query
-leaves 400 pre_reorder 100         recall@10 0.9637    101386 QPS   0.389 ms/query
-leaves 400 pre_reorder 200         recall@10 0.9747     99862 QPS   0.378 ms/query
-leaves 400 pre_reorder 400         recall@10 0.9771     88020 QPS   0.427 ms/query
+leaves  25 pre_reorder  50         recall@10 0.7711    991058 QPS   0.035 ms/query
+leaves  25 pre_reorder 100         recall@10 0.7836    861723 QPS   0.037 ms/query
+leaves  25 pre_reorder 200         recall@10 0.7857    693907 QPS   0.047 ms/query
+leaves  25 pre_reorder 400         recall@10 0.7859    497715 QPS   0.052 ms/query
+leaves  50 pre_reorder  50         recall@10 0.8315    822996 QPS   0.052 ms/query
+leaves  50 pre_reorder 100         recall@10 0.8490    710172 QPS   0.055 ms/query
+leaves  50 pre_reorder 200         recall@10 0.8529    567769 QPS   0.056 ms/query
+leaves  50 pre_reorder 400         recall@10 0.8534    412865 QPS   0.066 ms/query
+leaves 100 pre_reorder  50         recall@10 0.8774    540551 QPS   0.081 ms/query
+leaves 100 pre_reorder 100         recall@10 0.9007    483354 QPS   0.077 ms/query
+leaves 100 pre_reorder 200         recall@10 0.9064    422794 QPS   0.083 ms/query
+leaves 100 pre_reorder 400         recall@10 0.9074    328432 QPS   0.095 ms/query
+leaves 200 pre_reorder  50         recall@10 0.9102    330538 QPS   0.131 ms/query
+leaves 200 pre_reorder 100         recall@10 0.9387    312748 QPS   0.139 ms/query
+leaves 200 pre_reorder 200         recall@10 0.9468    279899 QPS   0.141 ms/query
+leaves 200 pre_reorder 400         recall@10 0.9485    232795 QPS   0.152 ms/query
+leaves 400 pre_reorder  50         recall@10 0.9318    184380 QPS   0.224 ms/query
+leaves 400 pre_reorder 100         recall@10 0.9649    177110 QPS   0.230 ms/query
+leaves 400 pre_reorder 200         recall@10 0.9753    168082 QPS   0.242 ms/query
+leaves 400 pre_reorder 400         recall@10 0.9779    149961 QPS   0.263 ms/query
 ```
 
 Reading it:
 
 * **`leaves_to_search` sets the ceiling.** Each doubling adds 3–7 points of
-  recall, less as recall rises, and costs 25–40% of the throughput. Doubling
+  recall, less as recall rises, and costs 20–45% of the throughput. Doubling
   the leaves doubles the vectors scored, but some per-query costs stay
   fixed.
 * **`pre_reorder_num_neighbors` fills up to the ceiling.** Past a point,
   more candidates don't help. At 100 leaves, going from 200 to 400
-  candidates gains 0.0009 recall and costs 20% of the throughput. The more
+  candidates gains 0.001 recall and costs 22% of the throughput. The more
   leaves you search, the more candidates it takes to reach the ceiling. At
   400 leaves, 50 candidates leave nearly 5 points on the table.
 * **A good rule of thumb:** keep `pre_reorder_num_neighbors` around 10–20×
   *k*, and use `leaves_to_search` to pick the recall you need.
 
 For a target like "95% recall", read the fastest row that meets it:
-here, 400 leaves with 100 candidates, at about 101,000 QPS. For 90%, it's
-100 leaves with 200 candidates, at about 285,000 QPS. With 100 candidates
-the same setting reaches 0.8995, just short.
+here, 400 leaves with 100 candidates, at about 177,000 QPS. For 90%, it's
+100 leaves with 100 candidates, at about 483,000 QPS, though only just
+(0.9007). 200 candidates give more margin (0.9064) at 423,000 QPS.
 
 **Always choose parameters on held-out queries from your real workload.** The
 curve depends on your data.
@@ -75,36 +75,36 @@ candidates. Variants are only comparable at equal speed, so compare curves,
 not single rows.
 
 ```
-1000 leaves: built in 2.8 s
-  leaves   25                      recall@10 0.8389    397740 QPS   0.079 ms/query
-  leaves   50                      recall@10 0.8965    261645 QPS   0.118 ms/query
-  leaves  100                      recall@10 0.9399    167230 QPS   0.203 ms/query
-2000 leaves: built in 3.4 s
-  leaves   50                      recall@10 0.8525    378564 QPS   0.074 ms/query
-  leaves  100                      recall@10 0.9057    262916 QPS   0.126 ms/query
-  leaves  200                      recall@10 0.9466    161339 QPS   0.220 ms/query
-4000 leaves: built in 4.3 s
-  leaves  100                      recall@10 0.8450    346620 QPS   0.098 ms/query
-  leaves  200                      recall@10 0.9012    241394 QPS   0.159 ms/query
-  leaves  400                      recall@10 0.9438    148647 QPS   0.273 ms/query
-2000 leaves, plain PQ (no AQ): built in 3.2 s
-  leaves   50                      recall@10 0.8495    385766 QPS   0.076 ms/query
-  leaves  100                      recall@10 0.9007    268054 QPS   0.123 ms/query
-  leaves  200                      recall@10 0.9401    161038 QPS   0.219 ms/query
-2000 leaves, 4 dims/block: built in 2.8 s
-  leaves   50                      recall@10 0.7795    493981 QPS   0.056 ms/query
-  leaves  100                      recall@10 0.8075    378410 QPS   0.084 ms/query
-  leaves  200                      recall@10 0.8247    258444 QPS   0.141 ms/query
-2000 leaves, SOAR lambda 1.5: built in 4.1 s
-  leaves   50                      recall@10 0.9109    240341 QPS   0.123 ms/query
-  leaves  100                      recall@10 0.9512    158009 QPS   0.216 ms/query
-  leaves  200                      recall@10 0.9783     92815 QPS   0.367 ms/query
+1000 leaves: built in 2.9 s
+  leaves   25                      recall@10 0.8387    572713 QPS   0.054 ms/query
+  leaves   50                      recall@10 0.8968    422288 QPS   0.082 ms/query
+  leaves  100                      recall@10 0.9401    279247 QPS   0.125 ms/query
+2000 leaves: built in 3.3 s
+  leaves   50                      recall@10 0.8522    531180 QPS   0.059 ms/query
+  leaves  100                      recall@10 0.9050    402683 QPS   0.094 ms/query
+  leaves  200                      recall@10 0.9460    271306 QPS   0.140 ms/query
+4000 leaves: built in 3.7 s
+  leaves  100                      recall@10 0.8424    475050 QPS   0.075 ms/query
+  leaves  200                      recall@10 0.9002    383874 QPS   0.116 ms/query
+  leaves  400                      recall@10 0.9433    249248 QPS   0.174 ms/query
+2000 leaves, plain PQ (no AQ): built in 3.0 s
+  leaves   50                      recall@10 0.8477    532702 QPS   0.058 ms/query
+  leaves  100                      recall@10 0.8995    416526 QPS   0.085 ms/query
+  leaves  200                      recall@10 0.9393    279824 QPS   0.138 ms/query
+2000 leaves, 4 dims/block: built in 2.7 s
+  leaves   50                      recall@10 0.7783    606956 QPS   0.045 ms/query
+  leaves  100                      recall@10 0.8060    487431 QPS   0.063 ms/query
+  leaves  200                      recall@10 0.8233    348511 QPS   0.095 ms/query
+2000 leaves, SOAR lambda 1.5: built in 4.2 s
+  leaves   50                      recall@10 0.9093    313784 QPS   0.097 ms/query
+  leaves  100                      recall@10 0.9503    228780 QPS   0.153 ms/query
+  leaves  200                      recall@10 0.9775    146916 QPS   0.262 ms/query
 ```
 
 ### `num_leaves`: forgiving
 
-The 1000, 2000 and 4000-leaf curves nearly coincide: 0.897 at 262,000 QPS,
-0.906 at 263,000, and 0.901 at 241,000. With fewer, bigger
+The 1000, 2000 and 4000-leaf curves nearly coincide: 0.897 at 422,000 QPS,
+0.905 at 403,000, and 0.900 at 384,000. With fewer, bigger
 partitions you search fewer of them. With more, smaller ones you search
 more of them. The work evens out.
 
@@ -117,23 +117,23 @@ it.
 
 ### Anisotropic quantization: free, and big when reordering is short
 
-With 200 reorder candidates, AQ adds only 0.3–0.7 points of recall over plain
-product quantization (0.9057 vs 0.9007; 0.9466 vs 0.9401). Reordering 200
+With 200 reorder candidates, AQ adds only 0.5–0.7 points of recall over plain
+product quantization (0.9050 vs 0.8995; 0.9460 vs 0.9393). Reordering 200
 candidates already repairs most of AH's ranking errors, and AQ improves
 exactly the AH stage. The last section of the script takes that safety net
 away:
 
 ```
 AQ vs plain PQ with less reordering (2000 leaves, 100 searched)
-AQ, no reordering                  recall@10 0.6060    328589 QPS   0.109 ms/query
-AQ, reorder 20                     recall@10 0.7729    318404 QPS   0.107 ms/query
-AQ, reorder 50                     recall@10 0.8761    316129 QPS   0.112 ms/query
-plain PQ, no reordering            recall@10 0.5479    325418 QPS   0.107 ms/query
-plain PQ, reorder 20               recall@10 0.7142    313504 QPS   0.109 ms/query
-plain PQ, reorder 50               recall@10 0.8439    305471 QPS   0.115 ms/query
+AQ, no reordering                  recall@10 0.6070    505822 QPS   0.071 ms/query
+AQ, reorder 20                     recall@10 0.7747    503050 QPS   0.071 ms/query
+AQ, reorder 50                     recall@10 0.8759    472790 QPS   0.080 ms/query
+plain PQ, no reordering            recall@10 0.5489    500805 QPS   0.071 ms/query
+plain PQ, reorder 20               recall@10 0.7141    488277 QPS   0.071 ms/query
+plain PQ, reorder 50               recall@10 0.8427    469424 QPS   0.087 ms/query
 ```
 
-When AH does most of the ranking, AQ is worth 3.2–5.9 points of recall at
+When AH does most of the ranking, AQ is worth 3.3–6.1 points of recall at
 the same speed. That's the effect the
 [explainer](../anisotropic_quantization_explained.md) describes: the
 scores of the vectors that matter are distorted less. AQ costs nothing at
@@ -158,7 +158,7 @@ a partition boundary, which were the reason for part 3's recall ceiling. The
 second partition is chosen with an "orthogonality-amplified residual" loss,
 so that the error it makes is unlikely to coincide with the first one's.
 The cost: each vector is listed in two partitions, so every leaf searched
-holds more vectors to score, and building takes longer (4.1 s vs 3.4 s).
+holds more vectors to score, and building takes longer (4.2 s vs 3.3 s).
 
 That is why SOAR's rows are slower at the same `leaves_to_search`, and why
 it has to be compared at equal speed. Take the query-time sweep's rows at the
@@ -166,13 +166,15 @@ same throughput:
 
 | QPS | plain 2000 leaves | SOAR |
 |---|---|---|
-| ~150,000–158,000 | 0.9479 (200 leaves, 400 candidates; 150,783 QPS) | 0.9512 (100 leaves; 158,009 QPS) |
-| ~88,000–100,000 | 0.9747 (400 leaves, 200 candidates; 99,862 QPS)<br>0.9771 (400 leaves, 400 candidates; 88,020 QPS) | 0.9783 (200 leaves; 92,815 QPS) |
+| ~313,000 | 0.9387 (200 leaves, 100 candidates; 312,748 QPS) | 0.9093 (50 leaves; 313,784 QPS) |
+| ~229,000–233,000 | 0.9485 (200 leaves, 400 candidates; 232,795 QPS) | 0.9503 (100 leaves; 228,780 QPS) |
+| ~147,000–150,000 | 0.9779 (400 leaves, 400 candidates; 149,961 QPS) | 0.9775 (200 leaves; 146,916 QPS) |
 
-On GloVe, SOAR is ahead by 0.1–0.4 points of recall at equal speed: real,
-but small. The paper reports larger gains on other datasets and at larger
-scales. Treat it as something to try when you need the last bit of recall,
-and measure it on your data. SOAR requires dot product.
+At equal speed on GloVe, SOAR is level with plain partitioning at high recall
+(within 0.2 points either way). At lower recall it is behind: 0.909 against
+0.939 at about 313,000 QPS. The paper reports larger gains on other datasets
+and at larger scales, so treat SOAR as something to try on your own data,
+not a default. SOAR requires dot product.
 
 ## A tuning recipe
 
