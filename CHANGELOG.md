@@ -36,6 +36,10 @@ All notable changes to scann-core. Versions follow
   files that the new one lacks; before, a stale `scann_docids.pkl` was
   attached to an index saved without docids. New test:
   `python_serialization`.
+- `serialize(dir)` with a relative `dir` and the default
+  `relative_path=False` wrote an index that didn't load (upstream too): the
+  manifest recorded `dir/name`, which loading resolved to `dir/dir/name`.
+  The recorded paths are now absolute.
 - A tree with every point deleted serialized to a directory that couldn't
   be loaded; so did any tree with bfloat16 brute-force leaves.
 - A failed AH lookup table in a tree search threw from `.value()` instead

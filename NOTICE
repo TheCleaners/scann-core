@@ -65,7 +65,9 @@ isn't a one-line change:
       then commits them behind an "incomplete" marker manifest that
       LoadArtifacts() rejects, so an interrupted re-serialize can't leave a
       directory that loads a mix of two indexes (upstream's in-place
-      Serialize() wrote scann_config.pb first).
+      Serialize() wrote scann_config.pb first). Without relative_path it
+      records absolute asset paths even for a relative directory (upstream
+      recorded dir/name, which loaded as dir/dir/name).
   src/scann/utils/io_npy.h, src/scann/utils/io_npy.cc
       NumpyToVectorAndShape() validates the .npy file (magic, version,
       header length, header dict, dtype kind, size and byte order, C order,

@@ -243,10 +243,32 @@ def check_killed_serialize(tmp):
   return outcomes
 
 
+def check_relative_dir(tmp):
+  """serialize() into a directory given by a relative path, default
+  relative_path=False: the manifest must hold absolute paths (upstream wrote
+  dir/name, which the loader resolved to dir/dir/name)."""
+  db = dataset(600)
+  s = builder(db, "tree_ah").build(docids=[f"d{i}" for i in range(600)])
+  cwd = os.getcwd()
+  os.chdir(tmp)
+  try:
+    os.mkdir("rel_idx")
+    s.serialize("rel_idx")
+    t = load("rel_idx")
+  finally:
+    os.chdir(cwd)
+  assert t.size() == 600 and t.docids == s.docids
+  assert t.search(db[3])[0] == s.search(db[3])[0]
+  # Still loads from elsewhere: the recorded paths are absolute.
+  t = load(os.path.join(tmp, "rel_idx"))
+  assert t.size() == 600
+
+
 def main():
   tmp = tempfile.mkdtemp(prefix="scann_serialization_test_")
   try:
     check_round_trip(tmp)
+    check_relative_dir(tmp)
     check_all_deleted_round_trip(tmp)
     check_reserialize_replaces_everything(tmp)
     check_failed_serialize_leaves_clean_error(tmp)

@@ -396,7 +396,10 @@ searcher2 = scann.scann_ops_pybind.load_searcher(artifacts_dir)
   to `scann_docids.pkl`.
 - `relative_path=True` records asset paths in the manifest relative to
   `artifacts_dir`, so the whole directory can be moved/copied intact.
-  `relative_path=False` (default) records absolute paths.
+  `relative_path=False` (default) records absolute paths, also when
+  `artifacts_dir` is given as a relative path (upstream recorded
+  `artifacts_dir/name` as given, which didn't load for a relative
+  `artifacts_dir`).
 - **Re-serializing into a directory that holds an index replaces it.**
   scann-core writes and fsyncs every file in a staging subdirectory
   (`.scann_staging_*`) first, then replaces `scann_assets.pbtxt` with a

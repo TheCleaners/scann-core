@@ -1094,11 +1094,22 @@ Status ScannInterface::SerializeToDirectory(
   // the manifest records the final paths the caller asked for.
   SCANN_ASSIGN_OR_RETURN(ScannAssets assets,
                          Serialize(staging, /*relative_path=*/true));
+  // Absolute paths are absolute even when `dir` is relative: the loader
+  // resolves a relative asset path against the index directory, so upstream's
+  // `dir + "/" + name` made it look for dir/dir/name.
+  fs::path absolute_dir;
+  if (!relative_path) {
+    absolute_dir = fs::absolute(dir, ec);
+    if (ec)
+      return InternalError(absl::StrCat("Failed to make ", dir,
+                                        " an absolute path: ", ec.message()));
+  }
   vector<std::string> files = {"scann_config.pb"};
   for (ScannAsset& asset : *assets.mutable_assets()) {
     files.push_back(asset.asset_path());
     if (!relative_path)
-      asset.set_asset_path(absl::StrCat(dir, "/", asset.asset_path()));
+      asset.set_asset_path(
+          (absolute_dir / asset.asset_path()).lexically_normal().string());
   }
   for (const auto& [name, contents] : extra_files) {
     SCANN_RETURN_IF_ERROR(WriteWholeFile(staging + "/" + name, contents));
