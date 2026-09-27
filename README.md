@@ -325,11 +325,13 @@ runs everything that needs nothing beyond the build:
 | `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input (including NaN/infinity) |
 | `api_exercise_avx2` | the same, with the AVX2 kernels forced on an AVX-512 machine (`SCANN_TEST_FORCE_AVX2=1`), so both kernel sets get tested (and sanitized) |
 | `mutation_regressions` | a failed `rebalance()` leaves a working index; tree + bfloat16 add/update/delete; every stored vector keeps finding itself |
+| `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load |
 | `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
 | `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |
 | `python_input_validation` | NaN/infinity in builds, upserts and batched queries, and `leaves_to_search` on indexes without a tree, are clean errors (not crashes); a failed batch upsert changes nothing; padded results map to `None` |
 | `python_projection_mutation` | trees with PCA/TRUNCATE projections through inserts, updates, deletes and `rebalance()`: points stay findable, health stats stay consistent |
 | `python_rebalance_flow` | an index grown from empty with batched upserts, then retrained with `rebalance(config)` into a SOAR tree (the big-ann-benchmarks flow); the builder's SOAR options; a clear error for more leaves than points |
+| `python_serialization` | `serialize()`/`load_searcher()` round trips for 10 configs, also with every point deleted; re-serializing over another index leaves no stale files or docids; a re-serialize that fails or is killed (`SIGKILL`) midway leaves the old index, the new one, or a directory that fails to load, never a mix |
 | `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 
