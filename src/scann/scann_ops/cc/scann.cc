@@ -18,20 +18,29 @@
 
 #include "scann/scann_ops/cc/scann.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <random>
 #include <string>
+#include <system_error>
 #include <utility>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/internal/sysinfo.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/node_hash_set.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
@@ -163,6 +172,21 @@ namespace {
 // LOG(FATAL), heap overflow, uncaught exceptions) or loaded silently wrong
 // data. Each asset is now checked on its own (see NumpyToVectorAndShape)
 // and against the others and the config.
+
+// SerializeToDirectory() puts a scann_assets.pbtxt containing this field
+// (unknown to the ScannAssets proto, so it never parses) in place while it
+// replaces the other files.
+constexpr absl::string_view kIncompleteSerializationMarker =
+    "scann_core_incomplete_serialization";
+
+Status CheckSerializationComplete(absl::string_view assets_pbtxt) {
+  if (absl::StrContains(assets_pbtxt, kIncompleteSerializationMarker))
+    return FailedPreconditionError(
+        "This index directory is incomplete: serialize() was interrupted "
+        "while writing it, or is still writing it. Serialize the index "
+        "again.");
+  return OkStatus();
+}
 
 template <typename T>
 StatusOr<pair<vector<T>, vector<size_t>>> LoadNpyOfRank(absl::string_view path,
@@ -553,8 +577,10 @@ StatusOr<ScannInterface::ScannArtifacts> ScannInterface::LoadArtifacts(
   if (scann_assets_pbtxt.empty()) {
     SCANN_ASSIGN_OR_RETURN(auto assets_pbtxt,
                            GetContents(artifacts_dir + "/scann_assets.pbtxt"));
+    SCANN_RETURN_IF_ERROR(CheckSerializationComplete(assets_pbtxt));
     SCANN_RETURN_IF_ERROR(ParseTextProto(&assets, assets_pbtxt));
   } else {
+    SCANN_RETURN_IF_ERROR(CheckSerializationComplete(scann_assets_pbtxt));
     SCANN_RETURN_IF_ERROR(ParseTextProto(&assets, scann_assets_pbtxt));
   }
   ScannConfig config;
@@ -588,6 +614,7 @@ Status ScannInterface::Initialize(absl::string_view config_pbtxt,
                                   absl::string_view scann_assets_pbtxt) {
   SCANN_RETURN_IF_ERROR(ParseTextProto(&config_, config_pbtxt));
   ScannAssets assets;
+  SCANN_RETURN_IF_ERROR(CheckSerializationComplete(scann_assets_pbtxt));
   SCANN_RETURN_IF_ERROR(ParseTextProto(&assets, scann_assets_pbtxt));
   SCANN_ASSIGN_OR_RETURN(auto dataset_and_opts, LoadArtifacts(config_, assets));
   auto [_, dataset, opts] = std::move(dataset_and_opts);
@@ -941,6 +968,152 @@ StatusOr<ScannAssets> ScannInterface::Serialize(std::string path,
     SCANN_RETURN_IF_ERROR(DatasetToNumpy(fpath, *dataset));
   }
   return assets;
+}
+
+namespace {
+
+// scann-core: helpers for SerializeToDirectory.
+
+// Every asset file name Serialize() can write, and the Python wrapper's
+// docids.
+constexpr absl::string_view kIndexFileNames[] = {
+    "ah_codebook.pb",          "serialized_partitioner.pb",
+    "datapoint_to_token.npy",  "hashed_dataset.npy",
+    "hashed_dataset_soar.npy", "bfloat16_dataset.npy",
+    "int8_dataset.npy",        "int8_multipliers.npy",
+    "dp_norms.npy",            "dataset.npy",
+    "scann_docids.pkl"};
+
+Status WriteWholeFile(const std::string& path, absl::string_view contents) {
+  std::ofstream out(path, std::ofstream::binary | std::ofstream::trunc);
+  if (!out.write(contents.data(), contents.size()) || !out.flush())
+    return InternalError(absl::StrCat("Failed to write ", path));
+  return OkStatus();
+}
+
+Status FsyncPath(const std::string& path, bool directory) {
+  const int fd =
+      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0));
+  if (fd < 0)
+    return InternalError(absl::StrCat("Failed to open ", path,
+                                      " for fsync: ", std::strerror(errno)));
+  const int rc = ::fsync(fd);
+  const int err = errno;
+  ::close(fd);
+  if (rc != 0)
+    return InternalError(
+        absl::StrCat("fsync of ", path, " failed: ", std::strerror(err)));
+  return OkStatus();
+}
+
+Status RenamePath(const std::string& from, const std::string& to) {
+  std::error_code ec;
+  std::filesystem::rename(from, to, ec);
+  if (ec)
+    return InternalError(absl::StrCat("Failed to rename ", from, " to ", to,
+                                      ": ", ec.message()));
+  return OkStatus();
+}
+
+}  // namespace
+
+Status ScannInterface::SerializeToDirectory(
+    const std::string& dir, bool relative_path,
+    const std::vector<std::pair<std::string, std::string>>& extra_files) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec))
+    return NotFoundError(
+        absl::StrCat(dir, " isn't an existing directory; create it first."));
+  for (const auto& [name, contents] : extra_files) {
+    if (name.empty() || name[0] == '.' || name.find('/') != std::string::npos ||
+        name == "scann_config.pb" || name == "scann_assets.pbtxt" ||
+        (name != "scann_docids.pkl" &&
+         absl::c_linear_search(kIndexFileNames, name)))
+      return InvalidArgumentError(
+          absl::StrCat("Invalid extra file name \"", name, "\"."));
+  }
+
+  // Staging directories left by an interrupted serialize. (Non-throwing
+  // iteration: a range-for would use the throwing operator++.)
+  vector<fs::path> leftovers;
+  for (fs::directory_iterator it(dir, ec), end; !ec && it != end;
+       it.increment(ec)) {
+    if (absl::StartsWith(it->path().filename().string(), ".scann_staging_"))
+      leftovers.push_back(it->path());
+  }
+  for (const fs::path& leftover : leftovers) fs::remove_all(leftover, ec);
+
+  std::string staging;
+  std::random_device rd;
+  for (int attempt = 0;; ++attempt) {
+    staging = absl::StrCat(dir, "/.scann_staging_",
+                           absl::Hex(rd(), absl::kZeroPad8),
+                           absl::Hex(rd(), absl::kZeroPad8));
+    if (fs::create_directory(staging, ec)) break;
+    if (ec || attempt == 10)
+      return InternalError(absl::StrCat("Failed to create a staging directory ",
+                                        "in ", dir, ": ", ec.message()));
+  }
+  struct RemoveOnExit {
+    std::string path;
+    ~RemoveOnExit() {
+      std::error_code ec;
+      fs::remove_all(path, ec);
+    }
+  } remove_staging{staging};
+
+  // Stage everything. Serialize() names each asset relative to `staging`;
+  // the manifest records the final paths the caller asked for.
+  SCANN_ASSIGN_OR_RETURN(ScannAssets assets,
+                         Serialize(staging, /*relative_path=*/true));
+  vector<std::string> files = {"scann_config.pb"};
+  for (ScannAsset& asset : *assets.mutable_assets()) {
+    files.push_back(asset.asset_path());
+    if (!relative_path)
+      asset.set_asset_path(absl::StrCat(dir, "/", asset.asset_path()));
+  }
+  for (const auto& [name, contents] : extra_files) {
+    SCANN_RETURN_IF_ERROR(WriteWholeFile(staging + "/" + name, contents));
+    files.push_back(name);
+  }
+  std::string manifest;
+  if (!google::protobuf::TextFormat::PrintToString(assets, &manifest))
+    return InternalError("Failed to print the ScannAssets proto.");
+  SCANN_RETURN_IF_ERROR(
+      WriteWholeFile(staging + "/scann_assets.pbtxt", manifest));
+  SCANN_RETURN_IF_ERROR(WriteWholeFile(
+      staging + "/incomplete",
+      absl::StrCat("# scann-core: serialize() is writing this index "
+                   "directory, or was\n# interrupted while writing it. Its "
+                   "files may come from different indexes.\n# Serialize the "
+                   "index again.\n",
+                   kIncompleteSerializationMarker, ": true\n")));
+  for (const std::string& f : files)
+    SCANN_RETURN_IF_ERROR(FsyncPath(staging + "/" + f, false));
+  SCANN_RETURN_IF_ERROR(FsyncPath(staging + "/scann_assets.pbtxt", false));
+  SCANN_RETURN_IF_ERROR(FsyncPath(staging + "/incomplete", false));
+
+  // Commit: the marker, then the files (removing a previous index's files
+  // that this one lacks, notably a stale scann_docids.pkl), then the
+  // manifest.
+  const std::string manifest_path = dir + "/scann_assets.pbtxt";
+  SCANN_RETURN_IF_ERROR(RenamePath(staging + "/incomplete", manifest_path));
+  SCANN_RETURN_IF_ERROR(FsyncPath(dir, true));
+  for (absl::string_view name : kIndexFileNames) {
+    if (absl::c_linear_search(files, name)) continue;
+    const std::string path = absl::StrCat(dir, "/", name);
+    fs::remove(path, ec);
+    if (ec)
+      return InternalError(
+          absl::StrCat("Failed to remove ", path, ": ", ec.message()));
+  }
+  for (const std::string& f : files)
+    SCANN_RETURN_IF_ERROR(RenamePath(staging + "/" + f, dir + "/" + f));
+  SCANN_RETURN_IF_ERROR(FsyncPath(dir, true));
+  SCANN_RETURN_IF_ERROR(
+      RenamePath(staging + "/scann_assets.pbtxt", manifest_path));
+  return FsyncPath(dir, true);
 }
 
 StatusOr<ScannInterface::ScannHealthStats> ScannInterface::GetHealthStats()

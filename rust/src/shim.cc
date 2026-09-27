@@ -196,14 +196,10 @@ HealthStats scann_health_stats(const ScannIndex& idx) {
 // --- persistence and mutation -------------------------------------------------
 
 void scann_serialize(ScannIndex& idx, rust::Str dir, bool relative_path) {
-  const std::string path(View(dir));
-  auto assets = ValueOrThrow(idx.Serialize(path, relative_path),
-                             "Failed to serialize searcher");
-  std::string text;
-  google::protobuf::TextFormat::PrintToString(assets, &text);
-  ThrowIfNotOk(research_scann::OpenSourceableFileWriter(path + "/scann_assets.pbtxt")
-                   .Write(text),
-               "Failed to write ScannAssets proto");
+  // Staged and committed so an interrupted serialize can't leave a directory
+  // that loads a mix of two indexes (see SerializeToDirectory).
+  ThrowIfNotOk(idx.SerializeToDirectory(std::string(View(dir)), relative_path),
+               "Failed to serialize searcher");
 }
 
 void scann_set_num_threads(ScannIndex& idx, int32_t num_threads) {

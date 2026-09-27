@@ -31,7 +31,6 @@
 #include <vector>
 
 #include "absl/status/status.h"
-#include "google/protobuf/text_format.h"
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/dataset.h"
 #include "scann/scann_ops/cc/scann.h"
@@ -157,11 +156,8 @@ int main() {
   // ScannIndex::load(dir).
   const auto dir = std::filesystem::temp_directory_path() / "scann-core-quickstart";
   std::filesystem::create_directories(dir);
-  auto assets = index.Serialize(dir.string());
-  if (!assets.ok()) return Fail("serialize", assets.status());
-  std::string assets_text;
-  google::protobuf::TextFormat::PrintToString(*assets, &assets_text);
-  auto artifacts = ScannInterface::LoadArtifacts(dir.string(), assets_text);
+  if (auto s = index.SerializeToDirectory(dir.string()); !s.ok()) return Fail("serialize", s);
+  auto artifacts = ScannInterface::LoadArtifacts(dir.string());
   if (!artifacts.ok()) return Fail("load", artifacts.status());
   ScannInterface reloaded;
   if (auto s = reloaded.Initialize(*std::move(artifacts)); !s.ok()) return Fail("reload", s);

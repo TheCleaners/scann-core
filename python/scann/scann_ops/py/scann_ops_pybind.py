@@ -178,12 +178,13 @@ class ScannSearcher(object):
     return idx, dist
 
   def serialize(self, artifacts_dir, relative_path=False):
+    # scann-core: the docids are written with the index, in one commit (see
+    # ScannInterface::SerializeToDirectory); upstream wrote them afterwards,
+    # and left a previous index's scann_docids.pkl in place when there were
+    # none.
     with self._reading_docids():
-      self.searcher.serialize(artifacts_dir, relative_path)
-      docids_fn = os.path.join(artifacts_dir, "scann_docids.pkl")
-
-      if self.docids is not None:
-        pkl.dump(self.docids, _open(docids_fn, "wb"))
+      docids_pkl = None if self.docids is None else pkl.dumps(self.docids)
+      self.searcher.serialize(artifacts_dir, relative_path, docids_pkl)
 
   def get_health_stats(self):
     return self.searcher.get_health_stats()
@@ -338,5 +339,12 @@ def load_searcher(artifacts_dir, assets_backcompat_shim=True):
   docid = pkl.load(_open(docids_path, "rb")) if exists else None
 
   with _open(assets_pbtxt, "r") as f:
-    return ScannSearcher(
-        scann_pybind.ScannNumpy(artifacts_dir, f.read()), docid)
+    searcher = scann_pybind.ScannNumpy(artifacts_dir, f.read())
+  # scann-core: a scann_docids.pkl from another index was accepted, mapping
+  # results to the wrong docids.
+  if docid is not None and len(docid) != searcher.size():
+    raise ValueError(
+        f"{docids_path} has {len(docid)} docids, but the index has "
+        f"{searcher.size()} datapoints; the directory may mix files of "
+        "different indexes.")
+  return ScannSearcher(searcher, docid)

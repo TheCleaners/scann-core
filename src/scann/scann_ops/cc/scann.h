@@ -22,8 +22,11 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include "absl/memory/memory.h"
 #include "absl/status/statusor.h"
@@ -89,6 +92,29 @@ class ScannInterface {
                                int pre_reorder_nn, int leaves,
                                int batch_size = 256) const;
   StatusOr<ScannAssets> Serialize(std::string path, bool relative_path = false);
+  // scann-core: writes the whole index into the existing directory `dir`,
+  // including scann_assets.pbtxt, so that an interrupted write never leaves
+  // a directory that loads a mix of two indexes. Serialize() writes the files
+  // in place, one by one, and leaves the manifest to the caller.
+  //
+  // Everything is written and fsynced in a staging directory inside `dir`
+  // first. Then scann_assets.pbtxt is atomically replaced by a marker that
+  // makes loading fail with FailedPreconditionError, the files are renamed
+  // into place, and the new scann_assets.pbtxt is renamed over the marker
+  // last. Each rename is atomic, the sequence isn't: a crash midway leaves
+  // a directory that fails to load, cleanly, until the next successful
+  // serialize (and possibly a leftover ".scann_staging_*" directory).
+  // Asset files and a scann_docids.pkl of a previous index that this one
+  // doesn't have are removed.
+  //
+  // `extra_files` (name, contents) are committed along with the index; the
+  // Python wrapper passes its scann_docids.pkl this way. Loading while
+  // another thread or process serializes into the same directory, or two
+  // concurrent serializes into it, aren't supported.
+  Status SerializeToDirectory(
+      const std::string& dir, bool relative_path = false,
+      const std::vector<std::pair<std::string, std::string>>& extra_files =
+          {});
   StatusOr<SingleMachineFactoryOptions> ExtractOptions();
 
   template <typename T_idx>
