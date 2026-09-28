@@ -386,10 +386,10 @@ runs everything that needs nothing beyond the build:
 | test | what |
 |---|---|
 | `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input (including NaN/infinity) |
-| `api_exercise_avx2` | the same, with the AVX2 kernels forced on an AVX-512 machine (`SCANN_TEST_FORCE_AVX2=1`), so both kernel sets get tested (and sanitized) |
+| `api_exercise_avx2` | (x86-64 only) the same, with the AVX2 kernels forced on an AVX-512 machine (`SCANN_TEST_FORCE_AVX2=1`), so both kernel sets get tested (and sanitized) |
 | `mutation_regressions` | a failed `rebalance()` leaves a working index; tree + bfloat16 add/update/delete; a failed update in a SOAR tree (injected leaf failure) changes nothing; every stored vector keeps finding itself |
 | `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load. Every directory also loads from memory (`LoadArtifactsFromMemory`) with the same outcome |
-| `artifact_loading_avx2` | the same, with the AVX2 kernels forced (`SCANN_TEST_FORCE_AVX2=1`); includes searching an index whose leaves are all empty |
+| `artifact_loading_avx2` | (x86-64 only) the same, with the AVX2 kernels forced (`SCANN_TEST_FORCE_AVX2=1`); includes searching an index whose leaves are all empty |
 | `config_regressions` | raw configs that crashed upstream (zero block sizes, LUT16 with other than 16 clusters, binary or unsupported distances, bad quantiles) are errors; tree + PCA/TRUNCATE + AH without residuals builds, searches well and reloads |
 | `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
 | `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |

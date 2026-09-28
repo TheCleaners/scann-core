@@ -58,6 +58,6 @@ echo "::endgroup::"
 for cpu in cortex-a57 neoverse-n1 neoverse-v1 neoverse-n2 \
            "max,sve-default-vector-length=64" "max,sve-default-vector-length=256"; do
   echo "::group::ctest, QEMU_CPU=$cpu"
-  QEMU_CPU="$cpu" ctest --test-dir "$BUILD_DIR" --output-on-failure
+  QEMU_CPU="$cpu" ctest --test-dir "$BUILD_DIR" --output-on-failure -j "$(nproc)"
   echo "::endgroup::"
 done

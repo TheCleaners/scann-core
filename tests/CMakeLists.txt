@@ -26,10 +26,15 @@ add_test(NAME api_exercise_threaded COMMAND scann_core_api_exercise - 0)
 # Timeouts well above the normal run time (seconds natively; under QEMU and
 # sanitizers, a few minutes), so a hang fails instead of stalling ctest for
 # its default 25 minutes.
+set_tests_properties(api_exercise api_exercise_threaded PROPERTIES TIMEOUT 900)
 # The same with the AVX2 kernels on an AVX-512 machine (see the test's main()).
-add_test(NAME api_exercise_avx2 COMMAND scann_core_api_exercise - 0)
-set_tests_properties(api_exercise_avx2 PROPERTIES ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
-set_tests_properties(api_exercise api_exercise_threaded api_exercise_avx2 PROPERTIES TIMEOUT 900)
+# x86-64 only: elsewhere it would only repeat api_exercise.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  set(SCANN_TEST_X86 ON)
+  add_test(NAME api_exercise_avx2 COMMAND scann_core_api_exercise - 0)
+  set_tests_properties(api_exercise_avx2 PROPERTIES TIMEOUT 900
+    ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
+endif()
 
 # Regressions for mutation defects: a failed RetrainAndReindex must leave the
 # index usable (upstream left a dangling docid collection), a tree with
@@ -49,9 +54,11 @@ add_executable(scann_core_artifact_loading cpp/artifact_loading.cc)
 target_link_libraries(scann_core_artifact_loading PRIVATE scann::core)
 add_test(NAME artifact_loading COMMAND scann_core_artifact_loading)
 set_tests_properties(artifact_loading PROPERTIES TIMEOUT 900)
-add_test(NAME artifact_loading_avx2 COMMAND scann_core_artifact_loading)
-set_tests_properties(artifact_loading_avx2 PROPERTIES TIMEOUT 900
-  ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
+if(SCANN_TEST_X86)
+  add_test(NAME artifact_loading_avx2 COMMAND scann_core_artifact_loading)
+  set_tests_properties(artifact_loading_avx2 PROPERTIES TIMEOUT 900
+    ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
+endif()
 
 # Regressions for raw config values that aborted the process, overflowed the
 # heap or hit undefined behavior (each must be an error now), and for valid
