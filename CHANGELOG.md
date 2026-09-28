@@ -69,6 +69,25 @@ All notable changes to scann-core. Versions follow
 - `scann_ops_pybind.ScannSearcher` counts the calls that may change the
   index (`upsert`, `delete`, `rebalance`), so that the native backend
   refreshes its copy.
+- Docs: [docs/frameworks.md](docs/frameworks.md), scann-core in batch
+  jobs and services. Batch retrieval on Ray Data, Spark (`mapInArrow`,
+  `mapInPandas`) and Dask: one searcher per worker process, loaded from a
+  shipped directory and cached in a module (a cache in `__main__` reloads
+  per task: measured), the index's thread pool (sized from the machine's
+  CPUs, not the process's) against the framework's parallelism, memory
+  per worker, docids. Serving with FastAPI (a shared searcher, `def`
+  endpoints, micro-batching, free-threaded Python), Ray Serve, and
+  patterns for BentoML and Triton's Python backend. Zero-copy inputs from
+  Arrow, pandas and Polars (checked in code, including which conversions
+  copy). Dense + sparse hybrid retrieval with an external sparse engine and
+  score fusion (RRF, weighted); scann-core's API has no sparse search.
+- Examples: [`fastapi_service.py`](examples/python/fastapi_service.py) (a
+  FastAPI service run in-process with `TestClient`) and
+  [`batch_retrieval.py`](examples/python/batch_retrieval.py) (a saved index
+  searched from worker processes, queries from Arrow without a copy, and
+  Ray Data when installed), run as the ctests
+  `example_py_fastapi_service` and `example_py_batch_retrieval` (skipped
+  without FastAPI and httpx2, or pyarrow).
 
 ### Fixed
 - The wheels no longer contain Eigen's headers: 0.2.0's installed 681

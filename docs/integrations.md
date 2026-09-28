@@ -7,7 +7,12 @@ from other array libraries, searching from PyTorch models
 ([`scann.torch`](#scanntorch-searching-from-pytorch-models)), the
 libraries that have been checked, and what to know when using them.
 
-TensorFlow has its own page: [tensorflow.md](tensorflow.md).
+TensorFlow has its own page: [tensorflow.md](tensorflow.md). For batch
+jobs and services (Ray, Spark, Dask, FastAPI, Ray Serve, BentoML,
+Triton), inputs from Arrow, pandas and Polars, and hybrid dense + sparse
+retrieval, see [frameworks.md](frameworks.md). [Tutorial part
+8](tutorial/08-pytorch-and-tensorflow.md) walks through `scann.torch`
+and `scann.tf` on a real dataset.
 
 ## Installing in place of `scann`
 
@@ -61,7 +66,9 @@ The conversion only uses the tensor's attributes (`requires_grad`,
 `device`, `cpu()`, `float()`) and numpy's array protocol, so it doesn't
 import PyTorch. Arrays from other libraries that numpy can read work the
 same way, for example JAX and TensorFlow CPU arrays; only PyTorch is tested
-(`python_torch_input`, with CUDA tensors when a GPU is present).
+(`python_torch_input`, with CUDA tensors when a GPU is present). For
+Arrow, pandas and Polars columns, and which conversions copy, see
+[frameworks.md](frameworks.md#inputs-from-arrow-pandas-and-polars).
 
 For results as tensors, and searching inside `torch.compile`d models, see
 [`scann.torch`](#scanntorch-searching-from-pytorch-models) below; for

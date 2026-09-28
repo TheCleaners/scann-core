@@ -107,7 +107,7 @@ scann-core/
 ├── Cargo.toml            the Rust crate (sources in rust/)
 ├── pyproject.toml        the Python package (scikit-build-core)
 └── docs/                 tutorial, benchmarks, API reference, algorithms, AVQ explainer,
-                          TensorFlow
+                          TensorFlow, integrations, frameworks
 ```
 
 ## Building
@@ -378,6 +378,8 @@ about a second and checks its own results, so they also run as tests
 | [`python/tensorflow_op.py`](examples/python/tensorflow_op.py) | `scann.tf` with the op backend: a model with the index in one SavedModel, reloaded in a fresh process (needs TensorFlow and `-DSCANN_BUILD_TF_OP=ON`) |
 | [`python/tensorflow_serving.py`](examples/python/tensorflow_serving.py) | a Keras query tower exported as a SavedModel, the index saved beside it, and a service that loads both (needs TensorFlow) |
 | [`python/torch_retrieval.py`](examples/python/torch_retrieval.py) | `scann.torch`: index a toy encoder's embeddings, then a model that encodes and searches, compiled with `torch.compile`, on a GPU if present; with scann-core-torch, exported with `torch.export` and run from the saved program in a fresh process (needs PyTorch) |
+| [`python/fastapi_service.py`](examples/python/fastapi_service.py) | a FastAPI service over one shared searcher: one search per request, a batch endpoint, and server-side micro-batching, run in-process with `TestClient` (needs FastAPI and httpx2; see [docs/frameworks.md](docs/frameworks.md#serving)) |
+| [`python/batch_retrieval.py`](examples/python/batch_retrieval.py) | offline batch retrieval: an index saved once and loaded per worker process, queries from an Arrow table without a copy, with `multiprocessing` and, if installed, Ray Data (needs pyarrow; see [docs/frameworks.md](docs/frameworks.md#batch-retrieval)) |
 | [`cpp/quickstart.cc`](examples/cpp/quickstart.cc), [`rust/quickstart.rs`](examples/rust/quickstart.rs) | build with the config builder, search, add a point, save and reload |
 | [`cpp/updating.cc`](examples/cpp/updating.cc), [`rust/updating.rs`](examples/rust/updating.rs) | add, update and delete points by index, retrain, save over an existing index and reload |
 | [`fetchcontent/`](examples/fetchcontent) | a CMake project that pulls in scann-core with `FetchContent` (built by `scripts/ci.sh`, not a ctest) |
@@ -420,6 +422,8 @@ runs everything that needs nothing beyond the build:
 | `example_py_quickstart`, `example_py_updating`, `example_py_serving_threads` | the Python [examples](#examples): recall above 0.9, identical results after reloading, every inserted or updated point found under its docid, a repeated upsert docid rejected, concurrent `search()` calls agreeing with a batched search |
 | `example_py_tensorflow_wrapper`, `example_py_tensorflow_serving` | the TensorFlow examples: `scann.tf` results equal the pybind searcher's (with the op backend when it is built); the SavedModel + index service returns docids with recall above 0.9. Skipped without TensorFlow |
 | `example_py_torch_retrieval` | the PyTorch example: a compiled encode-and-search model with recall above 0.9 against exact search, agreeing with the eager model; with the native backend, the model exported and run in a fresh process. Skipped without PyTorch |
+| `example_py_fastapi_service` | the FastAPI example: every endpoint's answers, also for 400 concurrent requests, equal a direct search; a wrong dimension is a 400 error. Skipped without FastAPI and httpx2 |
+| `example_py_batch_retrieval` | the batch retrieval example: a moved index directory searched from worker processes (and Ray Data, if installed) gives the same docids as a direct search; the Arrow embeddings are read without a copy. Skipped without pyarrow |
 | `example_cpp_quickstart`, `example_cpp_updating` | the C++ examples (built with `SCANN_BUILD_EXAMPLES`) |
 | `example_rust_quickstart`, `example_rust_updating` | the Rust examples, with `cargo run --example` |
 | `tf_op_symbols` | (with `-DSCANN_BUILD_TF_OP=ON`) the op library exports no symbols, imports only TensorFlow's `TF_*` C functions and the C/C++ runtime (nothing of TensorFlow's C++ API, abseil or protobuf), needs `libtensorflow_framework.so.2`, has no rpath |
@@ -434,8 +438,10 @@ module is built for; CMake says so at configure time if they're missing.
 `python_tf` and the two TensorFlow examples also need TensorFlow, and
 `python_langchain` needs langchain-community, and `python_torch_input`,
 `python_torch`, `python_torch_native` and `example_py_torch_retrieval`
-PyTorch; ctest reports them as skipped without those (and
-`python_torch_native` without `-DSCANN_BUILD_TORCH_OP=ON`).
+PyTorch, `example_py_fastapi_service` FastAPI and httpx2, and
+`example_py_batch_retrieval` pyarrow (and Ray for its Ray part); ctest
+reports them as skipped without those (and `python_torch_native` without
+`-DSCANN_BUILD_TORCH_OP=ON`).
 [`scripts/python-versions.sh`](scripts/python-versions.sh) runs them (and the
 Python examples) on
 every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
@@ -554,6 +560,11 @@ pointing at the wrong vectors.
   searching from PyTorch models (`torch.compile`; `torch.export` and
   AOTInductor with the native backend, scann-core-torch), and libraries
   that use it (LangChain).
+* [`docs/frameworks.md`](docs/frameworks.md): scann-core in batch jobs
+  and services: batch retrieval on Ray, Spark and Dask (one index per
+  worker process, threads, memory, docids), serving with FastAPI, Ray
+  Serve, BentoML and Triton, zero-copy inputs from Arrow, pandas and
+  Polars, and hybrid retrieval with a sparse engine (score fusion).
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
   hashing, anisotropic quantization, reordering.
 * [`docs/anisotropic_quantization_explained.md`](docs/anisotropic_quantization_explained.md):

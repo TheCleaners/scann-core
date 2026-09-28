@@ -182,4 +182,13 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   set_tests_properties(example_py_torch_retrieval PROPERTIES
                        SKIP_RETURN_CODE 77 TIMEOUT 900
                        ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
+  # docs/frameworks.md's examples: a FastAPI service run in-process (77
+  # without FastAPI and httpx2), and batch retrieval with multiprocessing
+  # and, when Ray is installed, Ray Data (77 without pyarrow).
+  foreach(example fastapi_service batch_retrieval)
+    scann_add_python_test(example_py_${example}
+                          ../examples/python/${example}.py)
+  endforeach()
+  set_tests_properties(example_py_fastapi_service example_py_batch_retrieval
+                       PROPERTIES SKIP_RETURN_CODE 77)
 endif()
