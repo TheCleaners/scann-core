@@ -49,6 +49,9 @@ NUM_FEATURES, DIM, NUM_ITEMS, K = 16, 32, 5000, 10
 def export(export_dir):
   """Training side: write the query tower and the item index to export_dir."""
   rng = np.random.default_rng(0)
+  # The query tower's initial weights too: with unseeded ones, the recall
+  # checked below varied from run to run (0.61 to 0.99).
+  keras.utils.set_random_seed(0)
 
   # The query tower: user features -> a unit-norm embedding. Untrained here,
   # for brevity; a real one comes out of two-tower training.
