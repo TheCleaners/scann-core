@@ -72,6 +72,10 @@ isn't a one-line change:
       LoadArtifactsFromMemory() is new: LoadArtifacts() from an index
       directory's files held in memory (used by the TensorFlow op in
       tf_op/), with the same validation.
+      RetrainAndReindex() initializes the health statistics before
+      releasing the float dataset, as CreateSearcher() does (upstream
+      released it first: after a rebalance, trees without float
+      reordering reported a quantization error of 0).
   src/scann/utils/io_npy.h, src/scann/utils/io_npy.cc
       NumpyToVectorAndShape() validates the .npy file (magic, version,
       header length, header dict, dtype kind, size and byte order, C order,
@@ -92,6 +96,14 @@ isn't a one-line change:
       hashed_dataset, ... are all null"); the bfloat16 datasets of
       bfloat16 brute-force leaves are merged and serialized (upstream wrote
       no data for such trees).
+  src/scann/tree_x_hybrid/internal/utils.cc
+      DeduplicateDatabaseSpilledResults() merges the duplicates of spilled
+      (SOAR) candidates with a stable sort by datapoint index instead of a
+      flat_hash_map: the same merged distances, in a deterministic order.
+      Upstream emitted them in the hash map's iteration order, which absl
+      varies per table, and reordering rounds differently depending on a
+      candidate's position, so repeating a search on an unchanged index
+      could return distances differing in the last bits.
   src/scann/brute_force/scalar_quantized_brute_force.cc
       Searcher-specific parameters are dynamic_cast; parameters of another
       type are ignored (upstream down_cast them unconditionally).
@@ -120,8 +132,14 @@ isn't a one-line change:
   src/scann/base/health_stats_collector.h
       Health statistics no longer compare unprojected datapoints with
       projected (PCA/TRUNCATE) centroids (an out-of-bounds read on every
-      mutation of such a tree); for projected trees the quantization error
-      isn't tracked, as upstream's Initialize() already did.
+      mutation of such a tree). Datapoints are mapped into the centroids'
+      space with the partitioner's projection, so projected trees report
+      and maintain their quantization error (upstream's Initialize() skipped
+      it: 0). When the error can't be computed or maintained because the
+      tree has no float dataset (released after the build without float
+      reordering), it is reported as NaN; upstream kept the build's sum over
+      the changed number of datapoints, or reported 0 after
+      InitializeHealthStats().
   src/scann/hashes/internal/lut16_avx2.inc
       The "smart" prefetch of the next partition is skipped when there is
       none (the last partition): upstream did pointer arithmetic on the null

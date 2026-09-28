@@ -500,6 +500,13 @@ changed it.
   `initialize_health_stats()` before `get_health_stats()`, or the latter's
   numbers won't be meaningful (this ordering isn't enforced or checked by the
   wrapper — it's on you to call them in the right order).
+  `avg_quantization_error` is NaN when it can't be known. A tree without
+  float reordering drops its float data once the searcher is created (built,
+  loaded, rebalanced), so the error is computed then, and is NaN after an
+  `upsert()`/`delete()` or `initialize_health_stats()` until the next
+  `rebalance()`. AH without reordering doesn't save float data either: NaN
+  after loading. For a tree with a PCA/TRUNCATE projection it is measured
+  in the projected space.
 
 ## Distance measures: the full picture
 

@@ -400,6 +400,15 @@ impl ScannIndex {
     }
 
     /// Partition balance and quantization error, as tracked by scann-core.
+    ///
+    /// `avg_quantization_error` is NaN when it can't be known: a tree without
+    /// float reordering drops its float data once the index is created (built,
+    /// loaded, rebalanced), so after an upsert or delete (or
+    /// [`initialize_health_stats`](Self::initialize_health_stats)) it is NaN
+    /// until the next [`rebalance`](Self::rebalance), and AH without
+    /// reordering saves no float data (NaN after loading). NaN != NaN, so
+    /// compare two `HealthStats` field by field. For a tree with a
+    /// PCA/TRUNCATE projection it is measured in the projected space.
     pub fn health_stats(&self) -> Result<HealthStats> {
         let _guard = self.health_stats_lock.lock().unwrap_or_else(|e| e.into_inner());
         Ok(ffi::scann_health_stats(&self.inner)?)

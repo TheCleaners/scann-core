@@ -885,8 +885,12 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
       std::move(status_or.value().release())));
   mu.WriterUnlock();
   if (scann_->config().has_value()) config_ = scann_->config().value();
-  scann_->MaybeReleaseDataset();
+  // scann-core: health stats first, while the searcher still has its float
+  // dataset, as CreateSearcher() does. Upstream released the dataset first,
+  // so for trees that don't keep it (no float reordering) the quantization
+  // error after a rebalance was 0.
   SCANN_RETURN_IF_ERROR(scann_->InitializeHealthStats());
+  scann_->MaybeReleaseDataset();
   return config_;
 }
 

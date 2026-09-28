@@ -103,6 +103,27 @@ All notable changes to scann-core. Versions follow
   rules). The wheel now installs only the `scann` package.
 - The `tensorflow_serving` example's recall check failed now and then:
   its query tower's weights were unseeded.
+- Health stats: trees with a PCA or TRUNCATE projection report their
+  `avg_quantization_error` (the distance between the projected datapoints
+  and their centroids, as the partitioner sees them), kept up to date by
+  upserts and deletes. It was 0 (not computed, as upstream).
+- Health stats: `avg_quantization_error` is NaN when it can't be known,
+  instead of a wrong number. Trees without float reordering (brute-force,
+  int8 or bfloat16 leaves, AH without reordering) release their float data
+  after the build, so after an upsert or delete the error can't be updated:
+  upstream kept the build's sum divided by the new number of points (it
+  went *down* when far-away points were added), and reported 0 after
+  `initialize_health_stats()`. `rebalance()` computes it again: it used to
+  release the data before computing the stats, which gave 0. (AH without
+  reordering saves no float data either: NaN after loading, 0 before.)
+- Searches of a SOAR (spilled) tree are deterministic. Candidates found in
+  two leaves were merged through a hash map and passed to reordering in its
+  iteration order, which abseil varies per table; reordering rounds
+  differently depending on a candidate's position, so repeating a search on
+  an unchanged index could return distances differing in the last bits.
+  Duplicates are now merged by a stable sort on the datapoint index (same
+  merged values). The PyPI wheel isn't affected (its abseil doesn't vary
+  the order per table).
 
 ### Build and packaging
 - CI: a `torch-op` job (not on pull requests) builds the op against torch

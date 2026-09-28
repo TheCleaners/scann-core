@@ -19,8 +19,11 @@
 #ifndef SCANN_BASE_HEALTH_STATS_COLLECTOR_H_
 #define SCANN_BASE_HEALTH_STATS_COLLECTOR_H_
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -105,6 +108,9 @@ class HealthStatsCollector {
                 DatapointPtr<DataType> center);
   void Subtract(int32_t token);
 
+  bool ToCentroidSpace(DatapointPtr<DataType> dp, Datapoint<float>* storage,
+                       DatapointPtr<DataType>* result) const;
+
   static void AddDelta(Datapoint<InAccamulationType>& dst,
                        DatapointPtr<DataType> new_dp,
                        DatapointPtr<DataType> old_dp, int times = 1);
@@ -130,17 +136,32 @@ class HealthStatsCollector {
   std::shared_ptr<Partitioner> centroids_;
   bool is_enabled_ = false;
 
-  // scann-core: false when the centroids live in a projected (PCA/TRUNCATE)
-  // space rather than the datapoints' space. Upstream only skipped the
-  // centroid statistics in Initialize() (when the dimensionalities differed)
-  // but StatsUpdate()/UpdatePartitionCentroid() still took distances between
-  // an unprojected datapoint and a projected centroid on every mutation,
-  // reading past the end of the centroid. Now every path treats such trees
-  // like upstream's Initialize() does: partition sizes and imbalance are
-  // tracked, the quantization error is not (it stays 0).
-  bool centroids_in_datapoint_space_ = false;
+  // scann-core: non-null when the centroids live in a projected
+  // (PCA/TRUNCATE) space rather than the datapoints' space. Upstream skipped
+  // the quantization error in Initialize() for such trees (when the
+  // dimensionalities differed; it then reported 0), but StatsUpdate() and
+  // UpdatePartitionCentroid() still took distances between an unprojected
+  // datapoint and a projected centroid on every mutation, reading past the
+  // end of the centroid. Now every path first maps datapoints into the
+  // centroids' space with the partitioner's own projection (and
+  // normalization), so the quantization error of a projected tree is the
+  // distance between projected datapoints and their centroids, as the
+  // partitioner sees them, maintained incrementally like any other tree's.
+  const ProjectingDecoratorInterface<typename Searcher::DataType>* projector_ =
+      nullptr;
+  // scann-core: set when the quantization error can't be computed or kept up
+  // to date, and it is then reported as NaN. Upstream reported 0 or a stale
+  // value. That happens when the tree has no float dataset: trees without
+  // float reordering release theirs after the build (brute-force, int8,
+  // bfloat16 leaves; AH without reordering), so the error is computed when
+  // the searcher is created (build, load with float data, rebalance), but a
+  // mutation can't update it and a later InitializeHealthStats() can't
+  // compute it.
+  // (Also if a datapoint could not be mapped into the centroids' space; not
+  // expected: the tree tokenized it through the same projection.)
+  bool quantization_error_lost_ = false;
   bool CentroidStatsAvailable(size_t datapoint_dims) const {
-    return centroids_in_datapoint_space_ &&
+    return projector_ != nullptr ||
            datapoint_dims == centroids_->LeafCenters().dimensionality();
   }
 
@@ -157,9 +178,9 @@ Status HealthStatsCollector<Searcher, InDataType, InAccamulationType,
   searcher_ = &searcher;
   SCANN_RETURN_IF_ERROR(InitializeCentroids(searcher));
   if constexpr (kCentroidAndDPAreSameType) {
-    centroids_in_datapoint_space_ =
-        dynamic_cast<const ProjectingDecoratorInterface<
-            typename Searcher::DataType>*>(centroids_.get()) == nullptr;
+    projector_ = dynamic_cast<
+        const ProjectingDecoratorInterface<typename Searcher::DataType>*>(
+        centroids_.get());
   }
 
   ConstSpan<std::vector<DatapointIndex>> datapoints_by_token =
@@ -179,27 +200,39 @@ Status HealthStatsCollector<Searcher, InDataType, InAccamulationType,
 
       if (CentroidStatsAvailable(dataset->dimensionality())) {
         const auto& ds = *dataset;
+        // scann-core: sums over datapoints mapped into the centroids' space
+        // (see projector_).
+        const size_t centroid_dims = centroids.dimensionality();
         InAccamulationType total_squared_qe = 0.0;
+        Datapoint<float> projected;
 
         for (const auto& [token, dps] : Enumerate(datapoints_by_token)) {
           Datapoint<InAccamulationType> sum_dims;
-          sum_dims.ZeroFill(ds.dimensionality());
-          SCANN_RET_CHECK_EQ(sum_dims.dimensionality(), ds.dimensionality());
-          SCANN_RET_CHECK_EQ(sum_dims.values_span().size(),
-                             ds.dimensionality());
+          sum_dims.ZeroFill(centroid_dims);
           DatapointPtr<DataType> centroid = centroids[token];
           InAccamulationType v = 0;
           for (auto dp_idx : dps) {
-            v += SquaredL2DistanceBetween(ds[dp_idx], centroid);
-            AddDelta(sum_dims, ds[dp_idx], centroids[token]);
+            DatapointPtr<DataType> dp;
+            if (!ToCentroidSpace(ds[dp_idx], &projected, &dp)) {
+              quantization_error_lost_ = true;
+              break;
+            }
+            v += SquaredL2DistanceBetween(dp, centroid);
+            AddDelta(sum_dims, dp, centroid);
           }
+          if (quantization_error_lost_) break;
           squared_quantization_error_by_token_[token] = v;
           sum_qe_by_token_[token] = std::move(sum_dims);
           total_squared_qe += v;
         }
 
         sum_squared_quantization_error_ = total_squared_qe;
+      } else {
+        quantization_error_lost_ = true;
       }
+    } else if (dataset == nullptr && sum_partition_sizes_ > 0) {
+      // scann-core: see quantization_error_lost_ (upstream reported 0).
+      quantization_error_lost_ = true;
     }
   }
 
@@ -214,7 +247,9 @@ absl::StatusOr<typename HealthStatsCollector<
 HealthStatsCollector<Searcher, InDataType, InAccamulationType,
                      Partitioner>::GetHealthStats() {
   HealthStats r;
-  if (sum_partition_sizes_ > 0) {
+  if (quantization_error_lost_) {
+    r.avg_quantization_error = std::numeric_limits<double>::quiet_NaN();
+  } else if (sum_partition_sizes_ > 0) {
     r.avg_quantization_error =
         sqrt(sum_squared_quantization_error_ / sum_partition_sizes_);
   }
@@ -329,8 +364,6 @@ void HealthStatsCollector<
 
   if constexpr (kCentroidAndDPAreSameType) {
     if (sizes_by_token_[token] == 0) return;
-    // scann-core: see centroids_in_datapoint_space_.
-    if (!centroids_in_datapoint_space_) return;
 
     if (sum_qe_by_token_[token].dimensionality() == 0) {
       sum_qe_by_token_[token].ZeroFill(new_centroid.dimensionality());
@@ -391,28 +424,66 @@ void HealthStatsCollector<
     }
   };
   if constexpr (kCentroidAndDPAreSameType) {
-    // scann-core: see centroids_in_datapoint_space_.
+    // scann-core: see projector_. Each datapoint is mapped into the
+    // centroids' space once, then counted in each of its tokens.
     if (dataset && !dataset->empty() &&
         CentroidStatsAvailable(dataset->dimensionality())) {
       const auto& centroids = centroids_->LeafCenters();
       Datapoint<DataType> dp;
-      for (int32_t token : tokens) {
-        DatapointPtr<DataType> centroid = centroids[token];
-        for (DatapointIndex dp_idx : datapoints) {
-          auto d_ptr = GetDatapointPtr(dp_idx, &dp);
+      Datapoint<float> projected;
+      for (DatapointIndex dp_idx : datapoints) {
+        DatapointPtr<DataType> d_ptr;
+        if (quantization_error_lost_ ||
+            !ToCentroidSpace(GetDatapointPtr(dp_idx, &dp), &projected,
+                             &d_ptr)) {
+          quantization_error_lost_ = true;
+          UpdateWithoutCentroids();
+          continue;
+        }
+        for (int32_t token : tokens) {
           if (op == Op::Add) {
-            Add(token, d_ptr, centroid);
+            Add(token, d_ptr, centroids[token]);
           } else {
-            Subtract(token, d_ptr, centroid);
+            Subtract(token, d_ptr, centroids[token]);
           }
         }
       }
     } else {
+      // scann-core: see quantization_error_lost_. Upstream kept the old
+      // sum, now over a different number of datapoints.
+      if (dataset == nullptr || !dataset->empty())
+        quantization_error_lost_ = true;
       UpdateWithoutCentroids();
     }
   } else {
     UpdateWithoutCentroids();
   }
+}
+
+template <typename Searcher, typename InDataType, typename InAccamulationType,
+          typename Partitioner>
+bool HealthStatsCollector<Searcher, InDataType, InAccamulationType,
+                          Partitioner>::
+    ToCentroidSpace(DatapointPtr<DataType> dp, Datapoint<float>* storage,
+                    DatapointPtr<DataType>* result) const {
+  if constexpr (kCentroidAndDPAreSameType && std::is_same_v<DataType, float>) {
+    if (projector_ != nullptr) {
+      const size_t centroid_dims = centroids_->LeafCenters().dimensionality();
+      auto projected = projector_->ProjectAndNormalize(dp);
+      if (!projected.ok() || !projected->IsDense() ||
+          projected->dimensionality() != centroid_dims ||
+          projected->values().size() != centroid_dims) {
+        return false;
+      }
+      *storage = *std::move(projected);
+      *result = storage->ToPtr();
+      return true;
+    }
+  }
+  // Not projected: the datapoint is in the centroids' space already (callers
+  // checked CentroidStatsAvailable()).
+  *result = dp;
+  return true;
 }
 
 template <typename Searcher, typename InDataType, typename InAccamulationType,

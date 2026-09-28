@@ -31,6 +31,13 @@
 //    After the input validation in ScannNumpy::Upsert nothing reachable from
 //    Python fails there, so the test injects the failure: it hands one leaf a
 //    precomputed artifact of the wrong type, which that leaf rejects.
+//  - Repeating a search on an unchanged SOAR index returns identical results.
+//    Upstream's deduplication of spilled candidates emitted them in hash-map
+//    order, which varies per table, and the reordering's rounding depends on
+//    the order: distances could differ in the last bits.
+//  - Trees with a PCA/TRUNCATE projection report their quantization error
+//    (upstream: 0, not computed), in the projected space, and keep it up to
+//    date on mutations.
 //
 // Each case keeps a shadow copy of the stored vectors (deletes move the last
 // datapoint into the freed index, as the index does) and checks that
@@ -45,6 +52,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -101,6 +109,10 @@ struct Harness {
   // For dot product, store unit vectors: each is then its own nearest
   // neighbor.
   bool unit_norm = false;
+  // Verify()'s pre-reordering candidates (-1: the config's). A tree with a
+  // projection scores AH on the projected dimensions only, so it reorders
+  // every candidate to check that stored vectors are indexed.
+  int32_t pre_reorder = -1;
 
   Vec Random() {
     std::normal_distribution<float> nd;
@@ -175,7 +187,7 @@ struct Harness {
     size_t misses = 0;
     for (size_t i = 0; i < shadow.size(); ++i) {
       NNResultsVector res;
-      if (!Ok(s.Search(Ptr(shadow[i]), &res, 3, -1, kNumLeaves),
+      if (!Ok(s.Search(Ptr(shadow[i]), &res, 3, pre_reorder, kNumLeaves),
               what + ": Search"))
         return;
       for (const auto& [idx, dist] : res) {
@@ -332,26 +344,12 @@ struct Snapshot {
   double quantization_error = 0, imbalance = 0;
   uint64_t sum_partition_sizes = 0;
 
-  // Distances may differ in the last bits: with SOAR, searches deduplicate
-  // candidates through a hash map whose iteration order (absl seeds it per
-  // table) decides how the reordering kernel batches them, so repeating a
-  // search on an unchanged index can round differently.
+  // Exact: searches are deterministic (see SoarSearchIsDeterministic).
   bool operator==(const Snapshot& o) const {
-    if (n_points != o.n_points || results.size() != o.results.size() ||
-        quantization_error != o.quantization_error ||
-        imbalance != o.imbalance ||
-        sum_partition_sizes != o.sum_partition_sizes)
-      return false;
-    for (size_t i = 0; i < results.size(); ++i) {
-      if (results[i].size() != o.results[i].size()) return false;
-      for (size_t j = 0; j < results[i].size(); ++j) {
-        const auto [idx, dist] = results[i][j];
-        const auto [o_idx, o_dist] = o.results[i][j];
-        if (idx != o_idx || std::abs(dist - o_dist) > 1e-5f * (1 + std::abs(dist)))
-          return false;
-      }
-    }
-    return true;
+    return n_points == o.n_points && results == o.results &&
+           quantization_error == o.quantization_error &&
+           imbalance == o.imbalance &&
+           sum_partition_sizes == o.sum_partition_sizes;
   }
 };
 
@@ -438,6 +436,204 @@ void SoarFailedUpdateIsAtomic() {
   h.Verify("after updates");
 }
 
+// Repeating a search on an unchanged SOAR index returns the same results, bit
+// for bit. Upstream deduplicated the candidates spilled to two leaves through
+// a flat_hash_map and emitted them in its iteration order, which absl varies
+// from table to table; the reordering kernel's rounding depends on a
+// candidate's position, so the same search could return distances differing
+// in the last bits (about 1 query in 100 here).
+void SoarSearchIsDeterministic() {
+  Harness h;
+  h.name = "tree_ah_soar/deterministic_search";
+  h.unit_norm = true;
+  std::printf("== %s\n", h.name.c_str());
+  const size_t n = 2000;
+  if (!h.Build(Config(AhReorder, n, scann_core::DistanceMeasure::kDotProduct,
+                      1.5),
+               n))
+    return;
+  int differing = 0;
+  const int kQueries = 600;
+  for (int qi = 0; qi < kQueries; ++qi) {
+    const Vec q = h.Random();
+    NNResultsVector first;
+    if (!Ok(h.s.Search(Ptr(q), &first, 20, 100000, kNumLeaves),
+            h.name + ": Search"))
+      return;
+    for (int rep = 0; rep < 3; ++rep) {
+      NNResultsVector again;
+      if (!Ok(h.s.Search(Ptr(q), &again, 20, 100000, kNumLeaves),
+              h.name + ": Search"))
+        return;
+      if (again != first) {
+        ++differing;
+        break;
+      }
+    }
+  }
+  if (differing)
+    Fail(absl::StrCat(h.name, ": ", differing, " of ", kQueries,
+                      " queries returned different results when repeated"));
+}
+
+std::optional<research_scann::ScannInterface::ScannHealthStats> Stats(
+    Harness& h, const std::string& when) {
+  auto stats = h.s.GetHealthStats();
+  if (!Ok(stats.status(), absl::StrCat(h.name, ": GetHealthStats (", when, ")")))
+    return std::nullopt;
+  return *stats;
+}
+
+bool Close(double a, double b, double rel) {
+  return std::abs(a - b) <= rel * std::max(std::abs(a), std::abs(b));
+}
+
+void CheckIncrementalStats(Harness& h, const std::string& when) {
+  auto inc = Stats(h, when);
+  if (!inc) return;
+  if (!Ok(h.s.InitializeHealthStats(), h.name + ": InitializeHealthStats"))
+    return;
+  auto fresh = Stats(h, when + ", fresh");
+  if (!fresh) return;
+  const std::string what = absl::StrCat(h.name, " (", when, ")");
+  if (!(inc->avg_quantization_error > 0) ||
+      !std::isfinite(inc->avg_quantization_error))
+    Fail(absl::StrCat(what, ": avg_quantization_error ",
+                      inc->avg_quantization_error));
+  if (inc->sum_partition_sizes != h.shadow.size() ||
+      fresh->sum_partition_sizes != h.shadow.size())
+    Fail(absl::StrCat(what, ": sum_partition_sizes ", inc->sum_partition_sizes,
+                      " / ", fresh->sum_partition_sizes, ", size ",
+                      h.shadow.size()));
+  if (!Close(inc->avg_quantization_error, fresh->avg_quantization_error, 1e-5))
+    Fail(absl::StrCat(what, ": incremental avg_quantization_error ",
+                      inc->avg_quantization_error, ", fresh ",
+                      fresh->avg_quantization_error));
+}
+
+// Health statistics of trees with a PCA/TRUNCATE projection. Upstream reported
+// avg_quantization_error = 0 for them (not computed; after the out-of-bounds
+// fix, scann-core did the same); now it is the distance between projected
+// datapoints and their projected centroids, maintained on every mutation.
+//  - A TRUNCATE projection to all dimensions is the identity: the tree must
+//    report exactly the unprojected tree's quantization error, at build and
+//    after the same mutations.
+//  - For PCA and TRUNCATE trees the incrementally maintained statistics must
+//    match a fresh InitializeHealthStats(), after mutations and a rebalance.
+// With float reordering, so that the tree keeps its float dataset (see
+// TreeWithoutFloatDataset).
+void ProjectedTreeHealthStats(const std::string& name,
+                              scann_core::DistanceMeasure distance) {
+  const Setup setup = AhReorder;
+  const size_t n = 600;
+  const bool dot = distance == scann_core::DistanceMeasure::kDotProduct;
+  auto projected = [&](std::optional<int32_t> truncate,
+                       std::optional<int32_t> pca) {
+    return [=](scann_core::ConfigBuilder& b) {
+      if (truncate) b.Truncate(*truncate);
+      if (pca) {
+        scann_core::PcaOptions p;
+        p.reduction_dim = *pca;
+        b.Pca(p);
+      }
+      setup(b);
+    };
+  };
+
+  // Identity TRUNCATE vs no projection: same data, same mutations (the
+  // harnesses' random streams are identical).
+  Harness plain, identity;
+  plain.name = name + "/unprojected";
+  identity.name = name + "/truncate_identity";
+  plain.unit_norm = identity.unit_norm = dot;
+  plain.pre_reorder = identity.pre_reorder = 100000;
+  std::printf("== %s vs %s\n", plain.name.c_str(), identity.name.c_str());
+  std::string identity_config =
+      Config(projected(kDim - 1, std::nullopt), n, distance);
+  const std::string from = absl::StrCat("num_dims_per_block: ", kDim - 1,
+                                        " input_dim: ", kDim);
+  const size_t at = identity_config.find(from);
+  if (at == std::string::npos) {
+    Fail(name + ": no TRUNCATE projection in the config");
+    return;
+  }
+  identity_config.replace(
+      at, from.size(),
+      absl::StrCat("num_dims_per_block: ", kDim, " input_dim: ", kDim));
+  if (!plain.Build(Config(setup, n, distance), n) ||
+      !identity.Build(identity_config, n))
+    return;
+  for (const char* when : {"built", "mutated"}) {
+    if (std::string(when) == "mutated") {
+      plain.Churn(when);
+      identity.Churn(when);
+    }
+    auto a = Stats(plain, when), b = Stats(identity, when);
+    if (!a || !b) return;
+    if (!(a->avg_quantization_error > 0) ||
+        !Close(a->avg_quantization_error, b->avg_quantization_error, 1e-6))
+      Fail(absl::StrCat(name, " (", when,
+                        "): identity TRUNCATE avg_quantization_error ",
+                        b->avg_quantization_error, ", unprojected ",
+                        a->avg_quantization_error));
+  }
+
+  for (const auto& [kind, truncate, pca] :
+       {std::tuple<const char*, std::optional<int32_t>, std::optional<int32_t>>{
+            "truncate6", 6, std::nullopt},
+        {"pca6", std::nullopt, 6},
+        {"pca_full", std::nullopt, static_cast<int32_t>(kDim)}}) {
+    Harness h;
+    h.name = absl::StrCat(name, "/", kind);
+    h.unit_norm = dot;
+    h.pre_reorder = 100000;
+    std::printf("== %s\n", h.name.c_str());
+    if (!h.Build(Config(projected(truncate, pca), n, distance), n)) continue;
+    CheckIncrementalStats(h, "built");
+    h.Churn("mutated");
+    CheckIncrementalStats(h, "mutated");
+    if (Ok(h.s.RetrainAndReindex("").status(),
+           h.name + ": RetrainAndReindex")) {
+      CheckIncrementalStats(h, "retrained");
+      h.Churn("retrained, mutated");
+      CheckIncrementalStats(h, "retrained, mutated");
+    }
+  }
+}
+
+// A tree without float reordering releases its float dataset after the build
+// (its leaves hold their own data), so its quantization error can be computed
+// when the searcher is created but not maintained. Upstream kept the build's
+// sum, divided by the current number of datapoints after mutations, and
+// reported 0 after InitializeHealthStats(); now it is NaN (unavailable) until
+// a rebalance computes it again.
+void TreeWithoutFloatDataset() {
+  Harness h;
+  h.name = "tree_bf_l2/no_float_dataset";
+  std::printf("== %s\n", h.name.c_str());
+  const size_t n = 600;
+  if (!h.Build(Config(BruteForce, n), n)) return;
+  auto check = [&](const std::string& when, bool available) {
+    auto stats = Stats(h, when);
+    if (!stats) return;
+    const double qe = stats->avg_quantization_error;
+    if (available ? !(qe > 0 && std::isfinite(qe)) : !std::isnan(qe))
+      Fail(absl::StrCat(h.name, " (", when, "): avg_quantization_error ", qe,
+                        available ? ", expected > 0" : ", expected NaN"));
+    if (stats->sum_partition_sizes != h.shadow.size())
+      Fail(absl::StrCat(h.name, " (", when, "): sum_partition_sizes ",
+                        stats->sum_partition_sizes, ", size ",
+                        h.shadow.size()));
+  };
+  check("built", true);
+  h.Add(3);
+  check("added", false);
+  Ok(h.s.InitializeHealthStats(), h.name + ": InitializeHealthStats");
+  check("reinitialized", false);
+  if (Ok(h.s.RetrainAndReindex("").status(), h.name + ": RetrainAndReindex"))
+    check("rebalanced", true);
+}
+
 }  // namespace
 
 int main() {
@@ -452,6 +648,11 @@ int main() {
   TreeBfloat16("tree_bf16_soar_dot", scann_core::DistanceMeasure::kDotProduct,
                1.5);
   SoarFailedUpdateIsAtomic();
+  SoarSearchIsDeterministic();
+  ProjectedTreeHealthStats("tree_ah_l2", scann_core::DistanceMeasure::kSquaredL2);
+  ProjectedTreeHealthStats("tree_ah_dot",
+                           scann_core::DistanceMeasure::kDotProduct);
+  TreeWithoutFloatDataset();
   std::printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED",
               g_failures);
   return g_failures ? 1 : 0;

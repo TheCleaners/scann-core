@@ -26,6 +26,7 @@
 #include <x86intrin.h>
 #endif
 
+#include <algorithm>
 #include <cstdint>
 
 #include "scann/utils/common.h"
@@ -130,41 +131,42 @@ vector<uint32_t> SizeByPartition(
   return result;
 }
 
-template <typename Container>
-void MaybeReserve(Container& c, size_t s) {}
-
-template <>
-void MaybeReserve(flat_hash_map<DatapointIndex, float>& c, size_t s) {
-  c.reserve(s);
-}
-
-template <typename Container>
+// scann-core: duplicates are merged by a stable sort on the datapoint index
+// instead of through a flat_hash_map. The merged distances are the same (each
+// index's duplicates are still averaged in their original order), but
+// upstream emitted the results in the hash map's iteration order, which
+// varies from table to table (absl seeds it per table), and the order of the
+// candidates changes the last bits of the distances that reordering
+// recomputes (SIMD one-to-many kernels round differently depending on a
+// datapoint's position): the same search on an unchanged index could return
+// slightly different distances. Now the output order, and the search, are
+// deterministic.
 void DeduplicateDatabaseSpilledResults(NNResultsVector* results,
                                        size_t final_size) {
   DCHECK_GT(final_size, 0);
   DCHECK_LE(results->size() / 2, final_size);
-  Container map;
-  MaybeReserve(map, results->size());
-  for (const auto& neighbor : *results) {
-    auto [it, was_inserted] = map.insert(neighbor);
-    if (!was_inserted) {
-      it->second = 0.5f * it->second + 0.5f * neighbor.second;
+  std::stable_sort(results->begin(), results->end(),
+                   [](const pair<DatapointIndex, float>& a,
+                      const pair<DatapointIndex, float>& b) {
+                     return a.first < b.first;
+                   });
+  size_t out = 0;
+  for (size_t i = 0; i < results->size(); ++i) {
+    const auto& neighbor = (*results)[i];
+    if (out > 0 && (*results)[out - 1].first == neighbor.first) {
+      float& d = (*results)[out - 1].second;
+      d = 0.5f * d + 0.5f * neighbor.second;
+    } else {
+      (*results)[out++] = neighbor;
     }
   }
-  std::copy(map.begin(), map.end(), results->begin());
-  results->resize(map.size());
+  results->resize(out);
   if (results->size() > final_size) {
     NthElementBranchOptimized(results->begin(),
                               results->begin() + final_size - 1, results->end(),
                               DistanceComparatorBranchOptimized());
     results->resize(final_size);
   }
-}
-
-void DeduplicateDatabaseSpilledResults(NNResultsVector* results,
-                                       size_t final_size) {
-  DeduplicateDatabaseSpilledResults<flat_hash_map<DatapointIndex, float>>(
-      results, final_size);
 }
 
 namespace tree_ah_utils_internal {
