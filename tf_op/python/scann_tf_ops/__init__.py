@@ -42,6 +42,7 @@ so it is built once per process, also after tf.saved_model.load().
 import os
 import tempfile
 import uuid
+import weakref
 
 import numpy as np
 import tensorflow as tf
@@ -160,9 +161,11 @@ class ScannSearcher(tf.Module):
     return self
 
   def _init_functions(self):
-    # The op's shared_name attr is fixed when a graph is built; it comes
-    # from the index_id variable's value now.
-    self._shared_name = self.index_id.numpy().decode("utf-8")
+    # The op's index_id attr is fixed when a graph is built; it comes from
+    # the index_id variable's value now (read eagerly, also while a
+    # tf.function is being traced).
+    with tf.init_scope():
+      self._shared_name = self.index_id.numpy().decode("utf-8")
     self._eager = _EagerFunctions(self.asset_names, self.asset_contents,
                                   self._shared_name)
 
@@ -379,8 +382,23 @@ def searcher_from_module(module, db=None):
   del db  # Unused.
   if isinstance(module, ScannSearcher):
     return module
-  return ScannSearcher._from_variables(  # pylint: disable=protected-access
+  try:
+    return _from_module_cache[module]
+  except (KeyError, TypeError):
+    pass
+  searcher = ScannSearcher._from_variables(  # pylint: disable=protected-access
       module.asset_names, module.asset_contents, module.index_id)
+  try:
+    _from_module_cache[module] = searcher
+  except TypeError:  # Not weakly referenceable.
+    pass
+  return searcher
+
+
+# One ScannSearcher per restored module, so that calling
+# searcher_from_module() in a tf.function body (traced more than once) or
+# in a loop doesn't make a new one each time.
+_from_module_cache = weakref.WeakKeyDictionary()
 
 
 def builder(db, num_neighbors, distance_measure):

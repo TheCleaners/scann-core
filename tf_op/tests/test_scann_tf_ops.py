@@ -461,6 +461,14 @@ def load_savedmodel(tmp):
               "searcher_from_module of the loaded model")
   i, _ = m.one(tf.constant(queries[3]))
   assert (i.numpy() == want[0][3][:3]).all()
+  assert ops.searcher_from_module(m.index) is s
+
+  # A new function on the loaded model.
+  @tf.function(input_signature=[tf.TensorSpec([None, DIM], tf.float32)])
+  def new_fn(q):
+    return ops.searcher_from_module(m.index).search_batched_parallel(q, 5)
+
+  assert_same(new_fn(queries), want, "new tf.function on the loaded model")
   assert ops.stats() == {"live_searchers": 1, "builds": 1}, ops.stats()
   print("SavedModel: loaded in a fresh process; functions, serving signature "
         "and searcher_from_module match, 1 build")
