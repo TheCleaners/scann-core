@@ -122,6 +122,19 @@ rest of 0.2.0. There was no 0.2.0-rc.2 release.
   `python_tf_ops`, `tf_op_symbols`, example
   [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py),
   a CI job, and [docs/tensorflow.md](docs/tensorflow.md#the-tensorflow-op-scann_tf_ops-build-from-source).
+- `scann.torch`: the searcher as a `torch.nn.Module` (`builder()`,
+  `create_searcher()`, `load_searcher()`, `Searcher.from_pybind()`), whose
+  `search`/`search_batched`/`search_batched_parallel` take query tensors on
+  any device and return int64/float32 tensors on the same device, always k
+  wide, missing results as index -1 and distance NaN. The searches are
+  PyTorch custom ops with exact fake shapes, so models that search compile
+  with `torch.compile(fullgraph=True)`, also with dynamic batch sizes;
+  `torch.export` raises (planned with a native op in 0.2.1). Optional
+  dependency: `pip install 'scann-core[torch]'` (torch ≥ 2.10); `import
+  scann` still doesn't import PyTorch. Checked with torch 2.10 (CPU), 2.11
+  and 2.14 (CUDA) and 2.14 (ROCm). Test `python_torch`, example
+  [`examples/python/torch_retrieval.py`](examples/python/torch_retrieval.py),
+  [docs/integrations.md](docs/integrations.md#scanntorch-searching-from-pytorch-models).
 - C++: `ScannInterface::LoadArtifactsFromMemory()` loads an index from its
   files held in memory, with the same validation as loading a directory.
 - Python: vectors can be PyTorch tensors (and other arrays numpy can read)

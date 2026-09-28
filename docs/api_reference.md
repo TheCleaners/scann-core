@@ -15,6 +15,9 @@ the wheel. `scann.tf` wraps this API for TensorFlow code (same builder,
 searches returning tensors), and `scann_tf_ops`, built from source with
 `-DSCANN_BUILD_TF_OP=ON`, provides upstream's op API with an op that can be
 saved in SavedModels; see [docs/tensorflow.md](tensorflow.md).
+`scann.torch` wraps it as a `torch.nn.Module` whose searches return
+tensors and compile with `torch.compile`; see
+[integrations.md](integrations.md#scanntorch-searching-from-pytorch-models).
 
 ## Quickstart
 

@@ -286,6 +286,13 @@ alongside a TensorFlow model. An op that can be saved in SavedModels,
 `scann_tf_ops`, can be built from source (`-DSCANN_BUILD_TF_OP=ON`;
 unsupported, see the same page).
 
+`scann.torch` makes the searcher a `torch.nn.Module` whose searches take
+and return tensors (CPU or GPU) and compile with
+`torch.compile(fullgraph=True)`, for models that search:
+`pip install 'scann-core[torch]'`, and see
+[docs/integrations.md](docs/integrations.md#scanntorch-searching-from-pytorch-models).
+Not yet exportable with `torch.export`.
+
 #### Threads
 
 A searcher can be shared between Python threads:
@@ -355,6 +362,7 @@ about a second and checks its own results, so they also run as tests
 | [`python/serving_threads.py`](examples/python/serving_threads.py) | `search_batched_parallel` vs. Python threads calling `search()`, with or without the GIL |
 | [`python/tensorflow_wrapper.py`](examples/python/tensorflow_wrapper.py) | `scann.tf` eagerly and in `tf.function`, docids with `tf.gather` (needs TensorFlow) |
 | [`python/tensorflow_serving.py`](examples/python/tensorflow_serving.py) | a Keras query tower exported as a SavedModel, the index saved beside it, and a service that loads both (needs TensorFlow) |
+| [`python/torch_retrieval.py`](examples/python/torch_retrieval.py) | `scann.torch`: index a toy encoder's embeddings, then a model that encodes and searches, compiled with `torch.compile`, on a GPU if present (needs PyTorch) |
 | [`cpp/quickstart.cc`](examples/cpp/quickstart.cc), [`rust/quickstart.rs`](examples/rust/quickstart.rs) | build with the config builder, search, add a point, save and reload |
 | [`cpp/updating.cc`](examples/cpp/updating.cc), [`rust/updating.rs`](examples/rust/updating.rs) | add, update and delete points by index, retrain, save over an existing index and reload |
 | [`fetchcontent/`](examples/fetchcontent) | a CMake project that pulls in scann-core with `FetchContent` (built by `scripts/ci.sh`, not a ctest) |
@@ -391,9 +399,11 @@ runs everything that needs nothing beyond the build:
 | `python_tf` | `scann.tf` returns exactly the pybind searcher's results as int32/float32 tensors, eagerly and in `tf.function` (unknown batch size, static shapes), from `tf.data` maps and concurrent threads; docids, padding, `serialize_to_module()` raising; `import scann` doesn't import TensorFlow. Skipped without TensorFlow |
 | `python_langchain` | LangChain's ScaNN vector store on scann-core: results equal an exact search for both distance strategies, `normalize_L2` and a tree + AH config; filters; save/load and re-saving into the same folder. Skipped without langchain-community |
 | `python_torch_input` | PyTorch tensors at every entry point give the same results as numpy arrays: float32/64/16 and bfloat16, non-contiguous views, tensors that require grad, zero rows, CUDA tensors when a GPU is present; no copy for float32 CPU tensors. Skipped without PyTorch |
+| `python_torch` | `scann.torch` returns exactly the pybind searcher's results as int64/float32 tensors on the queries' device (CPU, and CUDA when present) for brute force, AH and a tree, padding with -1/NaN; `torch.compile(fullgraph=True, dynamic=True)` compiles once for many batch sizes, also a whole model that encodes and searches; concurrent threads; `torch.export` raises; deleting the module frees the searcher; `import scann` doesn't import PyTorch. Skipped without PyTorch |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 | `example_py_quickstart`, `example_py_updating`, `example_py_serving_threads` | the Python [examples](#examples): recall above 0.9, identical results after reloading, every inserted or updated point found under its docid, a repeated upsert docid rejected, concurrent `search()` calls agreeing with a batched search |
 | `example_py_tensorflow_wrapper`, `example_py_tensorflow_serving` | the TensorFlow examples: `scann.tf` results equal the pybind searcher's; the SavedModel + index service returns docids with recall above 0.9. Skipped without TensorFlow |
+| `example_py_torch_retrieval` | the PyTorch example: a compiled encode-and-search model with recall above 0.9 against exact search, agreeing with the eager model. Skipped without PyTorch |
 | `example_cpp_quickstart`, `example_cpp_updating` | the C++ examples (built with `SCANN_BUILD_EXAMPLES`) |
 | `example_rust_quickstart`, `example_rust_updating` | the Rust examples, with `cargo run --example` |
 | `tf_op_symbols` | (with `-DSCANN_BUILD_TF_OP=ON`) the op library exports no symbols, imports only TensorFlow's `TF_*` C functions and the C/C++ runtime (nothing of TensorFlow's C++ API, abseil or protobuf), needs `libtensorflow_framework.so.2`, has no rpath |
@@ -403,8 +413,9 @@ runs everything that needs nothing beyond the build:
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
 `python_tf` and the two TensorFlow examples also need TensorFlow, and
-`python_langchain` needs langchain-community and `python_torch_input`
-PyTorch; ctest reports them as skipped without those.
+`python_langchain` needs langchain-community, and `python_torch_input`,
+`python_torch` and `example_py_torch_retrieval` PyTorch; ctest reports them
+as skipped without those.
 [`scripts/python-versions.sh`](scripts/python-versions.sh) runs them (and the
 Python examples) on
 every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
@@ -517,8 +528,9 @@ pointing at the wrong vectors.
   model, the optional source-built TensorFlow op (`scann_tf_ops`, for
   SavedModels) and its limits, and why the wheel has no op.
 * [`docs/integrations.md`](docs/integrations.md): installing scann-core in
-  place of the `scann` wheel, PyTorch tensors as inputs, and libraries
-  that use it (LangChain).
+  place of the `scann` wheel, PyTorch tensors as inputs, `scann.torch` for
+  searching from PyTorch models (and `torch.compile`), and libraries that
+  use it (LangChain).
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
   hashing, anisotropic quantization, reordering.
 * [`docs/anisotropic_quantization_explained.md`](docs/anisotropic_quantization_explained.md):
