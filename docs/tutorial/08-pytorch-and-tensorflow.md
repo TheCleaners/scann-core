@@ -40,13 +40,9 @@ and two environments: PyTorch 2.14.0+cu132 on Python 3.14, and
 TensorFlow 2.21.0 (`tensorflow-cpu`) on Python 3.12, both with numpy,
 protobuf and h5py. The GPU is an NVIDIA RTX 3060 Ti.
 
-**About the timings in this part.** They were measured while other jobs
-(compilations and a fuzzer) kept the machine busy, so absolute times are
-higher and noisier than in the other parts. Each table was measured
-round-robin, all columns interleaved, so the columns of one row saw the
-same load and can be compared with each other; compare the differences,
-not the absolute values, and don't compare rows between the two scripts.
-Recall and the "identical" checks don't depend on load.
+**About the timings in this part.** Each table was measured round-robin,
+all columns interleaved, so the columns of a row saw the same conditions;
+compare within a row, not rows of the two scripts with each other.
 
 ## PyTorch
 
@@ -68,7 +64,7 @@ indices, distances = searcher.search_batched_parallel(torch.from_numpy(queries))
 
 ```
 torch 2.14.0+cu132; scann.torch backend: native
-built in 6.3 s: Searcher(size=1183514, default_num_neighbors=10, backend=native, index_bytes=538967556)
+built in 3.8 s: Searcher(size=1183514, default_num_neighbors=10, backend=native, index_bytes=538967556)
 search_batched_parallel: torch.int64 (10000, 10), torch.float32; recall@10 0.9007
 identical to the pybind searcher: True
 Python backend identical: True
@@ -91,9 +87,9 @@ search op, with the same API and the same results:
 * **native**, when `scann-core-torch` is installed (or the op is built):
   C++ ops, and the index in the module's buffers, 514 MiB here
   (`index_bytes`). That is what makes `state_dict()`, `torch.save` and
-  `torch.export` carry the index (below). The build took longer than
-  part 3's 3.1 s partly because the index is also serialized into the
-  buffers (and partly the busy machine).
+  `torch.export` carry the index (below). The build took 0.7 s longer
+  than part 3's 3.1 s because the index is also serialized into the
+  buffers.
 * **python**, otherwise: the op is a Python function calling the pybind
   searcher. It compiles, but can't be exported or pickled.
 
@@ -137,15 +133,15 @@ compiled = torch.compile(retriever, fullgraph=True, dynamic=True)
 ```
 
 ```
-compiled Retriever, 3 batch sizes, first calls: 8.1 s (mostly compiling)
+compiled Retriever, 3 batch sizes, first calls: 8.6 s (mostly compiling)
   recall@10 0.9007; 12 of 100,000 results differ from searching the GloVe queries directly
 ```
 
 `fullgraph=True` means no graph breaks: the search is part of the
 compiled graph, as a custom op. With `dynamic=True` one compilation
-serves every batch size (the script uses 7, 993 and 9,000). The 8.1 s is
-Inductor compiling on first use; a second run of the script, with
-Inductor's cache warm, took 1.3 s.
+serves every batch size (the script uses 7, 993 and 9,000). The 8.6 s is
+Inductor compiling on first use; with Inductor's cache warm, later runs
+of the script skip most of it.
 
 Recall is unchanged. 12 of the 100,000 neighbours differ from searching
 the original queries, because the encoder's output differs from them in
@@ -182,29 +178,27 @@ encoder, convert its output to numpy, and call the pybind searcher. The
 ```
 µs per call, median (Retriever = encoder + search_batched_parallel)
                                   pybind    native    python comp. nat  comp. py
-  1 query, CPU                     139.0     151.0     166.5     198.2     203.3
-  1,000 queries, CPU                7197      7587      7413      7631      7641
-  1 query, GPU queries             205.6     250.6     265.7     296.9     307.0
-  1,000 queries, GPU queries        4927      5534      5494      5613      5675
+  1 query, CPU                     108.8     113.6     126.3     152.0     159.7
+  1,000 queries, CPU                4962      5182      5310      5330      5454
+  1 query, GPU queries             159.0     188.0     204.5     223.1     238.4
+  1,000 queries, GPU queries        4129      4722      4627      4779      4769
 ```
 
-* **For one query**, `scann.torch` adds about 12 µs on the native backend
-  and 28 µs on the Python backend. The compiled model costs another 40
-  to 50 µs: a compiled function has fixed costs of its own (guards, the
+* **For one query**, `scann.torch` adds about 5 µs on the native backend
+  and 18 µs on the Python backend. The compiled model costs another 33
+  to 38 µs: a compiled function has fixed costs of its own (guards, the
   compiled wrapper), and this "model" is a single matrix product, so
   there is nothing for the compiler to win back. In a real model, that
   cost is shared with the rest of the forward pass.
-* **For 1,000 queries** the search dominates, and on the CPU the columns
-  are within 6% of each other, about this machine's noise today.
+* **For 1,000 queries** the search dominates: on the CPU the eager
+  columns are within 7% of each other, and the compiled model adds a few
+  percent more.
 * **With GPU queries**, `scann.torch` also copies the results back to the
-  GPU, and waits for it: 45 µs more for one query, and about 12% for
-  1,000. The pybind column leaves its results in host memory.
+  GPU, and waits for it: 29 to 46 µs more for one query, and 12 to 14%
+  for 1,000. The pybind column leaves its results in host memory.
 
-These are relative costs, measured under load; rerun the script on an
-idle machine for absolute numbers. (For a smaller index on an idle
-machine, [integrations.md](../integrations.md#overhead) measured about
-10 µs of dispatch per eager call, and 8 to 20 µs less on the native
-backend than on the Python one.)
+For a smaller index, [integrations.md](../integrations.md#overhead) has
+per-call numbers in more detail.
 
 ### Saving the model with its index
 
@@ -228,15 +222,15 @@ indices, distances = model(features)
 ```
 state_dict: ['encoder.proj.weight', 'index.index_data', 'index.index_offsets', 'index.index_names']; index_data 514.0 MiB
 Python backend, torch.export: RuntimeError: scann.torch searches on the Python backend can't be exported: the export...
-exported and saved in 0.7 s: retriever.pt2, 517.9 MiB
-fresh process: loaded and searched 10,000 queries in 1.9 s; recall@10 0.9007; identical to eager: True
+exported and saved in 0.4 s: retriever.pt2, 517.9 MiB
+fresh process: loaded and searched 10,000 queries in 1.3 s; recall@10 0.9007; identical to eager: True
 ```
 
 The exported program is 518 MiB: the index is almost all of it, and
 `dataset.npy`, the float32 vectors for reordering, is 451 MiB of that.
 Reordering in bfloat16 ([part 5](05-saving-and-serving.md#making-the-index-smaller))
 would halve it. The fresh process needed nothing but the `.pt2` file
-and `import scann.torch`. Its 1.9 s include reading the 518 MiB file
+and `import scann.torch`. Its 1.3 s include reading the 518 MiB file
 and building the searcher from the buffers on the first search.
 
 On the Python backend, exporting raises: the op there finds its searcher
@@ -273,16 +267,16 @@ for name in scann.tf.available_backends():       # ("op", "python")
 
 ```
 TensorFlow 2.21.0; scann.tf backend: op; available: ('op', 'python')
-built in 4.3 s
+built in 3.2 s
 pybind searcher: recall@10 0.9007
-op     backend: from_pybind 1.1 s; tf.function gives int32 (10000, 10), float32; identical to pybind: True
+op     backend: from_pybind 0.6 s; tf.function gives int32 (10000, 10), float32; identical to pybind: True
 python backend: from_pybind 0.0 s; tf.function gives int32 (10000, 10), float32; identical to pybind: True
 ```
 
 The results are int32 indices, as in upstream's op, and the static shape
 `[None, 10]` is known when the function is traced. The Python backend
 wraps the pybind searcher (no copy, hence 0.0 s); the op backend copies
-the index into `tf.Variable`s, which takes a second for 514 MiB.
+the index into `tf.Variable`s, which took 0.6 s for 514 MiB.
 
 ### A model that encodes, searches, and saves
 
@@ -317,8 +311,8 @@ out = loaded.signatures["serving_default"](features=...)
 Python backend, serialize_to_module(): NotImplementedError: serialize_to_module() is not supported by scann.tf's Python ...
 Retrieval.retrieve: recall@10 0.9007; 0 of 100,000 results differ from searching the GloVe queries directly
 
-SavedModel written in 0.5 s: 514.1 MiB
-fresh process: loaded and searched 10,000 queries in 1.3 s; signature outputs ['distances', 'indices']
+SavedModel written in 0.3 s: 514.1 MiB
+fresh process: loaded and searched 10,000 queries in 0.8 s; signature outputs ['distances', 'indices']
   recall@10 0.9007; identical to before saving: True
 ```
 
@@ -343,40 +337,39 @@ searcher).
 ```
 search_batched_parallel, µs per call (median)
                          pybind     op, eager     op, tf.fn python, eager python, tf.fn
-  1 query                 117.3         454.3         307.4         257.2         406.1
-  1,000 queries            4643          5799          5237          5447          5588
+  1 query                  86.0         300.5         193.4         177.4         251.4
+  1,000 queries            3577          4642          4125          4245          4378
 
 encoder + search, µs per call (median)
                    Keras+pybind  tf.fn+pybind     op, tf.fn python, tf.fn
-  1 query                 868.0         307.3         370.7         428.1
-  1,000 queries            6548          5653          5813          6174
+  1 query                 598.9         227.6         204.6         249.0
 ```
 
 * **TensorFlow's per-call costs are larger than PyTorch's.** One search
-  through `scann.tf` cost 140 to 340 µs more than the pybind searcher:
+  through `scann.tf` cost 90 to 215 µs more than the pybind searcher:
   eager op calls go through a function the searcher owns, and a
   `tf.function` call has fixed costs of its own. For 1,000 queries it is
-  13 to 25%.
-* **Calling a Keras model eagerly is the slowest step** of all: 868 µs,
-  against 307 µs for the same encoder in a `tf.function` followed by the
+  15 to 30%.
+* **Calling a Keras model eagerly is the slowest step** of all: 599 µs,
+  against 228 µs for the same encoder in a `tf.function` followed by the
   pybind searcher. If you search with pybind, still wrap the encoder in a
   `tf.function` (or call a SavedModel's function).
-* **For single queries, the encoder in a `tf.function` plus pybind is
-  the fastest** (307 µs); the whole model as one `tf.function` with the op
-  is 60 µs slower, and with the Python backend 120 µs slower. The op is
-  worth it when the model must be one SavedModel; the Python backend
+* **For single queries, the whole model as one `tf.function` with the op
+  is the fastest** (205 µs), 23 µs less than the encoder in a
+  `tf.function` followed by pybind (228 µs): one graph call instead of a
+  graph call and a Python one. With the Python backend it is 249 µs. The
+  op is also what makes the model one SavedModel; the Python backend fits
   when the search must happen inside a graph (a `tf.data` map, a training
   step) and saving doesn't matter.
 
-As for PyTorch, these were measured on a busy machine: compare within a
-row. [tensorflow.md](../tensorflow.md#limits-of-the-op) has idle-machine
-numbers for another index.
+[tensorflow.md](../tensorflow.md#limits-of-the-op) has numbers for
+another index.
 
 ## Which to use
 
 | you want | use |
 |---|---|
-| the lowest latency per query, in a service | the model (compiled, or a `tf.function`), then the pybind searcher on its output; or C++/Rust ([part 7](07-cpp-and-rust.md)) |
+| the lowest latency per query, in a service | PyTorch: the model, then the pybind searcher on its output. TensorFlow: the whole model as one `tf.function` with the op backend. Or C++/Rust ([part 7](07-cpp-and-rust.md)) |
 | neighbours as tensors inside PyTorch code: a model's `forward`, evaluation in a training loop, a GPU pipeline | `scann.torch` |
 | one PyTorch artifact with the index inside (`torch.export`, AOTInductor, `torch.save`, `state_dict`) | `scann.torch` with `scann-core-torch` (native backend) |
 | searches inside TensorFlow graphs: `tf.function`, `tf.data` | `scann.tf` (either backend) |
