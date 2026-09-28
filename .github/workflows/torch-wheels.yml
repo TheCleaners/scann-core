@@ -1,0 +1,88 @@
+# Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
+# SPDX-License-Identifier: Apache-2.0
+
+# The scann-core-torch wheels (torch_op/pyproject.toml), one per
+# architecture: py3-none-manylinux_2_34_{x86_64,aarch64}, since the op
+# library uses no Python C API and only LibTorch's stable ABI. Called by
+# release.yml (uploaded as torch-wheels-<arch>) and ci.yml (on main, to
+# check the build and keep the ccache warm, as wheels.yml).
+#
+# The build environment installs the torch pinned in torch_op/pyproject.toml
+# (2.10.0, for its headers) from PyTorch's CPU index. auditwheel leaves
+# libtorch_cpu.so out of the wheel: it comes from the user's torch, which
+# has loaded it before the op library is.
+name: torch-wheels
+
+on:
+  workflow_call:
+    inputs:
+      upload:
+        description: upload the wheels as artifacts (torch-wheels-<arch>)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: torch-wheels / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      # The C++ library's objects are the ones the scann-core wheels compile
+      # (same compiler, flags and build directory depth): fall back to
+      # their cache.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-torch-wheels-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            ccache-torch-wheels-${{ matrix.arch }}-
+            ccache-wheels-${{ matrix.arch }}-
+      - uses: pypa/cibuildwheel@v4.2.1
+        with:
+          package-dir: torch_op
+        env:
+          # One build: the wheel is py3-none, for every Python.
+          CIBW_BUILD: "cp312-*"
+          CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
+          CIBW_BEFORE_ALL_LINUX: dnf install -y clang ccache
+          # torch (build requirement) from the CPU index; `==2.10.0` matches
+          # 2.10.0+cpu. Everything else from PyPI.
+          CIBW_ENVIRONMENT_LINUX: >-
+            CC=clang CXX=clang++
+            CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+            CCACHE_DIR=/host/home/runner/.ccache CCACHE_BASEDIR=/project
+            CCACHE_MAXSIZE=2G SKBUILD_BUILD_DIR=build/torch-op
+            PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+            UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+            UV_INDEX_STRATEGY=unsafe-best-match
+          CIBW_BEFORE_BUILD_LINUX: ccache --show-stats
+          # libtorch_cpu.so is the user's torch's, never bundled.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair --exclude libtorch_cpu.so -w {dest_dir} {wheel}
+          # The wheel requires scann-core of the same version, which isn't
+          # on PyPI yet during a release: release.yml tests the wheels with
+          # the scann-core wheels it built (torch-wheels-test).
+          CIBW_TEST_SKIP: "*"
+      - name: Check the wheel's tag and contents
+        run: |
+          ls wheelhouse
+          whl=$(ls wheelhouse/scann_core_torch-*-py3-none-manylinux_2_34_${{ matrix.arch }}.whl)
+          python3 -m zipfile -l "$whl"
+          python3 -m zipfile -l "$whl" | grep -q "scann_torch_ops/_scann_torch_ops.so"
+          ! python3 -m zipfile -l "$whl" | grep -q "libtorch"
+      - uses: actions/upload-artifact@v7
+        if: inputs.upload
+        with:
+          name: torch-wheels-${{ matrix.arch }}
+          path: wheelhouse/*.whl

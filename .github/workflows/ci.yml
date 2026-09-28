@@ -120,6 +120,46 @@ jobs:
           ctest --test-dir build -R '^(tf_op_|python_tf|example_py_tensorflow)' \
             --output-on-failure --no-tests=error
 
+  # The native PyTorch op (-DSCANN_BUILD_TORCH_OP=ON, torch_op/), built
+  # against the headers of torch 2.10.0 (CPU; the build-time pin of the
+  # scann-core-torch wheel) and tested with the newest CPU torch: its symbol
+  # check, python_torch on both backends, python_torch_native (which must
+  # not skip) and the example. Downloads PyTorch twice, so not on every pull
+  # request. libomp-22-dev: Inductor compiles C++ with -fopenmp using $CXX.
+  torch-op:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-22 libomp-22-dev cmake ninja-build
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: torch-op
+          max-size: 2G
+      - name: Build and test the op
+        env:
+          CC: clang-22
+          CXX: clang++-22
+          SCANN_TEST_REQUIRE_TORCH: "1"
+        run: |
+          uv venv -q --python 3.12 "$RUNNER_TEMP/torch-headers"
+          VIRTUAL_ENV="$RUNNER_TEMP/torch-headers" uv pip install -q "torch==2.10.0" \
+            --index-url https://download.pytorch.org/whl/cpu
+          uv venv -q --python 3.12 "$RUNNER_TEMP/torch"
+          VIRTUAL_ENV="$RUNNER_TEMP/torch" uv pip install -q torch \
+            --index-url https://download.pytorch.org/whl/cpu
+          VIRTUAL_ENV="$RUNNER_TEMP/torch" uv pip install -q numpy "protobuf>=7.36.2"
+          cmake -S . -B build -G Ninja -DPython_EXECUTABLE="$RUNNER_TEMP/torch/bin/python" \
+            -DSCANN_BUILD_TORCH_OP=ON -DSCANN_TORCH_PYTHON="$RUNNER_TEMP/torch-headers/bin/python" \
+            -DSCANN_BUILD_RUST_BINDINGS=OFF -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF
+          cmake --build build
+          ctest --test-dir build -R '^(torch_op_|python_torch|example_py_torch)' \
+            --output-on-failure --no-tests=error
+
   # aarch64 cross build, with the tests run under QEMU on emulated CPUs that
   # select different kernels (Neon only, dot product, SVE at 128-2048 bits,
   # SVE2). The native aarch64 job above only sees the runner's own CPU.
@@ -221,6 +261,13 @@ jobs:
     uses: ./.github/workflows/wheels.yml
     with:
       build: "cp312-*"
+      upload: false
+
+  # The same for the scann-core-torch wheels (torch-wheels.yml).
+  torch-wheel-cache:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/torch-wheels.yml
+    with:
       upload: false
 
   # The crate as published: `cargo package` builds the packaged sources on

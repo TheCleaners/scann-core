@@ -142,13 +142,16 @@ add_custom_target(scann_torch_ops_python ALL
   DEPENDS "${SCANN_TORCH_PY_OUT}/__init__.py" scann_torch_ops)
 
 # The scann-core-torch wheel (scikit-build-core, see pyproject.toml here):
-# just the scann_torch_ops package, with the license files.
+# just the scann_torch_ops package, with the license files, as the install
+# component scann_torch_ops, the only one the wheel installs (Eigen's own
+# install rules would add its headers).
 if(SKBUILD)
   install(DIRECTORY "${SCANN_TORCH_PY_OUT}" DESTINATION .
+          COMPONENT scann_torch_ops
           PATTERN "__pycache__" EXCLUDE
           PATTERN "*.pyc" EXCLUDE)
   install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/NOTICE"
-          DESTINATION scann_torch_ops)
+          DESTINATION scann_torch_ops COMPONENT scann_torch_ops)
 endif()
 
 if(SCANN_BUILD_TESTS AND CMAKE_NM AND CMAKE_READELF)

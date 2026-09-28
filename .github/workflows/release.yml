@@ -2,11 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # On a v* tag: build Linux wheels (manylinux, x86-64 and aarch64; CPython
-# 3.10-3.15 and free-threaded 3.14t and 3.15t) and the sdist, create a
-# GitHub release with them, and publish to PyPI and crates.io.
+# 3.10-3.15 and free-threaded 3.14t and 3.15t) and the sdist, and the
+# scann-core-torch wheels (py3-none, x86-64 and aarch64; torch_op/), create
+# a GitHub release with them, and publish to PyPI (scann-core, then
+# scann-core-torch, which requires it) and crates.io.
 #
 # Publishing needs API tokens as repository (or environment) secrets:
-#   * PyPI: PYPI_API_TOKEN;
+#   * PyPI: PYPI_API_TOKEN, for both scann-core and scann-core-torch (an
+#     account-wide token: the first upload creates the scann-core-torch
+#     project; a token scoped to one project can't);
 #   * crates.io: CARGO_REGISTRY_TOKEN.
 # The publish jobs run in the environments `pypi` and `crates-io`; add
 # required reviewers there (repository settings) to approve each publish.
@@ -24,6 +28,38 @@ jobs:
   wheels:
     uses: ./.github/workflows/wheels.yml
 
+  torch-wheels:
+    uses: ./.github/workflows/torch-wheels.yml
+
+  # scann-core-torch as users will install it, before anything is
+  # published: the cp312 scann-core wheel and the scann-core-torch wheel
+  # built above, with the newest CPU torch, run python_torch (both
+  # backends) and python_torch_native.
+  torch-wheels-test:
+    needs: [wheels, torch-wheels]
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*wheels-x86_64"
+          path: dist
+          merge-multiple: true
+      - env:
+          SCANN_TEST_REQUIRE_TORCH: "1"
+          SCANN_TEST_REQUIRE_TORCH_NATIVE: "1"
+        run: |
+          uv venv -q --python 3.12 "$RUNNER_TEMP/venv"
+          export VIRTUAL_ENV="$RUNNER_TEMP/venv"
+          uv pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install -q dist/scann_core-*-cp312-cp312-manylinux*_x86_64.whl \
+            dist/scann_core_torch-*-py3-none-manylinux_2_34_x86_64.whl
+          cd "$RUNNER_TEMP"
+          "$VIRTUAL_ENV/bin/python" -c "import scann.torch as st; assert st.backend() == 'native', st._native_error"
+          "$VIRTUAL_ENV/bin/python" "$GITHUB_WORKSPACE/tests/python/test_torch.py"
+          "$VIRTUAL_ENV/bin/python" "$GITHUB_WORKSPACE/tests/python/test_torch_native.py"
+
   sdist:
     runs-on: ubuntu-26.04
     steps:
@@ -36,7 +72,7 @@ jobs:
           path: dist/*.tar.gz
 
   github-release:
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, torch-wheels-test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-26.04
     permissions:
@@ -53,14 +89,36 @@ jobs:
           --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md."
           ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
 
+  # scann-core only (the torch-wheels-* artifacts go in pypi-torch).
   pypi:
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, torch-wheels-test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-26.04
     environment: pypi
     steps:
       - uses: actions/download-artifact@v8
         with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  # scann-core-torch, once the scann-core it requires (==) is on PyPI.
+  pypi-torch:
+    needs: [pypi]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-26.04
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: torch-wheels-*
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1

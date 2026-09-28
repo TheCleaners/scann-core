@@ -1,0 +1,83 @@
+# Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
+# SPDX-License-Identifier: Apache-2.0
+
+# The scann-core-torch wheel: scann.torch's native backend (the op library
+# and the scann_torch_ops package), built from the scann-core sources one
+# directory up (cmake.source-dir). See docs/integrations.md.
+#
+# One wheel per architecture, py3-none-manylinux_2_34_<arch>: the library
+# uses no Python C API (any CPython >= 3.10) and only LibTorch's stable
+# ABI (any torch >= 2.10). Building needs torch's headers only: the build
+# environment gets them from the torch pinned in build-system.requires. Use
+# a CPU wheel (a CUDA one works but is large), e.g.
+#   pip wheel ./torch_op --extra-index-url https://download.pytorch.org/whl/cpu
+# (`==2.10.0` also matches 2.10.0+cpu). The pin is the floor on purpose:
+# only the stable API of 2.10 is available either way (TORCH_TARGET_VERSION
+# in CMakeLists.txt), and older headers can't offer anything newer by
+# mistake.
+
+[build-system]
+requires = ["scikit-build-core>=0.11", "torch==2.10.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "scann-core-torch"
+dynamic = ["version", "dependencies"]
+description = "Native PyTorch ops for scann-core's scann.torch: torch.export / AOTInductor programs and state_dicts that carry the ScaNN index (derived from Google's ScaNN; not an official Google product)"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Elias Benali (@ebenali)" }, { name = "TheCleaners" }]
+requires-python = ">=3.10"
+keywords = ["vector search", "nearest neighbor", "ann", "scann", "pytorch"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/TheCleaners/scann-core"
+Documentation = "https://github.com/TheCleaners/scann-core/blob/main/docs/integrations.md"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.27"
+cmake.build-type = "Release"
+cmake.source-dir = ".."
+build.targets = ["scann_torch_ops_python"]
+# py3-none-<platform>: no Python C API, so one wheel for every Python.
+wheel.py-api = "py3"
+# The package comes from CMake's install rules (torch_op/CMakeLists.txt),
+# component scann_torch_ops only (not the dependencies' headers).
+wheel.packages = []
+install.components = ["scann_torch_ops"]
+
+# As in scann-core's pyproject.toml: pass CC/CXX through if set, and
+# otherwise let CMakeLists.txt pick clang.
+[tool.scikit-build.env]
+CC = { env = "CC" }
+CXX = { env = "CXX" }
+
+[tool.scikit-build.cmake.define]
+SCANN_BUILD_TORCH_OP = "ON"
+SCANN_BUILD_PYTHON = "OFF"
+SCANN_BUILD_RUST_BINDINGS = "OFF"
+SCANN_BUILD_TESTS = "OFF"
+SCANN_BUILD_EXAMPLES = "OFF"
+SCANN_BUILD_SHARED = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "../VERSION"
+regex = '^(?P<value>\d+\.\d+\.\d+.*)$'
+
+# The scann-core of the same version (the op must read the index files its
+# serialize() writes, and scann.torch checks the versions match), and the
+# floor of LibTorch's stable ABI.
+[tool.scikit-build.metadata.dependencies]
+provider = "scikit_build_core.metadata.template"
+result = ["scann-core=={project[version]}", "torch>=2.10"]
