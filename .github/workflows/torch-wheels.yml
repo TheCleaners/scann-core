@@ -36,8 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The C++ library's objects are the ones the scann-core wheels compile
-      # (same compiler, flags and build directory depth): fall back to
-      # their cache.
+      # (same compiler and flags; the build directory is /project/build/
+      # torch-op, at the depth of their /project/build/<wheel tag>, so that
+      # with ccache's base_dir at /project the command lines are identical):
+      # fall back to their cache. Only the op's own source misses on every
+      # run: it includes torch's headers from the build environment, a new
+      # random directory each time.
       - uses: actions/cache@v6
         with:
           path: ~/.ccache
@@ -57,12 +61,15 @@ jobs:
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
           CIBW_BEFORE_ALL_LINUX: dnf install -y clang ccache
           # torch (build requirement) from the CPU index; `==2.10.0` matches
-          # 2.10.0+cpu. Everything else from PyPI.
+          # 2.10.0+cpu. Everything else from PyPI. SKBUILD_BUILD_DIR is
+          # relative to torch_op/ (build/torch-op would be one level deeper
+          # than the scann-core wheels' directories, and miss about a
+          # quarter of their cache).
           CIBW_ENVIRONMENT_LINUX: >-
             CC=clang CXX=clang++
             CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
             CCACHE_DIR=/host/home/runner/.ccache CCACHE_BASEDIR=/project
-            CCACHE_MAXSIZE=2G SKBUILD_BUILD_DIR=build/torch-op
+            CCACHE_MAXSIZE=2G SKBUILD_BUILD_DIR=../build/torch-op
             PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
             UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
             UV_INDEX_STRATEGY=unsafe-best-match

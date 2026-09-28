@@ -135,6 +135,12 @@ All notable changes to scann-core. Versions follow
   `pip install .` builds use fixed directories (they used random ones, so
   about half of each job's compiles missed); the cross-aarch64 job, which
   builds in a container, uses ccache at all.
+- CI: the scann-core-torch wheels build in `/project/build/torch-op`, at
+  the depth of the scann-core wheels' build directories (it was one level
+  deeper, under `torch_op/`), so the relative paths in their command lines
+  match and a build without its own cache reuses the scann-core wheels'
+  for every compile but the op's own source (about a quarter missed
+  before).
 - The wheel build is a reusable workflow (`.github/workflows/wheels.yml`).
   CI builds one wheel per architecture on pushes to main, which checks the
   wheel build between releases and saves the ccache that release tags

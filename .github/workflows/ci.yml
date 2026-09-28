@@ -126,6 +126,10 @@ jobs:
   # check, python_torch on both backends, python_torch_native (which must
   # not skip) and the example. Downloads PyTorch twice, so not on every pull
   # request. libomp-22-dev: Inductor compiles C++ with -fopenmp using $CXX.
+  # Every path the compiler sees is the same on each run (the checkout,
+  # build/, and the venvs at fixed places in $RUNNER_TEMP, whose torch
+  # headers are pinned), so a run after the first compiles only what
+  # changed; keep it that way (no mktemp or version-named directories).
   torch-op:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
