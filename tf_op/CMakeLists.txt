@@ -13,7 +13,8 @@
 # limitations under the License.
 
 # The optional TensorFlow custom op (-DSCANN_BUILD_TF_OP=ON; source-only,
-# not part of the wheel). See docs/tensorflow.md.
+# not part of the wheel): scann.tf's op backend, which scann.tf uses when
+# scann_tf_ops is importable. See docs/tensorflow.md.
 #
 #   <build>/python/scann_tf_ops/_scann_tf_ops.so   the op library
 #   <build>/python/scann_tf_ops/__init__.py        its Python API
@@ -117,15 +118,26 @@ if(SCANN_BUILD_TESTS AND CMAKE_NM AND CMAKE_READELF)
 endif()
 
 if(SCANN_BUILD_TESTS AND SCANN_PYTHON_RUNTIME_OK)
-  # scann_tf_ops against the pybind searcher: parity, build-once, stale
-  # variables, SavedModel in a fresh process, errors, concurrency. And the
-  # example. Skipped (exit code 77) when TensorFlow isn't importable.
+  # scann_tf_ops, imported directly, against the pybind searcher: parity,
+  # build-once, stale variables, SavedModel in a fresh process, errors,
+  # concurrency. And the SavedModel example (scann.tf with the op backend).
+  # Skipped (exit code 77) when TensorFlow isn't importable. (python_tf, in
+  # tests/, runs scann.tf against both backends.)
   function(scann_add_tf_op_test name script)
     add_test(NAME ${name}
              COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
-                     "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${script}")
+                     ${ARGN} "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${script}")
     set_tests_properties(${name} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
   endfunction()
   scann_add_tf_op_test(python_tf_ops tests/test_scann_tf_ops.py)
   scann_add_tf_op_test(example_py_tensorflow_op ../examples/python/tensorflow_op.py)
+  # scann.tf as installed from the wheel, without the op: scann_tf_ops
+  # hidden, so scann.tf must pick the Python backend.
+  scann_add_tf_op_test(python_tf_without_op ../tests/python/test_tf.py
+                       SCANN_TEST_HIDE_TF_OP=1)
+  # The scann.tf example with the Python backend (python_tf and the
+  # example_py_tensorflow_wrapper test use the op backend here).
+  scann_add_tf_op_test(example_py_tensorflow_wrapper_python
+                       ../examples/python/tensorflow_wrapper.py
+                       SCANN_TF_BACKEND=python)
 endif()

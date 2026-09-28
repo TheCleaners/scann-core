@@ -129,7 +129,9 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   # Raw config values that crashed the process; builder checks.
   scann_add_python_test(python_config_validation python/test_config_validation.py)
   # scann.tf against the pybind searcher, eagerly, in tf.function and
-  # tf.data. Skipped (exit code 77) when TensorFlow isn't installed.
+  # tf.data, with each of its backends (the op one only when scann_tf_ops
+  # is built); backend selection; SavedModel with the op backend. Skipped
+  # (exit code 77) when TensorFlow isn't installed.
   scann_add_python_test(python_tf python/test_tf.py)
   set_tests_properties(python_tf PROPERTIES SKIP_RETURN_CODE 77)
   scann_add_python_test(python_langchain python/test_langchain.py)

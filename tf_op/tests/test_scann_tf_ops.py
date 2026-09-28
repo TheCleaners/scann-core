@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""scann_tf_ops, scann-core's TensorFlow op (tf_op/).
+"""scann_tf_ops, scann-core's TensorFlow op (tf_op/), imported directly.
+
+scann.tf uses it as its op backend (tests/python/test_tf.py runs scann.tf
+against both backends); this test covers what is specific to the op.
+
+- Direct import: scann_tf_ops is scann.tf's op backend, the same module
+  and classes.
 
 - Parity: search / search_batched / search_batched_parallel return exactly
   (bit for bit) what the pybind searcher they were made from returns, for
@@ -32,7 +38,9 @@
 - SavedModel: save, then load in a fresh process; the functions, the
   serving signature and searcher_from_module() match the original.
 - Round trips: to_pybind() / serialize() / load_searcher() (with docids;
-  relative and absolute manifests), create_searcher().
+  relative and absolute manifests; a shared_name as the second positional
+  argument, as before 0.2.1), ScannSearcher(pybind searcher),
+  create_searcher().
 - Bad inputs and damaged index tensors: tf.errors.InvalidArgumentError (or
   another OpError), never a crash.
 - Concurrency: one tf.function called from several threads.
@@ -223,6 +231,21 @@ def check_round_trips(tf, ops, scann, db, queries, tmp):
     assert t.docids == p.docids
     assert_same(ops.load_searcher(d2).search_batched(queries, 5), want,
                 f"re-serialized relative={relative}", exact=False)
+
+  # shared_name, positionally (its place before 0.2.1) or by keyword.
+  d = os.path.join(tmp, "index_True")
+  assert ops.load_searcher(d, "positional").shared_name == "positional"
+  assert ops.load_searcher(d, shared_name="kw").shared_name == "kw"
+  assert ops.load_searcher(d, False).shared_name.startswith("scann_core_")
+  s = ops.ScannSearcher(p, "from_pybind_searcher")
+  assert s.shared_name == "from_pybind_searcher"
+  assert_same(s.search_batched(queries, 5), want, "ScannSearcher(pybind)",
+              exact=False)
+  try:
+    ops.load_searcher(os.path.join(tmp, "missing"))
+    raise AssertionError("loaded a missing directory")
+  except ValueError as e:
+    assert "is not a directory" in str(e), str(e)
 
   # (Brute force: two trainings of a tree needn't agree.)
   config = pybind_builder(scann, db, "bf_int8").create_config()
@@ -488,6 +511,12 @@ def main():
     sys.exit(SKIP)
   import scann  # pylint: disable=g-import-not-at-top
   import scann_tf_ops as ops  # pylint: disable=g-import-not-at-top
+  import scann.tf  # pylint: disable=g-import-not-at-top
+  assert scann.tf.get_backend("op") is ops and ops.BACKEND == "op"
+  if scann.tf.backend() == "op":
+    assert scann.tf.ScannSearcher is ops.ScannSearcher
+    assert scann.tf.builder is ops.builder
+  assert ops.SearchResult is scann.tf.SearchResult
 
   db = dataset(1200)
   queries = dataset(20, seed=1)

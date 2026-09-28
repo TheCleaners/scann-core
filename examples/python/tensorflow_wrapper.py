@@ -15,10 +15,12 @@
 
 """scann-core from TensorFlow code, with scann.tf.
 
-scann.tf wraps the searcher so that it takes and returns tensors, eagerly
-and inside tf.function and tf.data (see docs/tensorflow.md). This script
-searches eagerly, then from a tf.function with an unknown batch size, and
-maps the result indices to docids with tf.gather, also after an upsert.
+scann.tf's searchers take and return tensors, eagerly and inside
+tf.function and tf.data (see docs/tensorflow.md). This script searches
+eagerly, then from a tf.function with an unknown batch size, and maps the
+result indices to docids with tf.gather, also after an upsert. It runs the
+same on either backend: the TensorFlow op when scann_tf_ops is built, the
+Python backend (the wheel) otherwise; tensorflow_op.py saves a model.
 
 Needs TensorFlow (`pip install 'scann-core[tf]'`); exits with status 77
 (reported as skipped by ctest) without it. Run with scann-core installed,
@@ -39,6 +41,10 @@ import numpy as np
 # never imports TensorFlow; `scann.tf` does.
 from scann import tf as scann_tf
 
+# "op" (scann-core's TensorFlow op, if built) or "python" (the wheel's
+# tf.numpy_function backend). The results are the same.
+print("scann.tf backend:", scann_tf.backend())
+
 N, DIM, K = 5000, 32, 10
 rng = np.random.default_rng(0)
 dataset = rng.standard_normal((N, DIM)).astype(np.float32)
@@ -53,9 +59,9 @@ searcher = (
     .score_ah(2, anisotropic_quantization_threshold=0.2)
     .reorder(100)
     .build(docids=docids))
-# searcher.searcher is the underlying scann_ops_pybind searcher: use it for
-# everything but searching (upsert, delete, serialize, config, ...).
-pybind = searcher.searcher
+# The index as a scann_ops_pybind searcher, for everything but searching
+# (upsert, delete, config, ...). With the op backend it is a copy.
+pybind = searcher.to_pybind()
 
 # --- Eager ---------------------------------------------------------------
 queries = tf.random.stateless_normal([8, DIM], seed=[1, 2])
@@ -75,24 +81,26 @@ print("query 0 top 3:", one.index.numpy(), np.round(one.distance.numpy(), 3))
 
 # --- In a tf.function, with docids ---------------------------------------
 # A docid table in the graph maps indices to docids. It is a snapshot of
-# pybind.docids: upsert and delete move points to other rows, so refresh it
-# after every change. A tf.Variable with an unknown length can be
-# refreshed without retracing the function; tf.constant(docids) would do
-# for an index that never changes.
-docid_table = tf.Variable(docids, dtype=tf.string, shape=tf.TensorShape([None]))
+# the docids: upsert and delete move points to other rows, so a function
+# like this one is made again after every change (below).
+def make_retrieve(searcher, docids):
+  docid_table = tf.constant(docids)
+
+  # The batch dimension is unknown (None): one trace serves every batch size.
+  @tf.function(input_signature=[tf.TensorSpec([None, DIM], tf.float32)])
+  def retrieve(q):
+    # search_batched_parallel spreads the batch over the searcher's threads.
+    # k=5 as a Python int makes the result's second dimension static.
+    indices, scores = searcher.search_batched_parallel(q,
+                                                       final_num_neighbors=5)
+    # Rows with fewer than k results (a tiny index) are padded with index 0
+    # and a NaN score; this index has enough points for that not to happen.
+    return tf.gather(docid_table, indices), scores
+
+  return retrieve
 
 
-# The batch dimension is unknown (None): one trace serves every batch size.
-@tf.function(input_signature=[tf.TensorSpec([None, DIM], tf.float32)])
-def retrieve(q):
-  # search_batched_parallel spreads the batch over the searcher's threads.
-  # k=5 as a Python int makes the result's second dimension static.
-  indices, scores = searcher.search_batched_parallel(q, final_num_neighbors=5)
-  # Rows with fewer than k results (a tiny index) are padded with index 0
-  # and a NaN score; this index has enough points for that not to happen.
-  return tf.gather(docid_table, indices), scores
-
-
+retrieve = make_retrieve(searcher, docids)
 for batch in (1, 3, 16):
   found, scores = retrieve(tf.random.stateless_normal([batch, DIM], [3, batch]))
   assert found.shape == (batch, 5) and found.dtype == tf.string
@@ -110,12 +118,16 @@ ds = (tf.data.Dataset.from_tensor_slices(queries).batch(4)
 assert [b.shape[0] for b in ds] == [4, 4]
 
 # --- After an update -----------------------------------------------------
-# Updates go through the pybind searcher; later searches through the
-# wrapper see them. Then refresh the docid table.
+# Update the pybind searcher, make a searcher from it again, and a function
+# with the new searcher and docids. This works with both backends: the op
+# backend's searchers are snapshots of the index (a SavedModel keeps the
+# one it was saved with), the Python backend's share the pybind searcher.
 new_vector = 5 * queries[0].numpy()  # a large dot product with query 0
 pybind.upsert("item-new", new_vector)
-docid_table.assign(pybind.docids)
+searcher = scann_tf.from_pybind(pybind)
+retrieve = make_retrieve(searcher, pybind.docids)
 found, _ = retrieve(queries[:1])
 assert found[0, 0].numpy() == b"item-new", found
 print("after upsert, query 0's top docid:", found[0, 0].numpy().decode())
-print("scann.tf: eager and tf.function results match the pybind searcher")
+print(f"scann.tf ({scann_tf.backend()} backend): eager and tf.function "
+      "results match the pybind searcher")

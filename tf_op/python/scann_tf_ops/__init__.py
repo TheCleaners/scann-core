@@ -17,20 +17,27 @@
 # scann-core (a derived work of ScaNN, not an official Google product);
 # see NOTICE.
 
-"""scann-core's TensorFlow op, with upstream's scann_ops API.
+"""scann-core's TensorFlow op: scann.tf's op backend.
+
+Use it through scann.tf, which picks this backend automatically when this
+package is importable (see scann.tf.backend()):
+
+  import scann.tf   # upstream: from scann.scann_ops.py import scann_ops
+
+  searcher = scann.tf.builder(db, 10, "dot_product").score_brute_force().build()
+  indices, distances = searcher.search_batched(queries)  # int32, float32
+
+Importing scann_tf_ops directly, as before scann.tf picked it, still works
+and gives the same objects: scann_tf_ops.builder is scann.tf.builder with
+this backend.
 
 Adapted from upstream's scann/scann_ops/py/scann_ops.py: the same
 builder() / create_searcher() / ScannSearcher.search*() /
 serialize_to_module() / searcher_from_module() API, backed by scann-core's
 optional TensorFlow op (tf_op/, built with -DSCANN_BUILD_TF_OP=ON; not part
-of the wheel). Unlike scann.tf, searches are graph ops, so a model that
-searches can be saved as a SavedModel and served without Python. See
-docs/tensorflow.md.
-
-  import scann_tf_ops as scann_ops  # upstream: from scann.scann_ops.py import scann_ops
-
-  searcher = scann_ops.builder(db, 10, "dot_product").score_brute_force().build()
-  indices, distances = searcher.search_batched(queries)  # int32, float32
+of the wheel). Unlike scann.tf's Python backend, searches are graph ops, so
+a model that searches can be saved as a SavedModel and served without
+Python. See docs/tensorflow.md.
 
 The searcher is a tf.Module holding the index as tf.Variables: the files
 serialize() writes (names and contents, as two string vectors), and a
@@ -44,14 +51,13 @@ import tempfile
 import uuid
 import weakref
 
-import numpy as np
 import tensorflow as tf
 from google.protobuf import text_format
 
-# scann.tf is the tf.numpy_function wrapper; it doesn't use the op. Its
-# argument handling and result types are shared, so results of both are
-# the same namedtuples.
-from scann import tf as _scann_tf
+# Argument handling and result types shared with scann.tf's Python backend,
+# so that both return the same namedtuples, dtypes and static shapes. (Not
+# scann.tf itself, which imports this package.)
+from scann import _tf_common as _common
 from scann.scann_ops import scann_assets_pb2
 from scann.scann_ops.py import scann_ops_pybind
 
@@ -61,12 +67,14 @@ __all__ = [
     "stats"
 ]
 
+BACKEND = "op"
+
 _ops = tf.load_op_library(
     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                  "_scann_tf_ops.so"))
 
-SearchResult = _scann_tf.SearchResult
-BatchedSearchResult = _scann_tf.BatchedSearchResult
+SearchResult = _common.SearchResult
+BatchedSearchResult = _common.BatchedSearchResult
 
 _MANIFEST = "scann_assets.pbtxt"
 _DOCIDS = "scann_docids.pkl"
@@ -105,11 +113,14 @@ class ScannSearcher(tf.Module):
   """A ScaNN index as TensorFlow state, searched by scann-core's op.
 
   Create one with builder(), create_searcher(), from_pybind(),
-  load_searcher() or searcher_from_module().
+  load_searcher(), searcher_from_module(), or ScannSearcher(pybind_searcher).
 
   The search methods return (indices, distances) namedtuples of int32 and
   float32 tensors, as upstream's op did, and work eagerly and inside
   tf.function. Indices are positions in the index, never docids.
+
+  The searcher is a snapshot of the index it was made from: to change it,
+  mutate a pybind searcher (to_pybind()) and make a new one (from_pybind()).
 
   Attributes:
     asset_names: tf.Variable, string [num_files]: the file names of the
@@ -123,15 +134,23 @@ class ScannSearcher(tf.Module):
   """
 
   def __init__(self, files, shared_name=None, name=None):
-    """Wraps index files.
+    """Wraps an index.
 
     Args:
-      files: {file name: bytes}, the files serialize() writes to an index
-        directory. Prefer builder(), from_pybind() or load_searcher().
+      files: a scann_ops_pybind.ScannSearcher (its index is copied, as by
+        from_pybind()), or {file name: bytes}, the files serialize() writes
+        to an index directory.
       shared_name: the op's cache key; a new random id if None.
       name: the tf.Module name.
     """
     super().__init__(name=name)
+    if isinstance(files, scann_ops_pybind.ScannSearcher):
+      files = _pybind_files(files)
+    elif not isinstance(files, dict):
+      raise TypeError(
+          "scann.tf.ScannSearcher wraps a scann_ops_pybind.ScannSearcher "
+          "(from builder(), create_searcher() or load_searcher()) or a dict "
+          f"of index files, got {type(files).__name__}.")
     if _MANIFEST not in files:
       raise ValueError(f"The index files lack {_MANIFEST}.")
     names = sorted(files)
@@ -177,10 +196,10 @@ class ScannSearcher(tf.Module):
 
   def _batched(self, q, final_num_neighbors, pre_reorder_num_neighbors,
                leaves_to_search, parallel, batch_size, method):
-    q = _scann_tf._queries(q, 2, method)  # pylint: disable=protected-access
-    args = (q, _scann_tf._param(final_num_neighbors),  # pylint: disable=protected-access
-            _scann_tf._param(pre_reorder_num_neighbors),  # pylint: disable=protected-access
-            _scann_tf._param(leaves_to_search),  # pylint: disable=protected-access
+    q = _common.queries(q, 2, method)
+    args = (q, _common.param(final_num_neighbors),
+            _common.param(pre_reorder_num_neighbors),
+            _common.param(leaves_to_search),
             tf.constant(parallel), tf.convert_to_tensor(batch_size, tf.int32))
     with tf.name_scope(f"scann_{method}"):
       if tf.executing_eagerly():
@@ -189,14 +208,7 @@ class ScannSearcher(tf.Module):
         idx, dist = _ops.scann_core_search_batched(
             self.asset_names, self.asset_contents, *args,
             index_id=self._shared_name)
-    # Exactly [num_queries, k] with an explicit k (rows with fewer results
-    # are padded with index 0 and NaN distance); with the default k, as
-    # wide as the longest row.
-    k = _scann_tf._static_int(final_num_neighbors)  # pylint: disable=protected-access
-    shape = [q.shape[0], k if k is not None and k > 0 else None]
-    idx.set_shape(shape)
-    dist.set_shape(shape)
-    return BatchedSearchResult(idx, dist)
+    return _common.batched_result(q, idx, dist, final_num_neighbors)
 
   def search(self,
              q,
@@ -215,10 +227,10 @@ class ScannSearcher(tf.Module):
       (index, distance), a namedtuple of int32 and float32 tensors of shape
       [n], n <= k (fewer when the index has fewer points than k).
     """
-    q = _scann_tf._queries(q, 1, "search")  # pylint: disable=protected-access
-    args = (q, _scann_tf._param(final_num_neighbors),  # pylint: disable=protected-access
-            _scann_tf._param(pre_reorder_num_neighbors),  # pylint: disable=protected-access
-            _scann_tf._param(leaves_to_search))  # pylint: disable=protected-access
+    q = _common.queries(q, 1, "search")
+    args = (q, _common.param(final_num_neighbors),
+            _common.param(pre_reorder_num_neighbors),
+            _common.param(leaves_to_search))
     with tf.name_scope("scann_search"):
       if tf.executing_eagerly():
         idx, dist = self._eager.search(*args)
@@ -226,7 +238,7 @@ class ScannSearcher(tf.Module):
         idx, dist = _ops.scann_core_search(
             self.asset_names, self.asset_contents, *args,
             index_id=self._shared_name)
-    return SearchResult(idx, dist)
+    return _common.search_result(idx, dist)
 
   def search_batched(self,
                      q,
@@ -267,10 +279,12 @@ class ScannSearcher(tf.Module):
     return dict(zip(names, self.asset_contents.numpy()))
 
   def to_pybind(self):
-    """The index as a scann_ops_pybind.ScannSearcher (with its docids).
+    """A copy of the index as a scann_ops_pybind.ScannSearcher (with docids).
 
     For mutating it (upsert, delete, rebalance): mutate the pybind searcher,
-    then make a new op searcher with from_pybind().
+    then make a new searcher with from_pybind(). (With scann.tf's Python
+    backend, to_pybind() returns the wrapped searcher itself; the same code
+    works with both.)
     """
     with tempfile.TemporaryDirectory() as d:
       for name, content in self.files().items():
@@ -321,6 +335,14 @@ class _EagerFunctions(object):
     self.search_batched = search_batched
 
 
+def _pybind_files(searcher):
+  """The index files of a scann_ops_pybind.ScannSearcher, {name: bytes}."""
+  with tempfile.TemporaryDirectory() as d:
+    searcher.serialize(d, relative_path=True)
+    names = [n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n))]
+    return _read_files(d, names)
+
+
 def from_pybind(searcher, shared_name=None):
   """A ScannSearcher from a scann_ops_pybind.ScannSearcher (copies the index).
 
@@ -332,20 +354,34 @@ def from_pybind(searcher, shared_name=None):
     raise TypeError(
         "from_pybind() takes a scann_ops_pybind.ScannSearcher, got "
         f"{type(searcher).__name__}.")
-  with tempfile.TemporaryDirectory() as d:
-    searcher.serialize(d, relative_path=True)
-    names = [n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n))]
-    return ScannSearcher(_read_files(d, names), shared_name)
+  return ScannSearcher(searcher, shared_name)
 
 
-def load_searcher(artifacts_dir, shared_name=None):
+def load_searcher(artifacts_dir, assets_backcompat_shim=True,
+                  shared_name=None):
   """Loads an index saved by serialize() (from any binding).
 
   Reads the files the manifest lists (and scann_docids.pkl); the searcher is
   built, and the files checked, on the first search. A directory that
   doesn't load fails there with the same error as
-  scann_ops_pybind.load_searcher().
+  scann_ops_pybind.load_searcher(). A directory without a manifest (from
+  an old release) is loaded through scann_ops_pybind.load_searcher(), with
+  its assets_backcompat_shim.
+
+  Args:
+    artifacts_dir: the directory serialize() wrote.
+    assets_backcompat_shim: as scann_ops_pybind.load_searcher's.
+    shared_name: the op's cache key; a new random id if None. (Before
+      scann-core 0.2.1 this was the second positional argument; a string
+      there is still taken as the shared_name.)
   """
+  if isinstance(assets_backcompat_shim, str):
+    shared_name, assets_backcompat_shim = assets_backcompat_shim, True
+  if not os.path.isfile(os.path.join(artifacts_dir, _MANIFEST)):
+    # Not a directory, or no manifest: the loader's error or backcompat.
+    return ScannSearcher(
+        scann_ops_pybind.load_searcher(artifacts_dir, assets_backcompat_shim),
+        shared_name)
   with open(os.path.join(artifacts_dir, _MANIFEST), "rb") as f:
     manifest = f.read()
   try:
@@ -404,7 +440,7 @@ _from_module_cache = weakref.WeakKeyDictionary()
 
 
 def builder(db, num_neighbors, distance_measure):
-  """Creates a ScannBuilder that returns a scann_tf_ops.ScannSearcher on build().
+  """Creates a ScannBuilder that returns a scann.tf.ScannSearcher on build().
 
   Args:
     db: the dataset that ScaNN will search over; a 2d array or eager tensor
@@ -415,11 +451,11 @@ def builder(db, num_neighbors, distance_measure):
   Returns:
     A ScannBuilder object, which builds the ScaNN config via calls such as
     tree() and score_brute_force(). Calling build() on the ScannBuilder will
-    return a scann_tf_ops.ScannSearcher with its specified config. It is
+    return a scann.tf.ScannSearcher with its specified config. It is
     scann_ops_pybind's builder, so autopilot(), SOAR and docids work as
     there.
   """
-  b = scann_ops_pybind.builder(_scann_tf._to_numpy(db), num_neighbors,  # pylint: disable=protected-access
+  b = scann_ops_pybind.builder(_common.to_numpy(db), num_neighbors,
                                distance_measure)
   build_pybind = b.builder_lambda
 
@@ -442,14 +478,10 @@ def create_searcher(db,
   op's cache key (a new random id if None).
   """
   del container  # Unused.
-  if isinstance(scann_config, tf.Tensor):
-    scann_config = scann_config.numpy()
-  if isinstance(scann_config, bytes):
-    scann_config = scann_config.decode("utf-8")
   return from_pybind(
       scann_ops_pybind.create_searcher(
-          _scann_tf._to_numpy(db),  # pylint: disable=protected-access
-          scann_config,
-          _scann_tf._as_int(training_threads),  # pylint: disable=protected-access
+          _common.to_numpy(db),
+          _common.config_text(scann_config),
+          _common.as_int(training_threads),
           docids=docids),
       shared_name)

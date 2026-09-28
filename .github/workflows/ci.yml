@@ -84,9 +84,11 @@ jobs:
         run: scripts/python-versions.sh
 
   # The optional TensorFlow op (-DSCANN_BUILD_TF_OP=ON, tf_op/), built
-  # against tensorflow-cpu 2.21 in a venv: its symbol check, python_tf_ops
-  # and the op example (which must not skip). Downloads TensorFlow, so not on
-  # every pull request.
+  # against tensorflow-cpu 2.21 in a venv: its symbol check, python_tf_ops,
+  # scann.tf with both backends and the TensorFlow examples (none of which
+  # may skip; SCANN_TF_BACKEND=op makes a broken op an error instead of a
+  # fallback to the Python backend). Downloads TensorFlow, so not on every
+  # pull request.
   tf-op:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
@@ -106,6 +108,8 @@ jobs:
           CC: clang-22
           CXX: clang++-22
           SCANN_TEST_REQUIRE_TF: "1"
+          SCANN_TEST_REQUIRE_TF_OP: "1"
+          SCANN_TF_BACKEND: op
         run: |
           uv venv -q --python 3.12 "$RUNNER_TEMP/tf"
           VIRTUAL_ENV="$RUNNER_TEMP/tf" uv pip install -q numpy "protobuf>=7.36.2" "tensorflow-cpu~=2.21.0"
@@ -113,7 +117,7 @@ jobs:
             -DSCANN_BUILD_TF_OP=ON -DSCANN_BUILD_RUST_BINDINGS=OFF \
             -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF
           cmake --build build
-          ctest --test-dir build -R '^(tf_op_|python_tf|example_py_tensorflow_op)' \
+          ctest --test-dir build -R '^(tf_op_|python_tf|example_py_tensorflow)' \
             --output-on-failure --no-tests=error
 
   # aarch64 cross build, with the tests run under QEMU on emulated CPUs that

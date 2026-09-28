@@ -15,18 +15,20 @@
 
 """A retrieval model with the index inside it, as one SavedModel.
 
-Uses scann_tf_ops, scann-core's optional TensorFlow op (source-only: build
-with -DSCANN_BUILD_TF_OP=ON; see docs/tensorflow.md). The searcher is
-TensorFlow state, so a model that searches saves as a SavedModel,
-index included, and loads and searches in a process that has never seen
-the index, without Python code of ours in the graph:
+Uses scann.tf with its op backend: scann-core's optional TensorFlow op,
+which scann.tf uses automatically when it is built (source-only: build
+with -DSCANN_BUILD_TF_OP=ON; see docs/tensorflow.md). The searcher is then
+TensorFlow state, so a model that searches saves as a SavedModel, index
+included, and loads and searches in a process that has never seen the
+index, without Python code of ours in the graph:
 
   1. build a searcher with the upstream-style builder,
   2. search in a tf.function (unknown batch size, static k),
   3. save a module with a serving signature,
   4. load it in a fresh process and search: the same results.
 
-Exits with status 77 (reported as skipped by ctest) without TensorFlow.
+Exits with status 77 (reported as skipped by ctest) without TensorFlow or
+without the op (scann.tf's Python backend can't be saved in a SavedModel).
 Run from a CMake build tree built with the op:
   PYTHONPATH=<build>/python python examples/python/tensorflow_op.py
 """
@@ -43,7 +45,13 @@ except ImportError:
   sys.exit(77)
 
 import numpy as np
-import scann_tf_ops
+import scann.tf  # upstream: from scann.scann_ops.py import scann_ops
+
+if scann.tf.backend() != "op":
+  print("scann.tf is using its Python backend, whose searchers can't be "
+        "saved in a SavedModel; build scann-core with -DSCANN_BUILD_TF_OP=ON "
+        "for the op backend (docs/tensorflow.md). Skipping.")
+  sys.exit(77)
 
 DIM, K = 32, 10
 
@@ -61,7 +69,7 @@ class Retrieval(tf.Module):
       tf.TensorSpec([None, DIM], tf.float32, name="queries")
   ])
   def retrieve(self, queries):
-    searcher = scann_tf_ops.searcher_from_module(self.index)
+    searcher = scann.tf.searcher_from_module(self.index)
     indices, scores = searcher.search_batched_parallel(queries, K)
     return {"indices": indices, "scores": scores}
 
@@ -72,7 +80,7 @@ def build_and_save(export_dir):
   items /= np.linalg.norm(items, axis=1, keepdims=True)
 
   # 1. The same builder as scann_ops_pybind and upstream's scann_ops.
-  searcher = (scann_tf_ops.builder(items, K, "dot_product")
+  searcher = (scann.tf.builder(items, K, "dot_product")
               .tree(num_leaves=150, num_leaves_to_search=15,
                     random_init=False)
               .score_ah(2, anisotropic_quantization_threshold=0.2)
@@ -101,8 +109,9 @@ def build_and_save(export_dir):
 
 
 def load_and_search(export_dir):
-  # 4. A fresh process: importing scann_tf_ops registers the op, which the
-  # loaded graph needs; the index comes from the SavedModel's variables.
+  # 4. A fresh process: importing scann.tf (with the op backend) registers
+  # the op, which the loaded graph needs; the index comes from the
+  # SavedModel's variables.
   loaded = tf.saved_model.load(export_dir)
   serve = loaded.signatures["serving_default"]
   queries = np.load(os.path.join(export_dir, "queries.npy"))
@@ -111,7 +120,9 @@ def load_and_search(export_dir):
   expected = np.load(os.path.join(export_dir, "expected.npy"))
   assert (out["indices"].numpy() == expected).all()
   # The searcher was built once, on the first call, from the variables.
-  print("searchers built in this process:", scann_tf_ops.stats()["builds"])
+  stats = scann.tf.get_backend("op").stats()
+  print("searchers built in this process:", stats["builds"])
+  assert stats["builds"] == 1, stats
   print("reloaded model: same results")
 
 
