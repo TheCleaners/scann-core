@@ -257,6 +257,8 @@ What it adds:
   tested; the tests load packages from Python). With torch
   2.10, `aoti_load_package()` in a fresh process also needs
   `import torch._inductor.codecache` first (a torch bug, fixed in 2.11).
+  For NVIDIA GPUs, Inductor needs a CUDA toolkit's headers; see
+  [AOTInductor on NVIDIA GPUs](#aotinductor-on-nvidia-gpus).
 * **The index in `state_dict()`**, as three buffers, `index_data` (uint8:
   the files `serialize()` writes, concatenated), `index_offsets` (int64)
   and `index_names` (uint8). `load_state_dict()` replaces the index with
@@ -294,6 +296,42 @@ into them yourself. Deleting the `Searcher` drops its cached searcher; an
 exported program keeps its own for the life of the process
 (`scann_torch_ops.stats()` counts cached and built searchers).
 
+#### AOTInductor on NVIDIA GPUs
+
+For a CUDA device, AOTInductor compiles the package's C++ wrapper with
+the host compiler against a CUDA toolkit's headers (`cuda_runtime.h` and
+what it includes; Triton compiles the kernels, with its own `ptxas`).
+Inductor finds the toolkit as `torch.utils.cpp_extension` does:
+`$CUDA_HOME` (or `$CUDA_PATH`), else the directory above `nvcc` on `PATH`,
+else `/usr/local/cuda`. Without one, `aoti_compile_and_package()` fails
+with "CUDA_HOME environment variable is not set" (and `python_torch_native`
+skips that case). nvcc itself isn't run, and ROCm builds of torch carry
+what they need.
+
+NVIDIA's pip packages are enough; no system install. torch's own
+dependencies already install the CUDA runtime's headers, but not the
+`crt` headers or CCCL (`nv/target`) they include. Add those, from the
+`cuda-toolkit` version your torch pins, to torch's environment:
+
+```sh
+# the cuda-toolkit version torch depends on: 13.2.1 for 2.14.0+cu132, 12.8.1 for 2.11.0+cu128
+python -c "import importlib.metadata as m; print([r.split(';')[0] for r in m.requires('torch') if r.startswith('cuda-toolkit')])"
+
+# CUDA 13 (torch +cu13x): everything lands in site-packages/nvidia/cu13
+pip install "cuda-toolkit[crt,cccl]==13.2.1"
+export CUDA_HOME=$(python -c "import nvidia.cu13 as m; print(m.__path__[0])")
+
+# CUDA 12 (torch +cu12x): one directory per package; the crt headers
+# come with nvcc's
+pip install "cuda-toolkit[nvcc,cccl]==12.8.1"
+NV=$(python -c "import nvidia, os; print(os.path.dirname(nvidia.__file__))")
+export CUDA_HOME=$NV/cuda_runtime
+export CPATH=$NV/cuda_nvcc/include:$NV/cuda_cccl/include
+```
+
+A complete toolkit works too, also a newer one than torch's CUDA (13.4
+with torch 2.14.0+cu132).
+
 #### Changing the index
 
 Changes through `searcher.searcher` (`upsert`, `delete`, `rebalance`)
@@ -325,14 +363,20 @@ AH + reorder index:
 
 #### Limits of the native backend
 
-* Checked with torch 2.10.0 (CPU, Python 3.14), 2.11.0+cu128 (Python
-  3.13, RTX 3060 Ti), 2.14.0+cu132 (Python 3.14, RTX 3060 Ti) and
-  2.14.0+rocm7.14 (Python 3.12, Radeon RX 7600 XT), with one op library
-  built against torch 2.10.0's headers: `python_torch` (both backends),
-  `python_torch_native` and the example pass on each. AOTInductor
-  packages were checked on the CPU with each version and on the ROCm GPU;
-  for NVIDIA GPUs, Inductor needs a CUDA toolkit (`CUDA_HOME`, nvcc),
-  which wasn't available, so that path is untested.
+* Checked with an op library built against torch 2.10.0's headers:
+  `python_torch` (both backends), `python_torch_native` and the example
+  pass with each of these, and AOTInductor packages compile and load in a
+  fresh process on each device listed:
+
+  | torch | Python | GPU | AOTInductor |
+  |---|---|---|---|
+  | 2.10.0 (CPU) | 3.14 | | CPU |
+  | 2.11.0+cu128 | 3.13 | RTX 3060 Ti | CPU, CUDA (pip CUDA 12.8.1 headers) |
+  | 2.14.0+cu132 | 3.14 | RTX 3060 Ti | CPU, CUDA (pip CUDA 13.2.1 headers; also the 13.4 toolkit) |
+  | 2.14.0+rocm7.14 | 3.12 | Radeon RX 7600 XT | CPU, ROCm |
+
+  CUDA needs a toolkit's headers (see
+  [AOTInductor on NVIDIA GPUs](#aotinductor-on-nvidia-gpus)).
 * The index stays in host memory; the searches run on the CPU (as on the
   Python backend). The op accepts index tensors on a GPU but copies them
   to host memory on every call.

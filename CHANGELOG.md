@@ -66,6 +66,13 @@ All notable changes to scann-core. Versions follow
   trips, stale state, errors, concurrency) and `torch_op_symbols` (the op
   library exports nothing and imports only LibTorch's stable C functions
   and the C/C++ runtime). `python_torch` runs on both backends.
+- AOTInductor packages of models that search, on NVIDIA GPUs: verified
+  with torch 2.14.0+cu132 and 2.11.0+cu128 (RTX 3060 Ti), with the CUDA
+  headers from NVIDIA's pip packages (`cuda-toolkit[crt,cccl]` or
+  `[nvcc,cccl]` of torch's CUDA version; no system toolkit). The recipe is
+  in docs/integrations.md ("AOTInductor on NVIDIA GPUs").
+  `python_torch_native` skips that case only when no CUDA toolkit is found,
+  not on any compile error.
 - `scann_ops_pybind.ScannSearcher` counts the calls that may change the
   index (`upsert`, `delete`, `rebalance`), so that the native backend
   refreshes its copy.

@@ -25,9 +25,10 @@
 - torch.compile(fullgraph=True, dynamic=True): one compilation for many
   batch sizes, the eager results.
 - torch.export (strict and non-strict), saved and loaded in a fresh
-  process, and an AOTInductor package (CPU; and GPU when there is one and
-  Inductor can compile for it) loaded in a fresh process: the eager
-  results, with the index built once per process.
+  process, and an AOTInductor package (CPU; and GPU when there is one:
+  ROCm, or CUDA with a CUDA toolkit for Inductor, else that case is
+  skipped) loaded in a fresh process: the eager results, with the index
+  built once per process.
 - CUDA / ROCm queries: results on the queries' device; model.to("cuda")
   leaves the index in host memory; compiled with mode="reduce-overhead".
 - state_dict: contains the index; loads into another Searcher (native or
@@ -303,6 +304,10 @@ def check_export_and_aoti(torch, st, scann, ops, db, tmp):
   if torch.cuda.is_available():
     devices.append("cuda")
   for device in devices:
+    if device == "cuda" and cuda_toolkit(torch) is None:
+      print("AOTInductor (cuda): not compiled here: no CUDA toolkit (set "
+            "CUDA_HOME; see docs/integrations.md for a pip-installed one)")
+      continue
     m = make_model(torch, s, return_embeddings=True).to(device).eval()
     f = feats.to(device)
     with torch.no_grad():
@@ -310,20 +315,28 @@ def check_export_and_aoti(torch, st, scann, ops, db, tmp):
                  os.path.join(tmp, f"want_aoti_{device}.pt"))
     ep = torch.export.export(m, (f,), dynamic_shapes=dyn)
     pkg = os.path.join(tmp, f"retrieval_aoti_{device}.pt2")
-    try:
-      with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        torch._inductor.aoti_compile_and_package(ep, package_path=pkg)  # pylint: disable=protected-access
-    except Exception as e:  # pylint: disable=broad-except
-      if device == "cpu":
-        raise
-      # CUDA AOTInductor needs a CUDA toolkit (nvcc); ROCm's is part of
-      # the ROCm build of torch.
-      print(f"AOTInductor ({device}): not compiled here: "
-            f"{type(e).__name__}: {str(e).splitlines()[0][:200]}")
-      continue
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore")
+      torch._inductor.aoti_compile_and_package(ep, package_path=pkg)  # pylint: disable=protected-access
     print(f"AOTInductor ({device}):", child("aoti", pkg, tmp, device))
   del ops
+
+
+def cuda_toolkit(torch):
+  """The CUDA toolkit AOTInductor compiles CUDA packages with, or None.
+
+  Inductor compiles the package's C++ against the toolkit's headers
+  (cuda_runtime.h and what it includes): torch.utils.cpp_extension's
+  CUDA_HOME (from $CUDA_HOME or $CUDA_PATH, nvcc on PATH, or
+  /usr/local/cuda). ROCm builds of torch carry their own toolchain.
+  """
+  if getattr(torch.version, "hip", None):
+    return "rocm"
+  from torch.utils import cpp_extension  # pylint: disable=g-import-not-at-top
+  home = cpp_extension.CUDA_HOME
+  if home and os.path.exists(os.path.join(home, "include", "cuda_runtime.h")):
+    return home
+  return None
 
 
 def check_devices(torch, st, scann, db, queries):
