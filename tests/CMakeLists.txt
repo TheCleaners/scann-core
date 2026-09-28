@@ -45,6 +45,32 @@ target_link_libraries(scann_core_mutation_regressions PRIVATE scann::core)
 add_test(NAME mutation_regressions COMMAND scann_core_mutation_regressions)
 set_tests_properties(mutation_regressions PROPERTIES TIMEOUT 900)
 
+# Mutation fuzzer (fuzz/mutfuzz.cc): random adds, updates, deletes, retrains
+# and save/reload on small indexes, checked against a shadow copy with
+# exhaustive searches. Every config for 600 steps here (well under a second
+# each, a few seconds under sanitizers), two tree + AH configs also with
+# injected leaf failures; scripts/fuzz.sh runs longer campaigns.
+add_executable(scann_core_mutfuzz fuzz/mutfuzz.cc)
+target_link_libraries(scann_core_mutfuzz PRIVATE scann::core)
+set(SCANN_MUTFUZZ_CONFIGS
+  bf_l2 bf_dot int8_dot int8_l2 bf16_dot ah_dot ah_noreorder_dot auto_dot
+  autoinc_dot tree_bf_l2 tree_bf_dot tree_int8_l2 tree_bf16_l2 tree_bf16_dot
+  tree_ah_l2 tree_ah_dot tree_ah_noreorder_dot tree_ah_rint8_dot
+  tree_ah_rbf16_dot tree_ah_lut256_dot tree_ah_dpb3_l2 tree_qc_ah_dot
+  tree_pca_ah_dot tree_trunc_ah_dot tree_upper_ah_dot tree_upper2_ah_dot
+  tree_sph_ah_dot tree_sph_bf_l2 tree_sph_bf16_dot tree_incr_ah_dot
+  tree_incr_bf_l2 tree_soar_ah_dot tree_soar_ah_rint8_dot tree_soar_bf_dot
+  tree_soar_bf16_dot tree_soar_int8_dot tree_incr_soar_ah_dot)
+foreach(cfg IN LISTS SCANN_MUTFUZZ_CONFIGS)
+  add_test(NAME mutfuzz_${cfg} COMMAND scann_core_mutfuzz ${cfg} 1 600 4)
+  set_tests_properties(mutfuzz_${cfg} PROPERTIES TIMEOUT 900 LABELS mutfuzz)
+endforeach()
+foreach(cfg tree_ah_dot tree_soar_ah_dot)
+  add_test(NAME mutfuzz_${cfg}_inject COMMAND scann_core_mutfuzz ${cfg} 2 600 4)
+  set_tests_properties(mutfuzz_${cfg}_inject PROPERTIES TIMEOUT 900
+    LABELS mutfuzz ENVIRONMENT INJECT=1)
+endforeach()
+
 # Damaged or inconsistent index directories (generated at run time) fail to
 # load with an error instead of crashing or loading garbage; all-deleted
 # and bfloat16-leaf trees round-trip; SerializeToDirectory replaces an index

@@ -30,6 +30,12 @@ All notable changes to scann-core. Versions follow
   of through `tf.numpy_function`.
 
 ### Added
+- A mutation fuzzer (`tests/fuzz/mutfuzz.cc`): random adds, updates,
+  deletes, retrains and save/reload on 37 index configs, checked against a
+  shadow copy with exhaustive searches that must repeat bit for bit, with
+  optional injected leaf failures. Every config runs as a ctest (label
+  `mutfuzz`, about 1 s in all; also in the CI sanitizer job), and
+  `scripts/fuzz.sh` runs whole campaigns over seeds and modes.
 - `scann.tf.backend()` (`"op"` or `"python"`), `get_backend(name)` (either
   backend's module), `available_backends()`, and the `SCANN_TF_BACKEND`
   environment variable (`auto`, `op`, `python`) to override the choice. An
