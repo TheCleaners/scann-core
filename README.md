@@ -539,11 +539,12 @@ pointing at the wrong vectors.
 
 ## Documentation
 
-* [`docs/tutorial/`](docs/tutorial/README.md): a seven-part, hands-on
+* [`docs/tutorial/`](docs/tutorial/README.md): an eight-part, hands-on
   tutorial on a real million-vector dataset. It covers measuring recall
   and speed, the partition/score/reorder pipeline, tuning, serving,
-  updating, and C++ and Rust. Every number in it comes from running the
-  scripts included with it.
+  updating, C++ and Rust, and searching from PyTorch and TensorFlow
+  models. Every number in it comes from running the scripts included
+  with it.
 * [`docs/benchmarks.md`](docs/benchmarks.md): speed and recall against the
   upstream wheel on x86-64 and aarch64 (Graviton4), and how to reproduce
   them with [`benchmarks/ann_benchmarks.py`](benchmarks/ann_benchmarks.py)

@@ -218,7 +218,5 @@ into the freed slot, so keep your own id mapping. In Rust, `delete` returns
 each point that moved as `(old index, new index)`; in C++, Python's
 `upsert`/`delete` in `scann_ops_pybind.py` are a template for one.
 
-That's the tutorial. For every option in detail, see
-[api_reference.md](../api_reference.md). For more on the ideas behind them,
-see [algorithms.md](../algorithms.md) and the
-[anisotropic quantization explainer](../anisotropic_quantization_explained.md).
+**Next:** the queries usually come from a model.
+[Part 8: PyTorch and TensorFlow](08-pytorch-and-tensorflow.md).

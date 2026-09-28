@@ -88,6 +88,14 @@ All notable changes to scann-core. Versions follow
   Ray Data when installed), run as the ctests
   `example_py_fastapi_service` and `example_py_batch_retrieval` (skipped
   without FastAPI and httpx2, or pyarrow).
+- Tutorial [part 8](docs/tutorial/08-pytorch-and-tensorflow.md), PyTorch
+  and TensorFlow, on GloVe-100 with the part 3 index: `scann.torch`
+  (tensors in and out, a compiled model that encodes and searches, GPU
+  queries, the native backend's `state_dict` and `torch.export`), `scann.tf`
+  (`tf.function` on both backends, a SavedModel with the index inside),
+  per-call overheads against plain `scann_ops_pybind`, and when to use
+  which. Scripts: `docs/tutorial/code/part8_torch.py` and
+  `part8_tensorflow.py`.
 
 ### Fixed
 - The wheels no longer contain Eigen's headers: 0.2.0's installed 681

@@ -2,7 +2,8 @@
 
 A hands-on walk through ScaNN on a real dataset: from exact search to a tuned
 index serving nearly half a million queries per second, then saving it,
-updating it, and running it from C++ and Rust.
+updating it, running it from C++ and Rust, and searching it from PyTorch and
+TensorFlow models.
 
 | Part | You'll learn |
 |---|---|
@@ -13,11 +14,13 @@ updating it, and running it from C++ and Rust.
 | [5. Saving and serving](05-saving-and-serving.md) | Serialization, index size, batching and threads |
 | [6. Updating](06-updating.md) | Inserting, updating and deleting points in a live index |
 | [7. C++ and Rust](07-cpp-and-rust.md) | The same pipeline from C++ and Rust, sharing indexes with Python |
+| [8. PyTorch and TensorFlow](08-pytorch-and-tensorflow.md) | `scann.torch` and `scann.tf`: tensors in and out, a compiled model that encodes and searches, GPU queries, exporting and saving models with the index inside, and when to use them rather than plain Python |
 
 Every number in this tutorial comes from running the scripts in
-[`code/`](code/). There is one script per part, and each part shows its
-script's actual output. They were run on an AMD Threadripper PRO 7975WX
-(32 cores, 64 threads, AVX-512), built with `-march=native` and clang 23.
+[`code/`](code/). There is one script per part (two for part 8), and each
+part shows its script's actual output. They were run on an AMD Threadripper PRO 7975WX
+(32 cores, 64 threads, AVX-512), built with `-march=native` and clang 23;
+part 8's GPU queries ran on an NVIDIA RTX 3060 Ti.
 Your absolute speeds will differ, but the comparisons between
 configurations should hold. [benchmarks.md](../benchmarks.md) has
 comparable numbers for the upstream wheel, and for aarch64 (AWS
