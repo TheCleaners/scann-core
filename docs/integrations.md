@@ -2,8 +2,9 @@
 
 scann-core installs the same `scann` Python module as the upstream
 `scann` wheel, with the same `scann_ops_pybind` API. Libraries written
-against upstream ScaNN work with it unchanged. This page lists the ones
-that have been checked, and what to know when using them.
+against upstream ScaNN work with it unchanged. This page covers inputs
+from other array libraries, the libraries that have been checked, and what
+to know when using them.
 
 TensorFlow has its own page: [tensorflow.md](tensorflow.md).
 
@@ -20,6 +21,48 @@ pip install scann-core      # release candidates: pip install --pre scann-core
 A library that lists `scann` as a requirement will try to install the
 upstream wheel again. Install it with `pip install --no-deps`, or install
 scann-core after it.
+
+## Arrays from PyTorch and other libraries
+
+Every call that takes vectors (`builder`, `create_searcher`, `search`,
+`search_batched`, `search_batched_parallel`, `upsert`) accepts PyTorch
+tensors as well as numpy arrays, and returns the same results for the same
+values:
+
+```python
+import torch
+from scann.scann_ops.py import scann_ops_pybind
+
+embeddings = model.encode(corpus)            # a torch.Tensor, CPU or GPU
+searcher = scann_ops_pybind.builder(embeddings, 10, "dot_product") \
+    .tree(num_leaves=1000, num_leaves_to_search=50) \
+    .score_ah(2, anisotropic_quantization_threshold=0.2) \
+    .reorder(100).build()
+neighbors, distances = searcher.search_batched(model.encode(queries))
+```
+
+* **A float32 tensor in CPU memory is read in place**, without a copy.
+  Other dtypes (float64, float16, bfloat16) are converted to float32, as
+  numpy arrays are.
+* **A tensor on a GPU is copied to host memory first.** ScaNN runs on the
+  CPU, so the copy is unavoidable; it costs one device-to-host transfer per
+  call. Keep queries on the CPU if they are there already.
+* **A tensor that requires grad is detached.** Searching doesn't
+  participate in autograd; the results are plain numpy arrays (or docids),
+  not tensors.
+
+Upstream's Python layer passes vectors to the pybind module as given, so
+there CPU float tensors work but bfloat16 tensors, tensors that require
+grad and GPU tensors fail with a pybind "incompatible function arguments"
+error.
+
+The conversion only uses the tensor's attributes (`requires_grad`,
+`device`, `cpu()`, `float()`) and numpy's array protocol, so it doesn't
+import PyTorch. Arrays from other libraries that numpy can read work the
+same way, for example JAX and TensorFlow CPU arrays; only PyTorch is tested
+(`python_torch_input`, with CUDA tensors when a GPU is present).
+
+For searching inside TensorFlow graphs, see [tensorflow.md](tensorflow.md).
 
 ## LangChain
 

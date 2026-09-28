@@ -102,6 +102,11 @@ the first release on crates.io (rc.1 was published to PyPI only).
   index past that are rejected too (Python and Rust).
 
 ### Added
+- Python: vectors can be PyTorch tensors (and other arrays numpy can read)
+  everywhere: a float32 CPU tensor without a copy; a GPU tensor copied to
+  host memory; a tensor that requires grad detached; bfloat16 converted.
+  Upstream rejected the last three with a pybind signature error. New
+  test: `python_torch_input`.
 - `docs/integrations.md`: scann-core as a drop-in for the `scann` wheel.
   LangChain's ScaNN vector store works unchanged (checked against the
   upstream wheel; the new `python_langchain` test runs it in CI).

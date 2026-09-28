@@ -31,7 +31,8 @@
 # tensorflow-cpu, so that python_tf runs (and must not skip) there; it is
 # skipped on the others. Empty to install TensorFlow nowhere.
 # LANGCHAIN_PYTHON_VERSIONS (default: 3.12): likewise for langchain-community
-# and python_langchain.
+# and python_langchain; TORCH_PYTHON_VERSIONS (default: 3.12) for PyTorch
+# (the CPU build) and python_torch_input.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -40,6 +41,7 @@ BUILD_DIR="${BUILD_DIR:-build-pyversions}"
 PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t}"
 TF_PYTHON_VERSIONS="${TF_PYTHON_VERSIONS-3.12}"
 LANGCHAIN_PYTHON_VERSIONS="${LANGCHAIN_PYTHON_VERSIONS-3.12}"
+TORCH_PYTHON_VERSIONS="${TORCH_PYTHON_VERSIONS-3.12}"
 command -v uv >/dev/null || { echo "scripts/python-versions.sh needs uv" >&2; exit 1; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -59,6 +61,12 @@ for v in $PYTHON_VERSIONS; do
     VIRTUAL_ENV="$WORK/$v" uv pip install -q langchain-community
     require_langchain=1
   fi
+  require_torch=
+  if [[ " $TORCH_PYTHON_VERSIONS " == *" $v "* ]]; then
+    VIRTUAL_ENV="$WORK/$v" uv pip install -q torch \
+      --index-url https://download.pytorch.org/whl/cpu
+    require_torch=1
+  fi
   py="$WORK/$v/bin/python"
   "$py" -c 'import sys, sysconfig; print(sys.version, "(free-threaded)" if sysconfig.get_config_var("Py_GIL_DISABLED") else "")'
   # -U drops the previous interpreter's cached FindPython results.
@@ -67,6 +75,7 @@ for v in $PYTHON_VERSIONS; do
     -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF >/dev/null
   cmake --build "$BUILD_DIR"
   if SCANN_TEST_REQUIRE_TF=$require_tf SCANN_TEST_REQUIRE_LANGCHAIN=$require_langchain \
+     SCANN_TEST_REQUIRE_TORCH=$require_torch \
      ctest --test-dir "$BUILD_DIR" -R '^(python_|config_builder|example_py_)' --output-on-failure; then
     passed+=("$v")
   else

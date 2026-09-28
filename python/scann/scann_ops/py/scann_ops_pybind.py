@@ -40,6 +40,29 @@ def _open(path, mode):
   return open(path, mode)
 
 
+def _host_array(x):
+  """scann-core: an array from any library as something numpy can read.
+
+  numpy arrays pass through. Anything else goes through np.asarray, which
+  reads CPU tensors (PyTorch, JAX, TensorFlow) through the array protocol
+  without a copy. First, a tensor that requires grad is detached, one on a
+  GPU (or other device) is copied to host memory, and a dtype numpy lacks
+  (bfloat16) is converted to float32. Duck-typed: nothing is imported.
+  """
+  if isinstance(x, np.ndarray):
+    return x
+  if getattr(x, "requires_grad", False) and hasattr(x, "detach"):
+    x = x.detach()
+  if getattr(getattr(x, "device", None), "type", "cpu") != "cpu" and hasattr(
+      x, "cpu"):
+    x = x.cpu()
+  try:
+    return np.asarray(x)
+  except TypeError:
+    if hasattr(x, "float"):  # e.g. torch.bfloat16, which numpy lacks
+      return np.asarray(x.float())
+    raise
+
 class _ReadWriteLock:
   """Many readers or one writer; waiting writers go first. Not reentrant.
 
@@ -130,6 +153,7 @@ class ScannSearcher(object):
       leaves_to_search=-1,
   ):
     """Single-query search; -1 for a param uses the searcher's default value."""
+    q = _host_array(q)
     with self._reading_docids():
       idx, dist = self.searcher.search(q, final_num_neighbors,
                                        pre_reorder_num_neighbors,
@@ -149,6 +173,7 @@ class ScannSearcher(object):
     pre_nn = (-1 if pre_reorder_num_neighbors is None else
               pre_reorder_num_neighbors)
     leaves = -1 if leaves_to_search is None else leaves_to_search
+    queries = _host_array(queries)
     with self._reading_docids():
       idx, dist = self.searcher.search_batched(
           queries,
@@ -174,6 +199,7 @@ class ScannSearcher(object):
     pre_nn = (-1 if pre_reorder_num_neighbors is None else
               pre_reorder_num_neighbors)
     leaves = -1 if leaves_to_search is None else leaves_to_search
+    queries = _host_array(queries)
     with self._reading_docids():
       idx, dist = self.searcher.search_batched(queries, final_nn, pre_nn,
                                                leaves, True, batch_size)
@@ -199,8 +225,7 @@ class ScannSearcher(object):
     """Insert or update datapoints into the searcher."""
     if not isinstance(docids, list):
       docids = [docids]
-    if not isinstance(database, np.ndarray):
-      database = np.array(database)
+    database = _host_array(database)
     if database.ndim == 1:
       database = np.expand_dims(database, 0)
     if len(docids) != database.shape[0]:
@@ -285,6 +310,7 @@ class ScannSearcher(object):
 
 def builder(db, num_neighbors, distance_measure):
   """pybind analogue of builder() in scann_ops.py; see docstring there."""
+  db = _host_array(db)
 
   class ScannBuilder(scann_builder.ScannBuilder):
 
@@ -309,6 +335,7 @@ def create_searcher(db,
                     docids=None,
                     **unused_kwargs):
   """Creates a searcher object wrapping a ScannNumpy object."""
+  db = _host_array(db)
   if docids is not None:
     if len(docids) != db.shape[0]:
       raise ValueError(

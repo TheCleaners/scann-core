@@ -251,6 +251,9 @@ isn't a one-line change:
       listed twice (upstream added a new one twice but mapped it once,
       leaving a duplicate in docids). ScannSearcher keeps a copy of the
       docids list it is given (upstream mutated the caller's list).
+      Vectors from other array libraries go through _host_array(): tensors
+      that require grad are detached, GPU tensors copied to host memory,
+      bfloat16 converted to float32 (upstream: a pybind TypeError).
       serialize() passes the pickled docids to the C++ serialize, which
       commits them with the index (upstream wrote scann_docids.pkl
       afterwards, and left a stale one when the index had no docids);

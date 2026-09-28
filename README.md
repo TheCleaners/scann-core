@@ -386,6 +386,7 @@ runs everything that needs nothing beyond the build:
 | `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
 | `python_tf` | `scann.tf` returns exactly the pybind searcher's results as int32/float32 tensors, eagerly and in `tf.function` (unknown batch size, static shapes), from `tf.data` maps and concurrent threads; docids, padding, `serialize_to_module()` raising; `import scann` doesn't import TensorFlow. Skipped without TensorFlow |
 | `python_langchain` | LangChain's ScaNN vector store on scann-core: results equal an exact search for both distance strategies, `normalize_L2` and a tree + AH config; filters; save/load and re-saving into the same folder. Skipped without langchain-community |
+| `python_torch_input` | PyTorch tensors at every entry point give the same results as numpy arrays: float32/64/16 and bfloat16, non-contiguous views, tensors that require grad, zero rows, CUDA tensors when a GPU is present; no copy for float32 CPU tensors. Skipped without PyTorch |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 | `example_py_quickstart`, `example_py_updating`, `example_py_serving_threads` | the Python [examples](#examples): recall above 0.9, identical results after reloading, every inserted or updated point found under its docid, a repeated upsert docid rejected, concurrent `search()` calls agreeing with a batched search |
 | `example_py_tensorflow_wrapper`, `example_py_tensorflow_serving` | the TensorFlow examples: `scann.tf` results equal the pybind searcher's; the SavedModel + index service returns docids with recall above 0.9. Skipped without TensorFlow |
@@ -395,14 +396,14 @@ runs everything that needs nothing beyond the build:
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
 `python_tf` and the two TensorFlow examples also need TensorFlow, and
-`python_langchain` needs langchain-community; ctest reports them as skipped
-without it.
+`python_langchain` needs langchain-community and `python_torch_input`
+PyTorch; ctest reports them as skipped without those.
 [`scripts/python-versions.sh`](scripts/python-versions.sh) runs them (and the
 Python examples) on
 every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
 with interpreters from [uv](https://docs.astral.sh/uv/), and installs
-`tensorflow-cpu` and langchain-community for 3.12 so that `python_tf` and
-`python_langchain` run there. It compiles the
+`tensorflow-cpu`, langchain-community and PyTorch (CPU) for 3.12 so that
+those tests run there. It compiles the
 C++ library once and rebuilds only the Python module for each version.
 
 The comparison against the upstream wheel is separate, since it needs that
@@ -504,7 +505,8 @@ pointing at the wrong vectors.
   TensorFlow code (`scann.tf`), serving retrieval next to a TensorFlow
   model, and why there is no TensorFlow op.
 * [`docs/integrations.md`](docs/integrations.md): installing scann-core in
-  place of the `scann` wheel, and libraries that use it (LangChain).
+  place of the `scann` wheel, PyTorch tensors as inputs, and libraries
+  that use it (LangChain).
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
   hashing, anisotropic quantization, reordering.
 * [`docs/anisotropic_quantization_explained.md`](docs/anisotropic_quantization_explained.md):

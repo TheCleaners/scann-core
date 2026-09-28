@@ -357,6 +357,11 @@ resulting config supports incremental updates (`NONE` / `ONLINE` /
 
 ## `ScannSearcher` runtime API
 
+Vectors (queries here, the dataset for `builder`/`create_searcher`, new
+points for `upsert`) can be numpy arrays or anything numpy can read,
+including PyTorch tensors on the CPU or a GPU; see
+[integrations.md](integrations.md#arrays-from-pytorch-and-other-libraries).
+
 ### Searching
 
 - **`search(q, final_num_neighbors=-1, pre_reorder_num_neighbors=-1,

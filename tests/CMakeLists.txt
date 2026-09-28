@@ -126,6 +126,8 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   set_tests_properties(python_tf PROPERTIES SKIP_RETURN_CODE 77)
   scann_add_python_test(python_langchain python/test_langchain.py)
   set_tests_properties(python_langchain PROPERTIES SKIP_RETURN_CODE 77)
+  scann_add_python_test(python_torch_input python/test_torch_input.py)
+  set_tests_properties(python_torch_input PROPERTIES SKIP_RETURN_CODE 77)
 
   # The Python examples assert their results, so they run as tests too.
   # The TensorFlow ones exit with 77 (skipped) without TensorFlow.
