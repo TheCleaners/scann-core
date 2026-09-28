@@ -1,0 +1,7 @@
+/* The PyTorch op library exports nothing: PyTorch finds the ops and
+   kernels through the registrations its static initializers make, and
+   everything else (scann-core, abseil, protobuf, ...) must stay private so
+   it can't clash with PyTorch's (or anyone's) copies. See CMakeLists.txt. */
+{
+  local: *;
+};

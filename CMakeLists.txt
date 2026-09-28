@@ -103,6 +103,11 @@ option(SCANN_BUILD_EXAMPLES "Build the C++ examples" ${PROJECT_IS_TOP_LEVEL})
 # Off by default, and not part of the wheel: built against the TensorFlow
 # installed in Python_EXECUTABLE (see tf_op/CMakeLists.txt, docs/tensorflow.md).
 option(SCANN_BUILD_TF_OP "Build the TensorFlow custom op and the scann_tf_ops package (Linux; needs TensorFlow)" OFF)
+# Off by default: the native PyTorch op and the scann_torch_ops package, the
+# scann-core-torch wheel (see torch_op/CMakeLists.txt, docs/integrations.md).
+# Built against the headers of the torch in SCANN_TORCH_PYTHON (default
+# Python_EXECUTABLE), for any torch >= 2.10.
+option(SCANN_BUILD_TORCH_OP "Build the native PyTorch op and the scann_torch_ops package (Linux; needs torch >= 2.10 headers)" OFF)
 option(SCANN_USE_SYSTEM_DEPS
   "Try find_package() for each dependency before fetching it (versions are still required to match the pins exactly)" OFF)
 option(SCANN_RUST_BUILD_ENV_ONLY
@@ -293,6 +298,10 @@ endif()
 
 if(SCANN_BUILD_TF_OP)
   add_subdirectory(tf_op)
+endif()
+
+if(SCANN_BUILD_TORCH_OP)
+  add_subdirectory(torch_op)
 endif()
 
 if(SCANN_BUILD_RUST_BINDINGS OR SCANN_RUST_BUILD_ENV_ONLY)
