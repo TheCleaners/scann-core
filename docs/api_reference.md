@@ -11,10 +11,12 @@ companion to that page's "why."
 Everything here reflects the code in this repository. scann-core's Python
 package exposes the same `scann.scann_ops_pybind` API as the upstream
 wheel; upstream's TensorFlow-op variant (`scann.scann_ops`) is not part of
-the wheel. `scann.tf` wraps this API for TensorFlow code (same builder,
-searches returning tensors), and `scann_tf_ops`, built from source with
-`-DSCANN_BUILD_TF_OP=ON`, provides upstream's op API with an op that can be
-saved in SavedModels; see [docs/tensorflow.md](tensorflow.md).
+the wheel. `scann.tf` provides upstream's `scann_ops` API for TensorFlow
+code instead (the same builder, searches returning tensors): from the
+wheel through `tf.numpy_function`, and with scann-core's TensorFlow op,
+whose searchers can be saved in SavedModels, when that is built from
+source with `-DSCANN_BUILD_TF_OP=ON`; see
+[docs/tensorflow.md](tensorflow.md#backends).
 `scann.torch` wraps it as a `torch.nn.Module` whose searches return
 tensors and compile with `torch.compile`; see
 [integrations.md](integrations.md#scanntorch-searching-from-pytorch-models).

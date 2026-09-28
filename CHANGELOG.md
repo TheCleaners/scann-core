@@ -5,6 +5,50 @@ All notable changes to scann-core. Versions follow
 
 ## Unreleased
 
+### Changed
+- `scann.tf` and `scann_tf_ops` are one API with two backends. `import
+  scann.tf` uses scann-core's TensorFlow op when `scann_tf_ops` is
+  importable (built from source with `-DSCANN_BUILD_TF_OP=ON`), so its
+  searchers save in SavedModels (`serialize_to_module()`,
+  `searcher_from_module()`), and the `tf.numpy_function` wrapper otherwise
+  (the wheel), whose `serialize_to_module()` still raises, now saying how
+  to get the op. Results are identical between the backends (dtypes,
+  shapes, padding, static shapes; tested call for call). `scann_tf_ops`
+  still imports directly: it is the op backend's module. See
+  [docs/tensorflow.md](docs/tensorflow.md#backends).
+- Search errors from `scann.tf` are `tf.errors.InvalidArgumentError` with
+  both backends, eagerly and in graphs, as with upstream's op. The Python
+  backend raised the pybind searcher's `ValueError` or `RuntimeError`
+  eagerly, and `InvalidArgumentError` or `UnknownError` in graphs.
+- The two backends' signatures are aligned on upstream's:
+  `create_searcher(db, config, training_threads=0, container="",
+  shared_name=None, docids=None)` (the Python backend took `docids` as the
+  fourth positional argument) and `load_searcher(dir,
+  assets_backcompat_shim=True, shared_name=None)` (the op's second
+  positional argument was `shared_name`; a string there still is).
+  Eagerly, the Python backend calls the pybind searcher directly instead
+  of through `tf.numpy_function`.
+
+### Added
+- `scann.tf.backend()` (`"op"` or `"python"`), `get_backend(name)` (either
+  backend's module), `available_backends()`, and the `SCANN_TF_BACKEND`
+  environment variable (`auto`, `op`, `python`) to override the choice. An
+  op that is installed but fails to import falls back to the Python
+  backend with a `RuntimeWarning`.
+- Both backends have `from_pybind()`, `to_pybind()` and
+  `ScannSearcher(pybind_searcher)`; the op backend's `load_searcher()`
+  loads directories without a manifest (the backcompat shim) and reports
+  a missing directory as the pybind loader does.
+- Tests: `python_tf` runs against both backends (the op one when built)
+  and checks that they agree, backend selection, and a SavedModel saved
+  through `scann.tf` reloaded in a fresh process; with the op built,
+  `python_tf_without_op` (the op hidden) and
+  `example_py_tensorflow_wrapper_python`.
+
+### Fixed
+- The `tensorflow_serving` example's recall check failed now and then:
+  its query tower's weights were unseeded.
+
 ### Build and packaging
 - CI: ccache works for every build job. The FetchContent example and
   `pip install .` builds use fixed directories (they used random ones, so
@@ -17,6 +61,9 @@ All notable changes to scann-core. Versions follow
 - `api_exercise_avx2` and `artifact_loading_avx2` are registered only on
   x86-64 (elsewhere they repeated the plain tests), and cross-aarch64 runs
   each emulated CPU's tests in parallel.
+- CI's `tf-op` job runs every TensorFlow test and example, with
+  `SCANN_TF_BACKEND=op` so that an op that fails to load is an error
+  rather than a fallback to the Python backend.
 
 ## 0.2.0 (2026-09-27)
 
@@ -136,7 +183,7 @@ rest of 0.2.0. There was no 0.2.0-rc.2 release.
   loaded by TensorFlow Serving's stock model server. Tests
   `python_tf_ops`, `tf_op_symbols`, example
   [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py),
-  a CI job, and [docs/tensorflow.md](docs/tensorflow.md#the-tensorflow-op-scann_tf_ops-build-from-source).
+  a CI job, and [docs/tensorflow.md](docs/tensorflow.md#the-op-backend-scann_tf_ops-build-from-source).
 - `scann.torch`: the searcher as a `torch.nn.Module` (`builder()`,
   `create_searcher()`, `load_searcher()`, `Searcher.from_pybind()`), whose
   `search`/`search_batched`/`search_batched_parallel` take query tensors on
