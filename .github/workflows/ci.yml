@@ -21,6 +21,8 @@ permissions:
 env:
   CMAKE_C_COMPILER_LAUNCHER: ccache
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
+  # Paths under the checkout are hashed relative to it.
+  CCACHE_BASEDIR: ${{ github.workspace }}
 
 jobs:
   # Build, every test (C++, Python, Rust), the FetchContent consumer example,
@@ -118,13 +120,28 @@ jobs:
   # select different kernels (Neon only, dot product, SVE at 128-2048 bits,
   # SVE2). The native aarch64 job above only sees the runner's own CPU.
   # Slow (emulation), so not on every pull request.
+  # The build runs in a container, so ccache's directory is mounted into it
+  # and its settings are passed explicitly (docker run doesn't inherit env).
   cross-aarch64:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: ~/.ccache-cross
+          key: ccache-cross-aarch64-${{ github.sha }}
+          restore-keys: ccache-cross-aarch64-
       - name: scripts/cross-aarch64.sh (in ubuntu:26.04)
-        run: docker run --rm -v "$PWD:/src" -w /src ubuntu:26.04 scripts/cross-aarch64.sh
+        run: |
+          mkdir -p ~/.ccache-cross
+          docker run --rm -v "$PWD:/src" -w /src -v ~/.ccache-cross:/ccache \
+            -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=2G \
+            -e CMAKE_C_COMPILER_LAUNCHER=ccache -e CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            ubuntu:26.04 scripts/cross-aarch64.sh
+      - name: Let the cache step read the container's files
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" ~/.ccache-cross
 
   # The API exercise under AddressSanitizer + UndefinedBehaviorSanitizer and
   # ThreadSanitizer (dependencies instrumented too).

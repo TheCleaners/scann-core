@@ -24,6 +24,9 @@
 #     scripts/cross-aarch64.sh
 #
 # Environment: CLANG_VERSION (default 19), BUILD_DIR (default build-aarch64).
+# With CMAKE_C_COMPILER_LAUNCHER/CMAKE_CXX_COMPILER_LAUNCHER=ccache (and
+# CCACHE_DIR pointing at a mounted directory), the build goes through ccache,
+# which is installed along with the toolchain; CI does this.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CLANG_VERSION="${CLANG_VERSION:-19}"
@@ -34,7 +37,8 @@ if [ "$(id -u)" = 0 ] && command -v apt-get >/dev/null; then
   echo 'Acquire::Retries "10"; Acquire::http::Timeout "60";' > /etc/apt/apt.conf.d/80retries
   apt-get update -qq >/dev/null
   apt-get install -y -qq "clang-$CLANG_VERSION" "lld-$CLANG_VERSION" \
-    g++-aarch64-linux-gnu qemu-user cmake ninja-build git ca-certificates file >/dev/null
+    g++-aarch64-linux-gnu qemu-user cmake ninja-build git ca-certificates file \
+    ccache >/dev/null
 fi
 
 echo "::group::configure + build (aarch64, clang-$CLANG_VERSION)"
@@ -44,6 +48,7 @@ SCANN_CLANG_SUFFIX="-$CLANG_VERSION" cmake -S . -B "$BUILD_DIR" -G Ninja \
   -DSCANN_BUILD_SHARED=OFF ${SCANN_CMAKE_ARGS:-}
 cmake --build "$BUILD_DIR"
 file "$BUILD_DIR/tests/scann_core_api_exercise" | cut -d, -f1-2
+if [ "${CMAKE_CXX_COMPILER_LAUNCHER:-}" = ccache ]; then ccache --show-stats; fi
 echo "::endgroup::"
 
 # QEMU_CPU selects the emulated CPU, and with it the kernels ScaNN's runtime

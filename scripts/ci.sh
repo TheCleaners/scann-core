@@ -26,7 +26,11 @@ cd "$(dirname "$0")/.."
 
 export CC="${CC:-clang}" CXX="${CXX:-clang++}"
 BUILD_DIR="${BUILD_DIR:-build-ci}"
-WORK="$(mktemp -d)"
+# A fixed path (not mktemp) so that the example and `pip install .` builds
+# compile with the same paths every run, and ccache can reuse them.
+WORK="$PWD/$BUILD_DIR/ci-work"
+rm -rf "$WORK"
+mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "::group::toolchain"
@@ -63,7 +67,7 @@ echo "::endgroup::"
 
 echo "::group::pip install ."
 python3 -m venv "$WORK/pip"
-"$WORK/pip/bin/pip" install --quiet .
+SKBUILD_BUILD_DIR="$WORK/pip-build" "$WORK/pip/bin/pip" install --quiet .
 (cd "$WORK" && "$WORK/pip/bin/python" -c '
 import numpy as np, scann
 db = np.random.default_rng(0).standard_normal((2000, 16)).astype(np.float32)
