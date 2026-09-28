@@ -1,15 +1,19 @@
 # scann-core
 
 [ScaNN](https://github.com/google-research/google-research/tree/master/scann)'s
-nearest-neighbour search core without TensorFlow, as a CMake project with
-C++, Python and Rust APIs:
+nearest-neighbour search core as a standalone CMake project with C++,
+Python and Rust APIs. It doesn't need TensorFlow to build or run; using it
+from TensorFlow or PyTorch is optional (see
+[docs/tensorflow.md](docs/tensorflow.md) and
+[docs/integrations.md](docs/integrations.md)).
 
 * **C++**: `libscann_core` (static and/or shared), with ScaNN's pybind-free
   facade `research_scann::ScannInterface` and a C++ port of Python's
   `ScannBuilder` (`scann_core::ConfigBuilder`).
 * **Python**: the same `scann_pybind` module and `scann.scann_ops_pybind` API
   as the upstream wheel, from upstream's Python sources (with one bug fix, see
-  NOTICE); `scann/__init__.py` doesn't import the TensorFlow op.
+  NOTICE). `import scann` doesn't import TensorFlow; `scann.tf` and
+  `scann.torch` are optional wrappers for TensorFlow and PyTorch code.
 * **Rust**: the `scann-core` crate, a safe API over the C++ library via
   [cxx](https://cxx.rs).
 
@@ -490,8 +494,8 @@ pointing at the wrong vectors.
 
 ## Intentional differences from upstream
 
-* No TensorFlow op (`scann.scann_ops`) in the wheel; `scann/__init__.py`
-  doesn't import TensorFlow. `scann.tf` offers the op's Python API without
+* TensorFlow is optional: the wheel has no TensorFlow op (upstream's
+  `scann.scann_ops`), and `import scann` doesn't import TensorFlow. `scann.tf` offers the op's Python API without
   the op, and can't be saved in a SavedModel. An op built on TensorFlow's
   C API, with upstream's `scann_ops` API as the `scann_tf_ops` package, can
   be built from source against one TensorFlow (`-DSCANN_BUILD_TF_OP=ON`;

@@ -17,7 +17,7 @@
 # scann-core (a derived work of ScaNN, not an official Google product);
 # see NOTICE.
 
-"""TensorFlow wrapper around scann-core's searcher (no TensorFlow op).
+"""TensorFlow wrapper around scann-core's searcher (no op; see scann_tf_ops).
 
 Adapted from upstream's scann/scann_ops/py/scann_ops.py, with the same
 builder() / create_searcher() / ScannSearcher.search*() API, but backed by
@@ -62,10 +62,12 @@ BatchedSearchResult = collections.namedtuple("ScannSearchBatched",
                                              ["indices", "distances"])
 
 _NO_SAVEDMODEL = (
-    "{} is not supported by scann-core: it has no TensorFlow op, and the "
-    "tf.numpy_function that scann.tf uses can't be saved in a SavedModel. "
-    "Save the index with serialize() and load it with load_searcher() next "
-    "to the model instead; see docs/tensorflow.md in scann-core.")
+    "{} is not supported by scann.tf: the tf.numpy_function it searches "
+    "through can't be saved in a SavedModel. Either save the index with "
+    "serialize() and load it with load_searcher() next to the model, or "
+    "build scann-core's optional TensorFlow op (scann_tf_ops, "
+    "-DSCANN_BUILD_TF_OP=ON), whose searchers save in SavedModels; see "
+    "docs/tensorflow.md in scann-core.")
 
 _INT32_MAX = np.iinfo(np.int32).max
 

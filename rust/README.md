@@ -3,7 +3,7 @@
 Rust bindings for [scann-core](https://github.com/TheCleaners/scann-core):
 the nearest-neighbour search core of Google's
 [ScaNN](https://github.com/google-research/google-research/tree/master/scann),
-without TensorFlow.
+as a standalone library.
 
 > scann-core is a derived work of ScaNN. It is not an official Google product
 > and is not affiliated with or endorsed by Google.
