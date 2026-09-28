@@ -209,6 +209,16 @@ jobs:
           rustup toolchain install "$msrv" --profile minimal
           cargo +"$msrv" check --all-targets --locked
 
+  # One wheel per architecture on pushes to main, through the release's own
+  # wheel workflow: checks the wheel build between releases, and saves the
+  # ccache (on main) that release tags restore.
+  wheel-cache:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/wheels.yml
+    with:
+      build: "cp312-*"
+      upload: false
+
   # The crate as published: `cargo package` builds the packaged sources on
   # their own, C++ library included, as a crates.io user would. Catches files
   # missing from Cargo.toml's include list before a release, and fills the

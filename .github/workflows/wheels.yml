@@ -1,0 +1,83 @@
+# Copyright 2026 Elias Benali (@ebenali) and TheCleaners.
+# SPDX-License-Identifier: Apache-2.0
+
+# Linux wheels with cibuildwheel (manylinux, x86_64 and aarch64), called by
+# release.yml (every wheel) and ci.yml (one wheel per architecture on pushes
+# to main). The ccache these builds save on main is what release tags
+# restore: a tag's run can read caches from the default branch, not from
+# another tag. Keeping one definition keeps the compiler command lines, and
+# so the cache hits, identical between the two.
+name: wheels
+
+on:
+  workflow_call:
+    inputs:
+      build:
+        description: cibuildwheel CIBW_BUILD selector
+        type: string
+        default: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315-* cp315t-*"
+      upload:
+        description: upload the wheels as artifacts (wheels-<arch>)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: wheels / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      # Every wheel builds the whole C++ library, and the objects are the same
+      # for every Python version (only the pybind module differs): ccache
+      # makes the first wheel pay for them. The cache lives on the runner
+      # (cibuildwheel mounts the host at /host in its container) and is kept
+      # between releases.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-wheels-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: ccache-wheels-${{ matrix.arch }}-
+      - uses: pypa/cibuildwheel@v4.2.1
+        env:
+          # cp314t/cp315t: free-threaded CPython (the module declares it
+          # doesn't need the GIL). 3.15 is covered from its release candidates
+          # on, since the ABI is final by then.
+          CIBW_BUILD: ${{ inputs.build }}
+          CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+          CIBW_SKIP: "*-musllinux_*"
+          # AlmaLinux 9 packages clang >= 19 (the compiler the equivalence
+          # checks against upstream use).
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
+          CIBW_BEFORE_ALL_LINUX: dnf install -y clang ccache
+          # Per-wheel build directories at the same depth under /project, with
+          # ccache's base_dir there, make the compiler command lines identical
+          # across Python versions, so the C++ objects hit the cache.
+          CIBW_ENVIRONMENT_LINUX: >-
+            CC=clang CXX=clang++
+            CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+            CCACHE_DIR=/host/home/runner/.ccache CCACHE_BASEDIR=/project
+            CCACHE_MAXSIZE=2G SKBUILD_BUILD_DIR=build/{wheel_tag}
+          CIBW_BEFORE_BUILD_LINUX: ccache --show-stats
+          # The concurrency stress test also checks that free-threaded builds
+          # keep the GIL disabled after importing scann.
+          CIBW_TEST_SOURCES: tests/python
+          CIBW_TEST_COMMAND: >-
+            python -c "import numpy as np, scann;
+            db = np.random.default_rng(0).standard_normal((2000, 16)).astype(np.float32);
+            s = scann.scann_ops_pybind.builder(db, 5, 'squared_l2').tree(20, 5).score_ah(2).reorder(50).build();
+            assert s.search(db[3])[0][0] == 3; print(scann.__version__)" &&
+            python tests/python/test_concurrency.py
+      - uses: actions/upload-artifact@v7
+        if: inputs.upload
+        with:
+          name: wheels-${{ matrix.arch }}
+          path: wheelhouse/*.whl

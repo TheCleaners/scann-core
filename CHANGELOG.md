@@ -3,6 +3,21 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
+## Unreleased
+
+### Build and packaging
+- CI: ccache works for every build job. The FetchContent example and
+  `pip install .` builds use fixed directories (they used random ones, so
+  about half of each job's compiles missed); the cross-aarch64 job, which
+  builds in a container, uses ccache at all.
+- The wheel build is a reusable workflow (`.github/workflows/wheels.yml`).
+  CI builds one wheel per architecture on pushes to main, which checks the
+  wheel build between releases and saves the ccache that release tags
+  restore (a tag's run can't read another tag's caches).
+- `api_exercise_avx2` and `artifact_loading_avx2` are registered only on
+  x86-64 (elsewhere they repeated the plain tests), and cross-aarch64 runs
+  each emulated CPU's tests in parallel.
+
 ## 0.2.0 (2026-09-27)
 
 Changes since 0.2.0-rc.1: fixes for the rest of the audit findings
