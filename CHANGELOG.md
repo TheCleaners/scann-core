@@ -3,13 +3,14 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## 0.2.0-rc.2 (2026-09-27)
+## 0.2.0 (2026-09-27)
 
-Second release candidate: fixes for the rest of the audit findings
+Changes since 0.2.0-rc.1: fixes for the rest of the audit findings
 (loading and saving indexes, config values, mutation), TensorFlow
-(`scann.tf`, and an optional op built from source), PyTorch tensors as
-inputs, examples, and the first release on crates.io (rc.1 was published
-to PyPI only).
+(`scann.tf`, and an optional op built from source), PyTorch (`scann.torch`,
+and tensors as inputs everywhere), examples, and the first release on
+crates.io (rc.1 was published to PyPI only). See 0.2.0-rc.1 below for the
+rest of 0.2.0. There was no 0.2.0-rc.2 release.
 
 ### Changed
 - Spherical partitioning (`tree(spherical=True)`) stores unit vectors: the
