@@ -43,15 +43,26 @@ defined = run(nm, "-D", "--defined-only", so).split("\n")
 defined = [l for l in defined if l.strip()]
 assert not defined, "exported symbols:\n" + "\n".join(defined[:50])
 
+# (type, mangled name) of every undefined symbol.
 undefined = [
-    l.split()[-1] for l in run(nm, "-D", "-C", "--undefined-only", so).split(
-        "\n") if l.strip()
+    tuple(l.split()[-2:])
+    for l in run(nm, "-D", "--undefined-only", so).split("\n")
+    if l.strip()
 ]
-tf_c = [s for s in undefined if s.startswith("TF_")]
+tf_c = [n for _, n in undefined if n.startswith("TF_")]
 assert tf_c, "no TF_* imports: is this the op library?"
-forbidden = re.compile(r"\b(tensorflow|tsl|xla|absl|google|Eigen|"
-                       r"research_scann|scann_core)::")
-bad = [s for s in undefined if forbidden.search(s)]
+# Namespaces as they appear in mangled names (length-prefixed).
+forbidden = re.compile(r"(?<![0-9])(10tensorflow|3tsl|3xla|4absl|6google|"
+                       r"5Eigen|14research_scann|10scann_core)")
+# GCC references the TLS init function (_ZTH) of an extern thread_local
+# (abseil's cordz_next_sample) weakly; the variable itself is defined
+# locally, and without a dynamic initializer the reference stays null.
+# (The name carries abseil's inline namespace, so it can't bind to
+# TensorFlow's abseil either.)
+bad = [
+    n for t, n in undefined
+    if forbidden.search(n) and not (t in "wv" and n.startswith("_ZTH"))
+]
 assert not bad, "imports C++ symbols it must define itself:\n" + "\n".join(
     bad[:50])
 
@@ -61,5 +72,5 @@ assert "libtensorflow_framework.so.2" in needed, needed
 assert not [n for n in needed if "tensorflow_cc" in n], needed
 assert "RPATH" not in dynamic and "RUNPATH" not in dynamic, dynamic
 print(f"OK: 0 exported symbols; imports {len(tf_c)} TF_* C functions and "
-      f"{len(undefined) - len(tf_c)} C/C++ runtime symbols; NEEDED "
+      f"{len(undefined) - len(tf_c)} other symbols (C/C++ runtime); NEEDED "
       f"{', '.join(needed)}; no rpath")

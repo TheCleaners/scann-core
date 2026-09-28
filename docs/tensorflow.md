@@ -207,11 +207,12 @@ TensorFlow version installed where you build it. What it adds over
   `serialize_to_module()` and `searcher_from_module()`, so migrating is an
   import change.
 
-Verified with TensorFlow 2.21.0 only (Python 3.12, x86-64 Linux): built
-against the `tensorflow-cpu` 2.21.0 wheel, the same library also loads and
-passes its tests in the CUDA-built `tensorflow` 2.21.0 wheel. Other
-TensorFlow versions are untested; build the op against the version you
-run.
+Verified with TensorFlow 2.21.0 only (Python 3.12, x86-64 Linux; built
+with clang and with GCC): built against the `tensorflow-cpu` 2.21.0 wheel,
+the same library also loads and passes its tests in the CUDA-built
+`tensorflow` 2.21.0 wheel, also with a GPU in use (`tensorflow[and-cuda]`,
+one NVIDIA GPU). Other TensorFlow versions are untested; build the op
+against the version you run.
 
 ### Building it
 
@@ -380,8 +381,10 @@ is freed with the searcher).
   registered 'ScannCoreSearchBatched'`. The SavedModel only loads where the
   op library is built for that TensorFlow.
 * **CPU only, no XLA.** The op has a CPU kernel only; in a GPU TensorFlow
-  it runs on the host and queries are copied there. It can't be compiled
-  with `jit_compile=True`.
+  it is placed on the host and queries computed on the GPU are copied
+  there (checked with a GPU: the query tower's ops ran on the GPU, the
+  search on the CPU, results unchanged). It can't be compiled with
+  `jit_compile=True`.
 * **TensorFlow Serving can't load it.** `tensorflow_model_server` has no
   option for loading op libraries, and is one static binary (checked with
   the `tensorflow/serving:latest` image, TensorFlow Serving 2.20.0):

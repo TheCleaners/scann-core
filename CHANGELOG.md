@@ -17,7 +17,8 @@ All notable changes to scann-core. Versions follow
   (so SOAR, int8, bfloat16 and all-deleted trees work), and caches the
   searcher per index id and variable fingerprint, rebuilding it when the
   variables change. Verified with TensorFlow 2.21.0 (`tensorflow-cpu`, and
-  the same library in the CUDA-built `tensorflow` wheel); it can't be
+  the same library in the CUDA-built `tensorflow` wheel, also with a GPU
+  in use); it can't be
   loaded by TensorFlow Serving's stock model server. Tests
   `python_tf_ops`, `tf_op_symbols`, example
   [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py),
