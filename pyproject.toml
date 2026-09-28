@@ -32,7 +32,8 @@ classifiers = [
 # 2.21 (protobuf >= 6.31.1, < 8) is the first tested with scann-core's.
 tf = ["tensorflow>=2.21"]
 # scann.torch (docs/integrations.md). 2.10 is the oldest tested, and the
-# floor of LibTorch's stable ABI, which a native op will need.
+# floor of LibTorch's stable ABI, which the native backend's ops (the
+# separate scann-core-torch wheel, torch_op/) are built against.
 torch = ["torch>=2.10"]
 
 [project.urls]

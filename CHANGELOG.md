@@ -44,12 +44,42 @@ All notable changes to scann-core. Versions follow
   through `scann.tf` reloaded in a fresh process; with the op built,
   `python_tf_without_op` (the op hidden) and
   `example_py_tensorflow_wrapper_python`.
+- `scann.torch` native backend, in a new optional wheel,
+  `scann-core-torch` (`pip install scann-core-torch`; package
+  `scann_torch_ops`, built from `torch_op/`, or in a CMake build with
+  `-DSCANN_BUILD_TORCH_OP=ON`). C++ ops (`torch.ops.scann.search`,
+  `search_batched`) built against LibTorch's stable ABI only, so one
+  `py3-none-manylinux_2_34` wheel per architecture works with every torch
+  >= 2.10 (CPU, CUDA, ROCm) and Python >= 3.10. With it installed,
+  `scann.torch.Searcher` keeps the index in its buffers and searches with
+  these ops; same API and results as the Python backend (bit for bit).
+  What it adds: `torch.export` and AOTInductor programs of models that
+  search carry the index and run in other processes; `state_dict()`
+  contains the index (`load_state_dict()` of a 0.2.0-era state_dict, which
+  has none, keeps the current one); models holding a `Searcher` can be
+  pickled (`torch.save(model)`). `scann.torch.backend()`,
+  `SCANN_TORCH_BACKEND` and a `backend` argument choose the backend; without
+  the package, scann.torch is 0.2.0's Python backend, unchanged. See
+  docs/integrations.md.
+- New tests: `python_torch_native` (parity for 10 index types, compile,
+  export and AOTInductor in fresh processes, state_dict and pickling round
+  trips, stale state, errors, concurrency) and `torch_op_symbols` (the op
+  library exports nothing and imports only LibTorch's stable C functions
+  and the C/C++ runtime). `python_torch` runs on both backends.
+- `scann_ops_pybind.ScannSearcher` counts the calls that may change the
+  index (`upsert`, `delete`, `rebalance`), so that the native backend
+  refreshes its copy.
 
 ### Fixed
 - The `tensorflow_serving` example's recall check failed now and then:
   its query tower's weights were unseeded.
 
 ### Build and packaging
+- CI: a `torch-op` job (not on pull requests) builds the op against torch
+  2.10.0's headers and tests it with the newest CPU torch; the release
+  builds the scann-core-torch wheels (`.github/workflows/torch-wheels.yml`),
+  tests them with the scann-core wheel before publishing, and publishes
+  them to PyPI after scann-core.
 - CI: ccache works for every build job. The FetchContent example and
   `pip install .` builds use fixed directories (they used random ones, so
   about half of each job's compiles missed); the cross-aarch64 job, which

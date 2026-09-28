@@ -50,6 +50,7 @@ changed.
 | | |
 |---|---|
 | Python | `pip install scann-core`, or `pip install .` from a checkout |
+| PyTorch native ops | `pip install scann-core-torch` (optional: `scann.torch`'s native backend, for `torch.export`; any torch >= 2.10; see [docs/integrations.md](docs/integrations.md#the-native-backend-scann-core-torch)) |
 | Rust | `cargo add scann-core`, or a git/path dependency on this repository |
 | C++ | CMake `FetchContent`/`add_subdirectory`, linking `scann::core`; see [`examples/fetchcontent`](examples/fetchcontent) |
 
@@ -93,6 +94,8 @@ scann-core/
 ├── core/scann_core/      scann-core additions: ConfigBuilder
 ├── python/               pybind11 module + upstream Python package
 ├── tf_op/                optional TensorFlow op, scann.tf's op backend (source-only)
+├── torch_op/             optional native PyTorch op + scann_torch_ops package: the
+│                         scann-core-torch wheel (its own pyproject.toml)
 ├── rust/                 the Rust crate (cxx bridge, safe API, tests)
 ├── examples/             Python, C++ and Rust examples, FetchContent consumer template
 ├── third_party/          vendored: cnpy, googletest's gtest_prod.h
@@ -125,6 +128,7 @@ cmake --build build
 | `SCANN_BUILD_TESTS` | ON\* | tests, run with `ctest` |
 | `SCANN_BUILD_EXAMPLES` | ON\* | C++ examples |
 | `SCANN_BUILD_TF_OP` | OFF | the TensorFlow op and its `scann_tf_ops` package in `build/python/`, against the TensorFlow in `Python_EXECUTABLE`; `scann.tf` then uses it (SavedModels). Linux; source-only, see [docs/tensorflow.md](docs/tensorflow.md#the-op-backend-scann_tf_ops-build-from-source) |
+| `SCANN_BUILD_TORCH_OP` | OFF | the native PyTorch op and its `scann_torch_ops` package in `build/python/` (what the scann-core-torch wheel holds), against the headers of the torch in `SCANN_TORCH_PYTHON` (default `Python_EXECUTABLE`; torch >= 2.10); runs on any torch >= 2.10 (Linux; see [docs/integrations.md](docs/integrations.md#the-native-backend-scann-core-torch)) |
 | `SCANN_ARCH_FLAGS` | `-mavx;-mfma` (x86-64), `-march=armv8-a+simd` (arm64) | ISA flags for scann-core **and** all dependencies |
 | `SCANN_SANITIZE` | empty | e.g. `address,undefined` or `thread`; instruments dependencies too |
 | `SCANN_USE_SYSTEM_DEPS` | OFF | try `find_package` first (versions must match the pins exactly) |
@@ -297,7 +301,11 @@ and return tensors (CPU or GPU) and compile with
 `torch.compile(fullgraph=True)`, for models that search:
 `pip install 'scann-core[torch]'`, and see
 [docs/integrations.md](docs/integrations.md#scanntorch-searching-from-pytorch-models).
-Not yet exportable with `torch.export`.
+With `pip install scann-core-torch` it uses native ops (built on LibTorch's
+stable ABI, for any torch >= 2.10) and keeps the index in the module's
+buffers, so models that search can be exported with `torch.export` or
+AOTInductor, saved with `torch.save`, and their `state_dict()` carries the
+index; same API and results.
 
 #### Threads
 
@@ -369,7 +377,7 @@ about a second and checks its own results, so they also run as tests
 | [`python/tensorflow_wrapper.py`](examples/python/tensorflow_wrapper.py) | `scann.tf` eagerly and in `tf.function`, docids with `tf.gather`, updating the index; runs on either backend (needs TensorFlow) |
 | [`python/tensorflow_op.py`](examples/python/tensorflow_op.py) | `scann.tf` with the op backend: a model with the index in one SavedModel, reloaded in a fresh process (needs TensorFlow and `-DSCANN_BUILD_TF_OP=ON`) |
 | [`python/tensorflow_serving.py`](examples/python/tensorflow_serving.py) | a Keras query tower exported as a SavedModel, the index saved beside it, and a service that loads both (needs TensorFlow) |
-| [`python/torch_retrieval.py`](examples/python/torch_retrieval.py) | `scann.torch`: index a toy encoder's embeddings, then a model that encodes and searches, compiled with `torch.compile`, on a GPU if present (needs PyTorch) |
+| [`python/torch_retrieval.py`](examples/python/torch_retrieval.py) | `scann.torch`: index a toy encoder's embeddings, then a model that encodes and searches, compiled with `torch.compile`, on a GPU if present; with scann-core-torch, exported with `torch.export` and run from the saved program in a fresh process (needs PyTorch) |
 | [`cpp/quickstart.cc`](examples/cpp/quickstart.cc), [`rust/quickstart.rs`](examples/rust/quickstart.rs) | build with the config builder, search, add a point, save and reload |
 | [`cpp/updating.cc`](examples/cpp/updating.cc), [`rust/updating.rs`](examples/rust/updating.rs) | add, update and delete points by index, retrain, save over an existing index and reload |
 | [`fetchcontent/`](examples/fetchcontent) | a CMake project that pulls in scann-core with `FetchContent` (built by `scripts/ci.sh`, not a ctest) |
@@ -406,11 +414,12 @@ runs everything that needs nothing beyond the build:
 | `python_tf` | `scann.tf` with each backend (the op one when it is built) returns exactly the pybind searcher's results as int32/float32 tensors, eagerly and in `tf.function` (unknown batch size, static shapes), from `tf.data` maps and concurrent threads; docids, padding, updates, the same `InvalidArgumentError`s; the two backends agree call for call; backend selection (automatic, `SCANN_TF_BACKEND`, `get_backend()`, a broken op falls back with a warning); SavedModel through `scann.tf` with the op, reloaded in a fresh process, and `serialize_to_module()` raising with the Python backend; `import scann` imports neither TensorFlow nor the op. Skipped without TensorFlow |
 | `python_langchain` | LangChain's ScaNN vector store on scann-core: results equal an exact search for both distance strategies, `normalize_L2` and a tree + AH config; filters; save/load and re-saving into the same folder. Skipped without langchain-community |
 | `python_torch_input` | PyTorch tensors at every entry point give the same results as numpy arrays: float32/64/16 and bfloat16, non-contiguous views, tensors that require grad, zero rows, CUDA tensors when a GPU is present; no copy for float32 CPU tensors. Skipped without PyTorch |
-| `python_torch` | `scann.torch` returns exactly the pybind searcher's results as int64/float32 tensors on the queries' device (CPU, and CUDA when present) for brute force, AH and a tree, padding with -1/NaN; `torch.compile(fullgraph=True, dynamic=True)` compiles once for many batch sizes, also a whole model that encodes and searches; concurrent threads; `torch.export` raises; deleting the module frees the searcher; `import scann` doesn't import PyTorch. Skipped without PyTorch |
+| `python_torch` | on each backend (Python; native when `scann_torch_ops` is importable): `scann.torch` returns exactly the pybind searcher's results as int64/float32 tensors on the queries' device (CPU, and CUDA when present) for brute force, AH and a tree, padding with -1/NaN; `torch.compile(fullgraph=True, dynamic=True)` compiles once for many batch sizes, also a whole model that encodes and searches; concurrent threads; `torch.export` raises (Python) or matches eager (native); deleting the module frees the searcher; pickling raises (Python) or round-trips (native); `import scann` doesn't import PyTorch. Skipped without PyTorch |
+| `python_torch_native` | the native backend: bit-for-bit parity with the Python backend for 10 index types x 4 parameter sets (SOAR to the last bit), CPU and GPU queries; `torch.compile` (also `reduce-overhead` on a GPU); `torch.export` and AOTInductor programs loaded in fresh processes; `state_dict` round trips (0.2.0-era dicts, across backends), stale state, `torch.save(model)` in fresh processes, errors, concurrency. Skipped without PyTorch or the op |
 | `rust` | `cargo test`: exactness against naive search, mode agreement, round trip, mutation, concurrency, errors |
 | `example_py_quickstart`, `example_py_updating`, `example_py_serving_threads` | the Python [examples](#examples): recall above 0.9, identical results after reloading, every inserted or updated point found under its docid, a repeated upsert docid rejected, concurrent `search()` calls agreeing with a batched search |
 | `example_py_tensorflow_wrapper`, `example_py_tensorflow_serving` | the TensorFlow examples: `scann.tf` results equal the pybind searcher's (with the op backend when it is built); the SavedModel + index service returns docids with recall above 0.9. Skipped without TensorFlow |
-| `example_py_torch_retrieval` | the PyTorch example: a compiled encode-and-search model with recall above 0.9 against exact search, agreeing with the eager model. Skipped without PyTorch |
+| `example_py_torch_retrieval` | the PyTorch example: a compiled encode-and-search model with recall above 0.9 against exact search, agreeing with the eager model; with the native backend, the model exported and run in a fresh process. Skipped without PyTorch |
 | `example_cpp_quickstart`, `example_cpp_updating` | the C++ examples (built with `SCANN_BUILD_EXAMPLES`) |
 | `example_rust_quickstart`, `example_rust_updating` | the Rust examples, with `cargo run --example` |
 | `tf_op_symbols` | (with `-DSCANN_BUILD_TF_OP=ON`) the op library exports no symbols, imports only TensorFlow's `TF_*` C functions and the C/C++ runtime (nothing of TensorFlow's C++ API, abseil or protobuf), needs `libtensorflow_framework.so.2`, has no rpath |
@@ -418,13 +427,15 @@ runs everything that needs nothing beyond the build:
 | `python_tf_without_op` | (with `-DSCANN_BUILD_TF_OP=ON`) `python_tf` with `scann_tf_ops` hidden, as installed from the wheel: `scann.tf` picks the Python backend. Skipped without TensorFlow |
 | `example_py_tensorflow_op` | (with `-DSCANN_BUILD_TF_OP=ON`) [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py): `scann.tf` with the op backend, a model with the index in one SavedModel, reloaded in a fresh process. Skipped without TensorFlow |
 | `example_py_tensorflow_wrapper_python` | (with `-DSCANN_BUILD_TF_OP=ON`) the `scann.tf` example with `SCANN_TF_BACKEND=python`. Skipped without TensorFlow |
+| `torch_op_symbols` | (with `-DSCANN_BUILD_TORCH_OP=ON`) the op library exports no symbols, imports only LibTorch's stable C shim (`aoti_torch_*`, `torch_*`) and versioned C/C++ runtime symbols (nothing of torch's, c10's or ATen's C++ API, abseil, protobuf or Python), needs `libtorch_cpu.so` only, no libpython, no rpath |
 
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
 `python_tf` and the two TensorFlow examples also need TensorFlow, and
 `python_langchain` needs langchain-community, and `python_torch_input`,
-`python_torch` and `example_py_torch_retrieval` PyTorch; ctest reports them
-as skipped without those.
+`python_torch`, `python_torch_native` and `example_py_torch_retrieval`
+PyTorch; ctest reports them as skipped without those (and
+`python_torch_native` without `-DSCANN_BUILD_TORCH_OP=ON`).
 [`scripts/python-versions.sh`](scripts/python-versions.sh) runs them (and the
 Python examples) on
 every supported CPython, 3.10 to 3.15 and free-threaded 3.14t and 3.15t,
@@ -540,8 +551,9 @@ pointing at the wrong vectors.
   wheel has no op.
 * [`docs/integrations.md`](docs/integrations.md): installing scann-core in
   place of the `scann` wheel, PyTorch tensors as inputs, `scann.torch` for
-  searching from PyTorch models (and `torch.compile`), and libraries that
-  use it (LangChain).
+  searching from PyTorch models (`torch.compile`; `torch.export` and
+  AOTInductor with the native backend, scann-core-torch), and libraries
+  that use it (LangChain).
 * [`docs/algorithms.md`](docs/algorithms.md): partitioning, asymmetric
   hashing, anisotropic quantization, reordering.
 * [`docs/anisotropic_quantization_explained.md`](docs/anisotropic_quantization_explained.md):

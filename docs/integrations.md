@@ -76,11 +76,32 @@ and they are PyTorch custom ops, so a model that searches compiles with
 
 ```sh
 pip install 'scann-core[torch]'    # scann-core + torch>=2.10
+pip install scann-core-torch       # optional: the native backend (below)
 ```
 
 or install `torch` yourself (any build: CPU, CUDA, ROCm). `import scann`
 never imports PyTorch; only `import scann.torch` does, and without PyTorch
 it raises an `ImportError` that says so.
+
+There are two backends, with the same API and the same results (bit for
+bit; `python_torch` runs every check on both):
+
+* **native**, when the `scann-core-torch` package is installed: the
+  searches are C++ ops and the `Searcher` keeps the index in its buffers,
+  so models that search can be exported (`torch.export`, AOTInductor),
+  their `state_dict()` contains the index, and they can be pickled
+  (`torch.save(model)`). See
+  [The native backend](#the-native-backend-scann-core-torch).
+* **python** otherwise (scann-core 0.2.0's): the ops are Python functions
+  that call the pybind searcher, found through a handle into a registry of
+  the process; exporting and pickling raise.
+
+`scann.torch.backend()` says which one new `Searcher`s use.
+`SCANN_TORCH_BACKEND=native|python|auto` (read at import; `auto`, the
+default, is native when it loads) and a `backend="native"|"python"`
+argument of `Searcher`, `builder()`, `create_searcher()` and
+`load_searcher()` choose; `searcher.backend` says which one a `Searcher`
+has.
 
 ```python
 import torch
@@ -120,8 +141,10 @@ Runnable version (a toy encoder, recall checks, GPU if present):
 | `searcher.search(q, final_num_neighbors=None, pre_reorder_num_neighbors=None, leaves_to_search=None)` | one 1-D query: `(indices, distances)` of shape `[k]` |
 | `searcher.search_batched(q, ...)`, `searcher(q, ...)` | `[num_queries, dim]` queries: `[num_queries, k]` |
 | `searcher.search_batched_parallel(q, ..., batch_size=256)` | the same on the searcher's thread pool |
-| `searcher.searcher`, `searcher.to_pybind()` | the `scann_ops_pybind` searcher: `upsert`, `delete`, `docids`, `config`, ...; searches through the module see the changes |
+| `searcher.searcher`, `searcher.to_pybind()` | the `scann_ops_pybind` searcher: `upsert`, `delete`, `docids`, `config`, ...; searches through the module see the changes (native backend: see [changes](#changing-the-index)) |
 | `searcher.serialize(dir)`, `searcher.default_num_neighbors` | save the index; k when `final_num_neighbors` is `None` |
+| `scann.torch.backend()`, `searcher.backend` | `"native"` or `"python"` |
+| `searcher.sync()`, `searcher.index_in_state_dict` | native backend: copy changes made through `searcher.searcher` to the buffers; whether `state_dict()` includes the index (default `True`) |
 
 What the searches return:
 
@@ -150,15 +173,18 @@ What the searches return:
 
 Devices: ScaNN searches on the CPU. Queries on a GPU are copied to host
 memory (which waits for the GPU to finish computing them), and the results
-are copied back to the GPU. The module has no parameters or buffers, so
-`model.to("cuda")` leaves it as it is. Checked on an NVIDIA GPU (CUDA
-builds of torch) and an AMD GPU (ROCm, where the device is also `cuda`).
+are copied back to the GPU. `model.to("cuda")` leaves the `Searcher` as it
+is: on the Python backend it has no parameters or buffers, and on the
+native backend its buffers (the index) stay in host memory, where the
+search reads them. Checked on an NVIDIA GPU (CUDA builds of torch) and an
+AMD GPU (ROCm, where the device is also `cuda`).
 
 ### `torch.compile`
 
-The searches are the custom ops `scann_py::search` and
-`scann_py::search_batched`, registered with `torch.library.custom_op`, and
-their fake implementations give exact output shapes, so:
+The searches are custom ops, `scann::search` and `scann::search_batched`
+(native backend) or `scann_py::search` and `scann_py::search_batched`
+(Python backend, registered with `torch.library.custom_op`), and their
+fake implementations give exact output shapes, so:
 
 * `fullgraph=True` works: no graph breaks, in a model that searches or
   around the searcher alone.
@@ -170,38 +196,169 @@ their fake implementations give exact output shapes, so:
 * With `mode="reduce-overhead"` (CUDA graphs), the ops are tagged as unsafe
   to capture, so Inductor keeps them out of the graphs; results are correct
   (checked on CUDA).
-* Inside compiled code the search is still a call into Python. Compiling
-  pays off for the rest of the model, not for the search (see the overhead
+* Inside compiled code the search is still a call into Python on the
+  Python backend, and a C++ op call on the native backend. Compiling pays
+  off for the rest of the model, not for the search (see the overhead
   below).
 
 Concurrent calls from several threads, eagerly or through a compiled model,
-are fine: the search releases the GIL, and `python_torch` checks the results
-from 8 threads.
+are fine: the search releases the GIL (the native op runs without it), and
+`python_torch` checks the results from 8 threads.
+
+### The native backend (scann-core-torch)
+
+```sh
+pip install scann-core-torch    # the scann-core of the same version, and torch>=2.10
+```
+
+The `scann-core-torch` wheel holds the `scann_torch_ops` package: the ops
+`torch.ops.scann.search` and `torch.ops.scann.search_batched` in a C++
+library built against LibTorch's **stable ABI** only (targeting 2.10), so
+one wheel per architecture (`py3-none-manylinux_2_34_x86_64` and
+`_aarch64`) works with every torch >= 2.10, CPU, CUDA or ROCm build, and
+every Python >= 3.10. scann-core and all of its dependencies are linked
+into it statically and kept private: it exports no symbols, and imports
+only the stable C functions of `libtorch_cpu.so` and the C/C++ runtime
+(`torch_op_symbols` checks this). With it installed, `scann.torch` uses it
+without any change to your code; its version must be scann-core's (pip
+installs the matching one; a mismatched or broken install falls back to the
+Python backend with a warning).
+
+What it adds:
+
+* **`torch.export` and AOTInductor.** The index is in the `Searcher`'s
+  buffers, so an exported program of a model that searches carries it (as
+  constants), and runs in another process with only the saved file:
+
+  ```python
+  ep = torch.export.export(retriever, (features,),
+                           dynamic_shapes={"features": {0: torch.export.Dim("n")}})
+  torch.export.save(ep, "retriever.pt2")
+
+  # elsewhere
+  import torch, scann.torch     # registers the ops
+  retriever = torch.export.load("retriever.pt2").module()
+  indices, distances = retriever(features)
+  ```
+
+  AOTInductor works the same way
+  (`torch._inductor.aoti_compile_and_package(ep)`, then
+  `torch._inductor.aoti_load_package(path)` after `import scann.torch`).
+  A C++ program running the package without Python loads the op library
+  first (`dlopen` of `scann_torch_ops.library_path`, the installed
+  `_scann_torch_ops.so`), which needs only libtorch (that path isn't
+  tested; the tests load packages from Python). With torch
+  2.10, `aoti_load_package()` in a fresh process also needs
+  `import torch._inductor.codecache` first (a torch bug, fixed in 2.11).
+* **The index in `state_dict()`**, as three buffers, `index_data` (uint8:
+  the files `serialize()` writes, concatenated), `index_offsets` (int64)
+  and `index_names` (uint8). `load_state_dict()` replaces the index with
+  the state_dict's (another index, or the same one in another process; the
+  buffers are replaced, not copied into, so their sizes may differ). A
+  state_dict without the index loads with `strict=True` and keeps the
+  module's index: one saved with scann-core 0.2.0 or the Python backend,
+  or with `searcher.index_in_state_dict = False` (set it to keep large
+  indexes out of frequent training checkpoints). A Python-backend
+  `Searcher` accepts a native state_dict's index too. Docids in the state
+  are unpickled as plain data only (strings, numbers, lists, ...), so a
+  state_dict loaded with `torch.load(weights_only=True)` can't run code.
+* **Pickling.** `pickle`, `copy.deepcopy` and `torch.save(model)` of a
+  model holding a native `Searcher` work (the index goes with it; loading
+  with `torch.load` needs `weights_only=False`, as for any pickled model).
+  Unpickled where the native backend isn't available (or with
+  `SCANN_TORCH_BACKEND=python`), it becomes a Python-backend `Searcher`
+  with the same index.
+
+How it works: every search passes the index tensors and a name (a random
+`shared_name` per `Searcher`, a constant in exported programs) to the op.
+The op builds the ScaNN searcher from the tensors on first use
+(`LoadArtifactsFromMemory`), and caches it by that name and a fingerprint
+of the tensors: the number, names and sizes of the files, small files
+(<= 64 KiB, which includes the config and the manifest) entirely, and of
+larger ones the first and last 4 KiB and 64 samples of 64 bytes spread over
+the file (as the TensorFlow op). Later searches with
+the same name and fingerprint reuse it: a model is built once per process,
+however it runs (eagerly, compiled, exported, from several threads at
+once). New values under the same name (after `load_state_dict()`, or
+`sync()`) are rebuilt. Not detected: a change confined to unsampled bytes
+of a large file that keeps every size; `scann.torch` never changes the
+buffers in place, it replaces them, so this only matters if you write
+into them yourself. Deleting the `Searcher` drops its cached searcher; an
+exported program keeps its own for the life of the process
+(`scann_torch_ops.stats()` counts cached and built searchers).
+
+#### Changing the index
+
+Changes through `searcher.searcher` (`upsert`, `delete`, `rebalance`)
+reach the buffers at the next eager search, `state_dict()` or pickle: the
+index is serialized into them again, and the op rebuilds its searcher.
+Compiled and exported code runs no Python there, so it searches the
+buffers as they were; call `searcher.sync()` after changing the index and
+before running it. Calls on the raw pybind module
+(`searcher.searcher.searcher`) aren't seen at all. For many small changes,
+batch them: each sync serializes the whole index.
+
+#### Memory
+
+The native backend holds the index twice: the buffers (the serialized
+index) and the searcher the op builds from them. `builder()`,
+`create_searcher()` and `load_searcher()` drop their pybind searcher once
+the index is in the buffers; `searcher.searcher` loads one from the buffers
+when first used, and keeps it (for changes), a third copy. A `Searcher`
+made around an existing pybind searcher (`Searcher(p)`,
+`Searcher.from_pybind(p)`) shares it, as on the Python backend. Measured
+(RSS after `malloc_trim`, Python 3.14, torch 2.14) for a 100,000 × 64 tree +
+AH + reorder index:
+
+| | Python backend | native backend |
+|---|---|---|
+| after `build()` | +35.4 MB (the pybind searcher) | +35.3 MB (buffers: 28.4 MB) |
+| after the first search | +36.1 MB | +69.3 MB (+ the op's searcher) |
+| after using `searcher.searcher` | | +101.7 MB (+ a pybind searcher) |
+
+#### Limits of the native backend
+
+* Checked with torch 2.10.0 (CPU, Python 3.14), 2.11.0+cu128 (Python
+  3.13, RTX 3060 Ti), 2.14.0+cu132 (Python 3.14, RTX 3060 Ti) and
+  2.14.0+rocm7.14 (Python 3.12, Radeon RX 7600 XT), with one op library
+  built against torch 2.10.0's headers: `python_torch` (both backends),
+  `python_torch_native` and the example pass on each. AOTInductor
+  packages were checked on the CPU with each version and on the ROCm GPU;
+  for NVIDIA GPUs, Inductor needs a CUDA toolkit (`CUDA_HOME`, nvcc),
+  which wasn't available, so that path is untested.
+* The index stays in host memory; the searches run on the CPU (as on the
+  Python backend). The op accepts index tensors on a GPU but copies them
+  to host memory on every call.
+* `torch.compile(mode="reduce-overhead")`: the ops are marked as unsafe to
+  capture in CUDA graphs. LibTorch's stable ABI can't define an op with
+  tags, so `scann_torch_ops` adds the tag to the op objects in Python,
+  where Inductor reads it.
+* Exporting captures the `Searcher`'s index at export time; later changes
+  to the `Searcher` don't reach saved programs.
 
 ### Limits
 
-* **No `torch.export` (or AOTInductor) yet.** An exported program is meant
-  to run without the Python objects that made it, but this op finds its
-  searcher through a handle into a registry of the current process, so the
-  program would hold the handle, not the index. Exporting a model that
-  searches therefore raises (strict and non-strict export) with a message
-  saying so. A native op keeping the index in the module's buffers, so that
-  exported programs carry it, is planned for scann-core 0.2.1, behind the
-  same API. Until then, export the model without the search, and load the
-  index next to it with `load_searcher()`. A graph that still reaches another
-  process holding the op (for example through `torch.jit.trace`) fails there
-  with "no searcher with handle ...": handles are random, never reused
-  across processes.
-* **Not picklable.** `pickle`, `copy.deepcopy` and `torch.save(model)` of a
-  model holding a `Searcher` raise `TypeError`. `model.state_dict()` works
-  but doesn't include the index: save it with `serialize()` and load it with
+* **Python backend: no `torch.export` (or AOTInductor), no pickling.** An
+  exported program is meant to run without the Python objects that made
+  it, but the Python backend's op finds its searcher through a handle into
+  a registry of the current process, so the program would hold the handle,
+  not the index. Exporting a model that searches therefore raises (strict
+  and non-strict export) with a message saying so; install
+  `scann-core-torch` for the native backend. A graph that still reaches
+  another process holding the op (for example through `torch.jit.trace`)
+  fails there with "no searcher with handle ...": handles are random,
+  never reused across processes. `pickle`, `copy.deepcopy` and
+  `torch.save(model)` raise `TypeError`, and `model.state_dict()` doesn't
+  include the index: save it with `serialize()` and load it with
   `load_searcher()`.
-* **The default k is read once**, when the `Searcher` is made. After
+* **The default k is read once**, when the `Searcher` is made (or its
+  index loaded with `load_state_dict()`). After
   `searcher.searcher.rebalance(config)` with another `num_neighbors`, pass
   `final_num_neighbors`, or make a new `Searcher`.
-* Deleting the `Searcher` (and whatever holds it) frees its handle; the
-  pybind searcher is freed once nothing else refers to it. Compiled code
-  doesn't keep it alive.
+* Deleting the `Searcher` (and whatever holds it) frees its handle (Python
+  backend) or its cached searcher (native backend); the pybind searcher is
+  freed once nothing else refers to it. Compiled code doesn't keep it
+  alive.
 
 ### Overhead
 
@@ -209,7 +366,7 @@ Median time per call on an AMD Threadripper PRO 7975WX with an RTX 3060 Ti
 (torch 2.14.0+cu132, Python 3.14), for a 100,000 × 64 tree + AH + reorder
 index, against the pybind searcher called directly with the same data (a
 numpy array for CPU rows, the CUDA tensor for GPU rows, which
-`scann_ops_pybind` copies to host memory too):
+`scann_ops_pybind` copies to host memory too), with the Python backend:
 
 | | pybind | `scann.torch` | compiled (`torch.compile`) |
 |---|---|---|---|
@@ -232,6 +389,25 @@ to 45 µs for one query and 0.1 to 0.2 ms for 1,000; in a real model that
 cost is shared with the rest of the forward pass. When latency matters and
 the model doesn't need the search inside it, call the pybind searcher on
 the model's output.
+
+The native backend, same machine and index, measured in two runs each
+alongside the Python backend (the machine was shared with another build,
+so the 1,000-query rows vary by about ±10% between runs):
+
+| | Python backend | native backend |
+|---|---|---|
+| 1 query, `search`, CPU | 32.0 / 32.4 µs | 24.8 / 26.7 µs |
+| 1 query, `search_batched`, CPU | 38.7 / 38.9 µs | 28.3 / 30.9 µs |
+| 1,000 queries, `search_batched`, CPU | 11.64 / 11.74 ms | 11.56 / 12.64 ms |
+| 1,000 queries, `search_batched_parallel`, CPU | 0.86 / 0.82 ms | 0.81 / 0.95 ms |
+| 1 query, `search`, compiled | 64.0 / 65.7 µs | 55.2 / 54.4 µs |
+| 1 query, `search`, GPU queries | 73.0 / 73.1 µs | 54.8 / 54.2 µs |
+| 1,000 queries, `search_batched_parallel`, GPU queries | 1.10 / 0.91 ms | 1.08 / 1.09 ms |
+
+A call costs about 8 to 20 µs less on the native backend (no Python in the
+op, no numpy conversions); each call also fingerprints the index tensors
+(included above). For 1,000 queries the search dominates and the backends
+are within noise of each other.
 
 Checked with torch 2.10.0 (CPU, Python 3.12), 2.11.0+cu128 (Python 3.13,
 RTX 3060 Ti), 2.14.0+cu132 (Python 3.14, RTX 3060 Ti) and 2.14.0+rocm7.14
