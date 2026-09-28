@@ -31,6 +31,9 @@ classifiers = [
 # scann.tf (docs/tensorflow.md). TensorFlow <= 2.19 requires protobuf < 6;
 # 2.21 (protobuf >= 6.31.1, < 8) is the first tested with scann-core's.
 tf = ["tensorflow>=2.21"]
+# scann.torch (docs/integrations.md). 2.10 is the oldest tested, and the
+# floor of LibTorch's stable ABI, which a native op will need.
+torch = ["torch>=2.10"]
 
 [project.urls]
 Repository = "https://github.com/TheCleaners/scann-core"

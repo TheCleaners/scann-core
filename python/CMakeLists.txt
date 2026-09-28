@@ -26,8 +26,9 @@
 # is scann-core's: it omits the TensorFlow op import (scann-core does not
 # build the TF custom op, and importing TensorFlow just to discover that
 # would defeat the point of decoupling). scann/tf.py (adapted from upstream's
-# scann_ops.py) wraps the pybind searcher for TensorFlow code; only an
-# explicit `import scann.tf` imports TensorFlow.
+# scann_ops.py) wraps the pybind searcher for TensorFlow code, and
+# scann/torch.py for PyTorch; only an explicit `import scann.tf` or
+# `import scann.torch` imports TensorFlow or PyTorch.
 
 set(SCANN_PY_OUT "${PROJECT_BINARY_DIR}/python")
 
