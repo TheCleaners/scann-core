@@ -495,9 +495,10 @@ class Searcher(torch.nn.Module):
     finalizer.atexit = False
 
   def _set_state(self, data, offsets, names, generation=None):
-    for name, t in zip(_STATE, (data, offsets, names)):
-      self.register_buffer(name, t, persistent=self._index_in_state_dict)
-    self._synced_generation = generation
+    with self._lock:
+      for name, t in zip(_STATE, (data, offsets, names)):
+        self.register_buffer(name, t, persistent=self._index_in_state_dict)
+      self._synced_generation = generation
 
   @classmethod
   def from_pybind(cls, searcher, backend=None):  # pylint: disable=redefined-outer-name
@@ -583,11 +584,15 @@ class Searcher(torch.nn.Module):
           f"final_num_neighbors must be > 0 (or None), got {k}.")
     return k
 
-  def _before_native_search(self):
+  def _native_state(self):
+    """The index tensors to search (synced first, eagerly)."""
     # Compiled and exported code runs no Python here: it searches the
     # buffers as they are (see sync()).
-    if not torch.compiler.is_compiling():
-      self.sync()
+    if torch.compiler.is_compiling():
+      return self.index_data, self.index_offsets, self.index_names
+    self.sync()
+    with self._lock:  # all three from the same state
+      return self.index_data, self.index_offsets, self.index_names
 
   def search(self,
              q,
@@ -615,9 +620,7 @@ class Searcher(torch.nn.Module):
     pre = _param(pre_reorder_num_neighbors, "pre_reorder_num_neighbors")
     leaves = _param(leaves_to_search, "leaves_to_search")
     if self._backend == "native":
-      self._before_native_search()
-      return torch.ops.scann.search(self.index_data, self.index_offsets,
-                                    self.index_names, self._shared_name,
+      return torch.ops.scann.search(*self._native_state(), self._shared_name,
                                     q.detach(), k, pre, leaves)
     return torch.ops.scann_py.search(q.detach(), self._handle, k, pre, leaves)
 
@@ -632,11 +635,9 @@ class Searcher(torch.nn.Module):
     pre = _param(pre_reorder_num_neighbors, "pre_reorder_num_neighbors")
     leaves = _param(leaves_to_search, "leaves_to_search")
     if self._backend == "native":
-      self._before_native_search()
       return torch.ops.scann.search_batched(
-          self.index_data, self.index_offsets, self.index_names,
-          self._shared_name, queries.detach(), k, pre, leaves, parallel,
-          batch_size)
+          *self._native_state(), self._shared_name, queries.detach(), k, pre,
+          leaves, parallel, batch_size)
     return torch.ops.scann_py.search_batched(queries.detach(), self._handle,
                                              k, pre, leaves, parallel,
                                              batch_size)

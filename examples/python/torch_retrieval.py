@@ -21,13 +21,20 @@ searches the index is compiled whole with torch.compile(fullgraph=True).
 Runs on a GPU if there is one: the encoder runs there, the search on the
 CPU, and the results come back on the GPU (see docs/integrations.md).
 
+With scann.torch's native backend (`pip install scann-core-torch`), the
+retrieval model is also exported with torch.export, saved, and run from
+the saved program in a fresh process: the program carries the index.
+
 Needs PyTorch (`pip install 'scann-core[torch]'`); exits with status 77
 (reported as skipped by ctest) without it. Run with scann-core installed,
 or from a CMake build tree:
   PYTHONPATH=<build>/python python examples/python/torch_retrieval.py
 """
 
+import os
+import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -134,3 +141,34 @@ with torch.no_grad():
 agree = (eager_indices == indices).float().mean().item()
 print(f"compiled vs eager: {agree:.1%} of results identical")
 assert agree > 0.95, agree
+
+# --- Export (native backend) ---------------------------------------------------
+# With scann-core-torch installed, the Searcher keeps the index in its
+# buffers, so torch.export captures the whole retriever, index included: the
+# saved program runs in another process (after `import scann.torch`, which
+# registers the search ops) without the index directory or this script.
+print(f"scann.torch backend: {scann_torch.backend()}")
+if scann_torch.backend() == "native":
+  retriever_cpu = retriever.cpu()  # the index stays where it is: host memory
+  program = torch.export.export(
+      retriever_cpu, (queries[:7].cpu(),),
+      dynamic_shapes={"features": {0: torch.export.Dim("batch", max=4096)}})
+  with tempfile.TemporaryDirectory() as tmp:
+    path = os.path.join(tmp, "retriever.pt2")
+    torch.export.save(program, path)
+    torch.save(queries.cpu(), os.path.join(tmp, "queries.pt"))
+    size_mb = os.path.getsize(path) / 2**20
+    # A fresh process loads the program and searches.
+    run = ("import sys, torch, scann.torch\n"
+           "m = torch.export.load(sys.argv[1]).module()\n"
+           "torch.save(m(torch.load(sys.argv[2]))[0], sys.argv[3])\n")
+    out = os.path.join(tmp, "indices.pt")
+    subprocess.run([sys.executable, "-c", run, path,
+                    os.path.join(tmp, "queries.pt"), out], check=True)
+    exported_indices = torch.load(out)
+  with torch.no_grad():
+    cpu_indices, _ = retriever_cpu(queries.cpu())
+  agree = (exported_indices == cpu_indices).float().mean().item()
+  print(f"exported program ({size_mb:.1f} MB, index included), run in a "
+        f"fresh process: {agree:.1%} of results identical to eager")
+  assert agree > 0.95, agree
