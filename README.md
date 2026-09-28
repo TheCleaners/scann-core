@@ -87,6 +87,7 @@ scann-core/
 ├── src/scann/            upstream C++ sources (see NOTICE for the fixes)
 ├── core/scann_core/      scann-core additions: ConfigBuilder
 ├── python/               pybind11 module + upstream Python package
+├── tf_op/                optional TensorFlow op + scann_tf_ops package (source-only)
 ├── rust/                 the Rust crate (cxx bridge, safe API, tests)
 ├── examples/             Python, C++ and Rust examples, FetchContent consumer template
 ├── third_party/          vendored: cnpy, googletest's gtest_prod.h
@@ -118,6 +119,7 @@ cmake --build build
 | `SCANN_BUILD_RUST_BINDINGS` | ON\* | the Rust crate, via cargo (needs `SCANN_BUILD_STATIC`) |
 | `SCANN_BUILD_TESTS` | ON\* | tests, run with `ctest` |
 | `SCANN_BUILD_EXAMPLES` | ON\* | C++ examples |
+| `SCANN_BUILD_TF_OP` | OFF | the TensorFlow op and its `scann_tf_ops` package in `build/python/`, against the TensorFlow in `Python_EXECUTABLE` (Linux; source-only, see [docs/tensorflow.md](docs/tensorflow.md#the-tensorflow-op-scann_tf_ops-build-from-source)) |
 | `SCANN_ARCH_FLAGS` | `-mavx;-mfma` (x86-64), `-march=armv8-a+simd` (arm64) | ISA flags for scann-core **and** all dependencies |
 | `SCANN_SANITIZE` | empty | e.g. `address,undefined` or `thread`; instruments dependencies too |
 | `SCANN_USE_SYSTEM_DEPS` | OFF | try `find_package` first (versions must match the pins exactly) |
@@ -280,7 +282,9 @@ Full programs: [`examples/python/`](#examples).
 searcher for TensorFlow code instead (eager mode, `tf.function`, `tf.data`;
 not SavedModels): `pip install 'scann-core[tf]'`, and see
 [docs/tensorflow.md](docs/tensorflow.md), which also covers serving
-alongside a TensorFlow model.
+alongside a TensorFlow model. An op that can be saved in SavedModels,
+`scann_tf_ops`, can be built from source (`-DSCANN_BUILD_TF_OP=ON`;
+unsupported, see the same page).
 
 #### Threads
 
@@ -372,7 +376,7 @@ runs everything that needs nothing beyond the build:
 | `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input (including NaN/infinity) |
 | `api_exercise_avx2` | the same, with the AVX2 kernels forced on an AVX-512 machine (`SCANN_TEST_FORCE_AVX2=1`), so both kernel sets get tested (and sanitized) |
 | `mutation_regressions` | a failed `rebalance()` leaves a working index; tree + bfloat16 add/update/delete; a failed update in a SOAR tree (injected leaf failure) changes nothing; every stored vector keeps finding itself |
-| `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load |
+| `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load. Every directory also loads from memory (`LoadArtifactsFromMemory`) with the same outcome |
 | `artifact_loading_avx2` | the same, with the AVX2 kernels forced (`SCANN_TEST_FORCE_AVX2=1`); includes searching an index whose leaves are all empty |
 | `config_regressions` | raw configs that crashed upstream (zero block sizes, LUT16 with other than 16 clusters, binary or unsupported distances, bad quantiles) are errors; tree + PCA/TRUNCATE + AH without residuals builds, searches well and reloads |
 | `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
@@ -392,6 +396,9 @@ runs everything that needs nothing beyond the build:
 | `example_py_tensorflow_wrapper`, `example_py_tensorflow_serving` | the TensorFlow examples: `scann.tf` results equal the pybind searcher's; the SavedModel + index service returns docids with recall above 0.9. Skipped without TensorFlow |
 | `example_cpp_quickstart`, `example_cpp_updating` | the C++ examples (built with `SCANN_BUILD_EXAMPLES`) |
 | `example_rust_quickstart`, `example_rust_updating` | the Rust examples, with `cargo run --example` |
+| `tf_op_symbols` | (with `-DSCANN_BUILD_TF_OP=ON`) the op library exports no symbols, imports only TensorFlow's `TF_*` C functions and the C/C++ runtime (nothing of TensorFlow's C++ API, abseil or protobuf), needs `libtensorflow_framework.so.2`, has no rpath |
+| `python_tf_ops` | (with `-DSCANN_BUILD_TF_OP=ON`) `scann_tf_ops` against the pybind searcher for 10 configs (bit for bit; SOAR to the last bit), eagerly and in `tf.function`; one build per index; stale variables and restored checkpoints rebuild; SavedModel reloaded in a fresh process (functions, serving signature); round trips; errors; concurrent calls. Skipped without TensorFlow |
+| `example_py_tensorflow_op` | (with `-DSCANN_BUILD_TF_OP=ON`) [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py): a model with the index in one SavedModel, reloaded in a fresh process. Skipped without TensorFlow |
 
 The Python tests need numpy and protobuf ≥ 7.36.2 in the interpreter the
 module is built for; CMake says so at configure time if they're missing.
@@ -472,10 +479,14 @@ pointing at the wrong vectors.
 
 ## Intentional differences from upstream
 
-* No TensorFlow op (`scann.scann_ops`); `scann/__init__.py` doesn't import
-  TensorFlow. `scann.tf` offers the op's Python API without the op, and
-  can't be saved in a SavedModel; see [docs/tensorflow.md](docs/tensorflow.md)
-  for that and for serving next to a TensorFlow model.
+* No TensorFlow op (`scann.scann_ops`) in the wheel; `scann/__init__.py`
+  doesn't import TensorFlow. `scann.tf` offers the op's Python API without
+  the op, and can't be saved in a SavedModel. An op built on TensorFlow's
+  C API, with upstream's `scann_ops` API as the `scann_tf_ops` package, can
+  be built from source against one TensorFlow (`-DSCANN_BUILD_TF_OP=ON`;
+  unsupported, not loadable by TensorFlow Serving). See
+  [docs/tensorflow.md](docs/tensorflow.md) for both and for serving next to
+  a TensorFlow model.
 * CMake instead of Bazel; dependencies are upgraded to current releases.
 * The bug fixes above: some inputs upstream accepted (bad configs,
   inconsistent shapes, `batch_size = 0`) are now errors.
@@ -503,7 +514,8 @@ pointing at the wrong vectors.
   search parameters, and what they mean.
 * [`docs/tensorflow.md`](docs/tensorflow.md): using scann-core from
   TensorFlow code (`scann.tf`), serving retrieval next to a TensorFlow
-  model, and why there is no TensorFlow op.
+  model, the optional source-built TensorFlow op (`scann_tf_ops`, for
+  SavedModels) and its limits, and why the wheel has no op.
 * [`docs/integrations.md`](docs/integrations.md): installing scann-core in
   place of the `scann` wheel, PyTorch tensors as inputs, and libraries
   that use it (LangChain).

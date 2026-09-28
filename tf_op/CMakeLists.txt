@@ -118,8 +118,8 @@ endif()
 
 if(SCANN_BUILD_TESTS AND SCANN_PYTHON_RUNTIME_OK)
   # scann_tf_ops against the pybind searcher: parity, build-once, stale
-  # variables, SavedModel in a fresh process, errors, concurrency. Skipped
-  # (exit code 77) when TensorFlow isn't importable.
+  # variables, SavedModel in a fresh process, errors, concurrency. And the
+  # example. Skipped (exit code 77) when TensorFlow isn't importable.
   function(scann_add_tf_op_test name script)
     add_test(NAME ${name}
              COMMAND "${CMAKE_COMMAND}" -E env "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
@@ -127,4 +127,5 @@ if(SCANN_BUILD_TESTS AND SCANN_PYTHON_RUNTIME_OK)
     set_tests_properties(${name} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
   endfunction()
   scann_add_tf_op_test(python_tf_ops tests/test_scann_tf_ops.py)
+  scann_add_tf_op_test(example_py_tensorflow_op ../examples/python/tensorflow_op.py)
 endif()

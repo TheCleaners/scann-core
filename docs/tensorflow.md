@@ -1,7 +1,8 @@
 # Using scann-core with TensorFlow
 
-scann-core has no TensorFlow op (see [why](#why-there-is-no-tensorflow-op)).
-There are two ways to use it with TensorFlow models:
+The scann-core wheel has no TensorFlow op (see
+[why](#why-the-wheel-has-no-tensorflow-op)). There are three ways to use it
+with TensorFlow models:
 
 * **`scann.tf`**, a small Python wrapper that makes the searcher usable
   from TensorFlow code: eager mode, `tf.function` and `tf.data`. Use it
@@ -9,6 +10,10 @@ There are two ways to use it with TensorFlow models:
   be saved in a SavedModel.
 * **For serving**, export only the query tower as a SavedModel, and run
   scann-core (Python, Rust or C++) next to it.
+* **`scann_tf_ops`**, an optional TensorFlow op you build from source
+  against your TensorFlow. Its searcher can be saved in a SavedModel with
+  the model; see [The TensorFlow op](#the-tensorflow-op-scann_tf_ops-build-from-source).
+  Unsupported, and not loadable by TensorFlow Serving.
 
 ## Install
 
@@ -116,7 +121,8 @@ Other behaviour:
   `tf.saved_model.save` of a function that searches succeeds, but calling it
   after `tf.saved_model.load` fails with `Could not find callback with
   key=pyfunc_0 in the registry`. The same applies to anything else that
-  serializes the graph for another process.
+  serializes the graph for another process. The source-built
+  [op](#the-tensorflow-op-scann_tf_ops-build-from-source) can be saved.
 * **Python in the graph.** Each search call runs a Python function. It
   holds the GIL only around the call; the search itself releases it, so
   concurrent calls (several threads calling a `tf.function`, or a
@@ -176,7 +182,218 @@ scores, titles = retrieve(features)
 ```
 
 The layer's `num_reordering_candidates` is `.reorder(n)`. Unlike the
-layer, this can't be saved with the model; for serving, see below.
+layer, this can't be saved with the model; with the source-built
+[op](#the-tensorflow-op-scann_tf_ops-build-from-source) (the same code
+with `scann_tf_ops` in place of `scann_tf`) it can. For serving, see
+below.
+
+## The TensorFlow op (`scann_tf_ops`, build from source)
+
+scann-core also has an optional TensorFlow custom op, in
+[`tf_op/`](../tf_op/). It is **source-only and unsupported**: not part of
+the wheel, off by default, Linux only, and built against the one
+TensorFlow version installed where you build it. What it adds over
+`scann.tf`:
+
+* **SavedModel.** The searcher is TensorFlow state (`tf.Variable`s holding
+  the whole index), and searches are graph ops, so a model that searches
+  saves as one SavedModel, index included, and loads and searches in
+  another process.
+* **No Python in the graph.** No `tf.numpy_function`, no GIL, no Python
+  callback registry: the graph runs the same in a loaded SavedModel as in
+  the process that built it.
+* **Upstream's API, all of it.** The Python package `scann_tf_ops`
+  mirrors upstream's `scann.scann_ops.py.scann_ops`, including
+  `serialize_to_module()` and `searcher_from_module()`, so migrating is an
+  import change.
+
+Verified with TensorFlow 2.21.0 only (Python 3.12, x86-64 Linux): built
+against the `tensorflow-cpu` 2.21.0 wheel, the same library also loads and
+passes its tests in the CUDA-built `tensorflow` 2.21.0 wheel. Other
+TensorFlow versions are untested; build the op against the version you
+run.
+
+### Building it
+
+In a virtual environment with TensorFlow (the op is built against the
+TensorFlow in `Python_EXECUTABLE`):
+
+```sh
+python3 -m venv tfenv
+tfenv/bin/pip install tensorflow-cpu==2.21.0 numpy 'protobuf>=7.36.2'
+cmake -S . -B build -G Ninja -DSCANN_BUILD_TF_OP=ON \
+      -DPython_EXECUTABLE="$PWD/tfenv/bin/python"
+cmake --build build
+ctest --test-dir build -R 'tf_op|python_tf|tensorflow_op' --output-on-failure
+```
+
+That builds `build/python/scann_tf_ops/` (`__init__.py` and
+`_scann_tf_ops.so`) next to the `scann` package in `build/python/`. Use
+them together (`PYTHONPATH=build/python`), or copy `scann_tf_ops/` next to
+an installed scann-core of the same version: it uses the `scann` package
+for building indexes. `-DSCANN_BUILD_TF_OP=ON` needs the Python package
+and the static library (`SCANN_BUILD_PYTHON`, `SCANN_BUILD_STATIC`, both
+on by default).
+
+The library is built only against TensorFlow's C API
+(`tensorflow/c/kernels.h`, `ops.h`), never its C++ headers, so TensorFlow's
+own abseil and protobuf don't matter: scann-core's are linked in
+statically and kept private. The library exports no symbols, imports only
+TensorFlow's `TF_*` C functions (from `libtensorflow_framework.so.2`, which
+TensorFlow has loaded already; no rpath), and the `tf_op_symbols` test
+checks that. It does need the build machine's glibc and libstdc++, or
+newer.
+
+### Using it
+
+```python
+import numpy as np
+import tensorflow as tf
+import scann_tf_ops   # upstream: from scann.scann_ops.py import scann_ops
+
+db = np.random.rand(20000, 32).astype(np.float32)
+searcher = (scann_tf_ops.builder(db, 10, "dot_product")
+            .tree(num_leaves=150, num_leaves_to_search=15)
+            .score_ah(2)
+            .reorder(100)
+            .build())
+
+class Retrieval(tf.Module):
+  def __init__(self, searcher):
+    super().__init__()
+    self.index = searcher.serialize_to_module()   # a tf.Module
+
+  @tf.function(input_signature=[tf.TensorSpec([None, 32], tf.float32)])
+  def retrieve(self, queries):
+    searcher = scann_tf_ops.searcher_from_module(self.index)
+    return searcher.search_batched_parallel(queries, final_num_neighbors=10)
+
+model = Retrieval(searcher)
+tf.saved_model.save(model, "export/retrieval",
+                    signatures={"serving_default": model.retrieve})
+
+# Another process: import scann_tf_ops first (it registers the op).
+import scann_tf_ops
+loaded = tf.saved_model.load("export/retrieval")
+indices, distances = loaded.retrieve(tf.random.uniform([4, 32]))
+same = scann_tf_ops.searcher_from_module(loaded.index)   # the same searcher
+```
+
+Runnable, with the reload in a fresh process:
+[`examples/python/tensorflow_op.py`](../examples/python/tensorflow_op.py).
+
+The API:
+
+| | |
+|---|---|
+| `builder(db, k, distance).….build()` | a `ScannSearcher`; the builder is `scann_ops_pybind`'s (autopilot, SOAR, `build(docids=...)`) |
+| `create_searcher(db, config, training_threads=0, container="", shared_name=None, docids=None)` | as upstream; `shared_name` is the cache key (default: a new random id), `container` is ignored |
+| `from_pybind(searcher)`, `load_searcher(dir)` | from a `scann_ops_pybind` searcher, or a directory `serialize()` wrote (any binding) |
+| `searcher.search(q, final_num_neighbors, pre_reorder_num_neighbors, leaves_to_search)` | `(index, distance)`, int32/float32, `[n]` with n ≤ k |
+| `searcher.search_batched(q, ...)`, `search_batched_parallel(q, ..., batch_size=256)` | `(indices, distances)`, `[num_queries, k]` |
+| `searcher.serialize_to_module()` | the searcher itself, a `tf.Module` whose variables hold the index |
+| `searcher_from_module(module)` | the searcher for a module from `serialize_to_module()`, also after `tf.saved_model.load` (shares its variables) |
+| `searcher.to_pybind()`, `searcher.serialize(dir)` | back to a `scann_ops_pybind` searcher (with its docids), or to an index directory |
+| `scann_tf_ops.stats()` | `{"live_searchers", "builds"}` of the op's cache in this process |
+
+Results are what the pybind searcher returns, as with `scann.tf`: the
+tests compare them bit for bit for brute force (float, int8, bfloat16),
+AH, and trees with each. For SOAR with AH and reordering they agree to the
+last bit of a distance, which varies between identical searches with the
+pybind searcher itself. Search parameters may be Python ints or int32
+tensors; `None` means the searcher's default. Indices are positions in the
+index, never docids.
+
+Differences from upstream's op:
+
+* The batched searches return exactly `[num_queries, k]` when
+  `final_num_neighbors` is given, short rows padded with index 0 and
+  distance NaN (upstream: as wide as the longest row). With the default k
+  they are as wide as the longest row.
+* Every index scann-core builds is supported: SOAR (upstream's TF builder
+  rejected it), int8 and bfloat16 brute force and reordering, trees with
+  every point deleted.
+* Building a searcher is eager (a numpy array or eager tensor), as with
+  `scann.tf`.
+* An index with more than 2^31 - 1 points fails on the first search
+  (the outputs are int32, as upstream's).
+
+### How it works
+
+TensorFlow's C API can't create TensorFlow resources from a pip-installed
+TensorFlow, so there is no searcher resource. Instead the search ops take
+the index itself: the files `serialize()` writes (`scann_config.pb`,
+`scann_assets.pbtxt`, the `.npy` and `.pb` assets, and
+`scann_docids.pkl` if there are docids) as two string tensors, file names
+and contents. The `ScannSearcher` keeps them in two `tf.Variable`s, plus a
+third holding a random index id. On its first search, the op builds the
+ScaNN searcher from the tensors in memory (no temporary files) and caches
+it, keyed by the index id and a fingerprint of the tensors. Every graph,
+function and eager call that searches the same index with the same
+variable values shares that one searcher; a loaded SavedModel builds it on
+its first search, once. It is freed when the last function using it is
+(eager searches go through functions owned by the `ScannSearcher`, so it
+is freed with the searcher).
+
+### Limits of the op
+
+* **No mutation through the op** (upstream's op had none either). Mutate
+  with the pybind searcher, then make a new op searcher and re-export:
+  `p = searcher.to_pybind(); p.upsert(...); searcher = scann_tf_ops.from_pybind(p)`.
+* **Static k only from Python.** The op's shape function can't read
+  `final_num_neighbors` (an input, and the C API's shape inference
+  can't read attributes either), so outputs are `[num_queries, ?]`. The
+  Python methods set the static shape to `[num_queries, k]` when
+  `final_num_neighbors` is a Python int; with a tensor, the width stays
+  unknown.
+* **The index is in memory twice** once searched: in the variables (the
+  serialized files) and in the searcher built from them. For a 400,000 ×
+  128 tree + AH + reorder index (223 MB of files), `load_searcher()` added
+  238 MB of RSS, and the first search 254 MB more, 492 MB in all; the
+  pybind searcher alone takes 226 MB. The first search takes as long as
+  `scann_ops_pybind.load_searcher()` (about 220 ms here). Making a searcher
+  from a pybind one (`builder().build()`, `from_pybind()`) peaks higher:
+  the pybind searcher, `serialize()`'s temporary copies (about 560 MB for
+  this index; freed afterwards but kept by the allocator), and the
+  variables. For large indexes, build and `serialize()` with
+  `scann_ops_pybind`, then `load_searcher(dir)` where the model is made.
+* **Stale variables.** The cached searcher is used only while the tensors'
+  fingerprint matches, so assigning other values to the variables (another
+  index, or restoring a checkpoint of another index) rebuilds the searcher
+  on the next search. The fingerprint covers the number of files, each
+  file's name and size, the whole of every file up to 64 KiB (including
+  the config and the manifest), and for larger files their first and last
+  4 KiB and 64 evenly spaced 64-byte samples. It does not detect a change
+  confined to the unsampled bytes of a large file that keeps every size:
+  editing the variables in place (a few points' data) isn't seen. Indexes
+  built from different data differ nearly everywhere and are detected (the
+  tests use two brute-force indexes whose files all have the same sizes).
+  Hashing everything on every search would be exact but cost 7.3 ms per
+  search for the 223 MB index above; the fingerprint takes 2.6 µs.
+* **Per-call overhead.** For the index above, one query took 130 µs in a
+  `tf.function` against 44 µs from the pybind searcher (eagerly: 258 µs);
+  100 queries 4.0 ms against 3.5 ms (`search_batched`) and 0.57 ms against
+  0.40 ms (`search_batched_parallel`). `scann.tf` in a `tf.function`
+  measured 161 µs and 4.1 ms.
+* **Loading needs the op.** `import scann_tf_ops` before
+  `tf.saved_model.load`, which otherwise fails with `Op type not
+  registered 'ScannCoreSearchBatched'`. The SavedModel only loads where the
+  op library is built for that TensorFlow.
+* **CPU only, no XLA.** The op has a CPU kernel only; in a GPU TensorFlow
+  it runs on the host and queries are copied there. It can't be compiled
+  with `jit_compile=True`.
+* **TensorFlow Serving can't load it.** `tensorflow_model_server` has no
+  option for loading op libraries, and is one static binary (checked with
+  the `tensorflow/serving:latest` image, TensorFlow Serving 2.20.0):
+  there is no `libtensorflow_framework.so.2` for the op library to link
+  against, so `LD_PRELOAD` fails to load it. A copy without that
+  dependency finds every `TF_*` function it needs in the server binary,
+  but crashes it at startup: its registrations run before the server's
+  own static initializers. Requests to a model using the op fail with
+  `Op type not registered`. TensorFlow Serving's route for custom ops is
+  building the model server from source with the op linked in; that is
+  untested here. With TensorFlow Serving, keep the index next to the model
+  ([below](#serving-query-tower--scann-core)).
 
 ## Serving: query tower + scann-core
 
@@ -260,20 +477,23 @@ Notes:
 * Batch size, threads and throughput:
   [tutorial part 5](tutorial/05-saving-and-serving.md#serving-batch-size-latency-and-throughput).
 
-## Why there is no TensorFlow op
+## Why the wheel has no TensorFlow op
 
-A TensorFlow custom op is a shared library loaded into TensorFlow's
-process. It must be built against the exact TensorFlow version it runs
-with (headers and ABI), and it shares TensorFlow's copies of abseil and
-protobuf, so it has to be built with those versions too. scann-core
-upgrades both (see [Dependencies](../README.md#dependencies)), builds with
-CMake instead of TensorFlow's toolchain, and would have to ship one build
-per TensorFlow release. The op is the one part of upstream it leaves out
-([Intentional differences](../README.md#intentional-differences-from-upstream)).
+A TensorFlow custom op built against TensorFlow's C++ API, as upstream's
+is, must be built against the exact TensorFlow version it runs with
+(headers and ABI), and shares TensorFlow's copies of abseil and protobuf,
+so it has to be built with those versions too. scann-core upgrades both
+(see [Dependencies](../README.md#dependencies)) and builds with CMake
+instead of TensorFlow's toolchain. The source-built `scann_tf_ops` avoids
+the abseil/protobuf conflict by using only TensorFlow's C API, but it is
+still built against one TensorFlow at a time and runs only where that
+TensorFlow is, so shipping it would mean one build per TensorFlow release
+(and none of them would load in TensorFlow Serving). The wheel leaves it
+out ([Intentional differences](../README.md#intentional-differences-from-upstream)).
 
-If you need the searcher inside a SavedModel or TensorFlow Serving,
-upstream's wheel with its op is still an option: `pip install scann[tf]`
-(it pins `tensorflow~=2.20.0`), and upstream's
+If you need the searcher inside a SavedModel, build `scann_tf_ops`. For
+TensorFlow Serving, upstream's wheel with its op is still an option:
+`pip install scann[tf]` (it pins `tensorflow~=2.20.0`), and upstream's
 [`tf_serving`](https://github.com/google-research/google-research/tree/master/scann/tf_serving)
 directory builds a TensorFlow Serving image with the op. It doesn't have
 scann-core's fixes, and can't be installed next to scann-core.

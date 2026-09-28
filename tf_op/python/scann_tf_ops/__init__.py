@@ -116,8 +116,10 @@ class ScannSearcher(tf.Module):
       index directory (scann_config.pb, scann_assets.pbtxt, the assets, and
       scann_docids.pkl if the index has docids).
     asset_contents: tf.Variable, string [num_files]: the files' contents.
-    index_id: tf.Variable, string scalar: the op's shared_name, a random id
-      per index, so that two indexes never share a cached searcher.
+    index_id: tf.Variable, string scalar: the op's cache key (its index_id
+      attr; upstream's shared_name), a random id per index unless given,
+      so that two indexes never share a cached searcher.
+    shared_name: the index id as a Python string.
   """
 
   def __init__(self, files, shared_name=None, name=None):

@@ -276,6 +276,17 @@ scann/scann/scann_ops/py/scann_ops.py (its builder() docstring, and the
 builder / create_searcher / ScannSearcher search API): the searcher is the
 pybind one, called through tf.numpy_function instead of a TensorFlow op, and
 serialize_to_module() / searcher_from_module() raise NotImplementedError.
+tf_op/scann_tf_ops.cc is adapted from upstream's
+scann/scann/scann_ops/cc/ops/scann_ops.cc and kernels/scann_ops.cc (the
+ScannSearch / ScannSearchBatched ops and their search and result-shaping
+semantics): rewritten against TensorFlow's C API, with the index passed as
+string tensors of its files instead of a resource, a searcher cache keyed
+by index id and a fingerprint of those tensors, and batched results exactly
+final_num_neighbors wide when it is given. tf_op/python/scann_tf_ops/
+__init__.py is adapted from upstream's scann/scann/scann_ops/py/
+scann_ops.py (its API and builder() docstring): the searcher is a tf.Module
+holding the index files as variables, and serialize_to_module() /
+searcher_from_module() use them.
 Everything else (build system, the C++ config builder in core/, Rust
 bindings, tests, examples, other docs,
 python/scann/__init__.py and the empty python/scann/**/__init__.py files)
