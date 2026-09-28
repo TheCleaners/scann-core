@@ -158,6 +158,13 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_torch python/test_torch.py)
   set_tests_properties(python_torch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1200
                        ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
+  # The native backend (torch_op/) in depth: parity for every index type,
+  # compile, export and AOTInductor in fresh processes, state_dict and
+  # pickling, stale state, errors, concurrency. Skipped (77) without
+  # PyTorch or without the op.
+  scann_add_python_test(python_torch_native python/test_torch_native.py)
+  set_tests_properties(python_torch_native PROPERTIES SKIP_RETURN_CODE 77
+                       TIMEOUT 1800 ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
 
   # The Python examples assert their results, so they run as tests too.
   # The TensorFlow ones exit with 77 (skipped) without TensorFlow.
