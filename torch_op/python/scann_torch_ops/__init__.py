@@ -60,6 +60,28 @@ if _torch_version() < (2, 10):
 torch.ops.load_library(library_path)
 
 
+def _tag_cudagraph_unsafe():
+  """Tags the searches as unsafe to capture in a CUDA graph.
+
+  They copy to and from host memory and run on the CPU, so Inductor must
+  keep them out of CUDA graphs (torch.compile(mode="reduce-overhead")), as
+  it does for scann.torch's Python-backend ops, which are defined with
+  this tag. LibTorch's stable ABI (2.10) can't define an op with tags, so
+  the tag is added to the Python op objects, where Inductor reads it.
+  """
+  tag = getattr(torch.Tag, "cudagraph_unsafe", None)
+  if tag is None:
+    return
+  for name in ("search", "search_batched"):
+    op = getattr(torch.ops.scann, name).default
+    tags = list(getattr(op, "_tags", ()))
+    if tag not in tags:
+      op._tags = tags + [tag]  # pylint: disable=protected-access
+
+
+_tag_cudagraph_unsafe()
+
+
 @torch.library.register_fake("scann::search")
 def _search_fake(index_data, index_offsets, index_names, shared_name, query,
                  k, pre_reorder_num_neighbors, leaves_to_search):

@@ -148,8 +148,15 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
     "TORCHINDUCTOR_CACHE_DIR=${_torch_cache}/inductor"
     "TRITON_CACHE_DIR=${_torch_cache}/triton"
     "TMPDIR=${_torch_cache}/tmp")
+  # With the native op built (SCANN_BUILD_TORCH_OP), its backend must load
+  # whenever PyTorch does: the tests fail instead of skipping it.
+  if(SCANN_BUILD_TORCH_OP)
+    list(APPEND SCANN_TORCH_TEST_ENV "SCANN_TEST_REQUIRE_TORCH_NATIVE=1")
+  endif()
+  # Every check once per backend: Python, and native when scann_torch_ops
+  # is importable.
   scann_add_python_test(python_torch python/test_torch.py)
-  set_tests_properties(python_torch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
+  set_tests_properties(python_torch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1200
                        ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
 
   # The Python examples assert their results, so they run as tests too.

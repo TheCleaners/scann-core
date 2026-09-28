@@ -264,7 +264,8 @@ isn't a one-line change:
       commits them with the index (upstream wrote scann_docids.pkl
       afterwards, and left a stale one when the index had no docids);
       load_searcher() rejects a scann_docids.pkl whose length doesn't match
-      the index.
+      the index. ScannSearcher counts the calls that may change the index
+      (upsert, delete, rebalance), for scann.torch's native backend.
   python/scann/scann_ops/py/scann_builder.py
       create_config() raises ValueError for tree(incremental_threshold=...)
       together with pca(), truncate() or upper_tree(), which the C++ side

@@ -14,6 +14,11 @@
 
 """scann.torch, the PyTorch wrapper around the pybind searcher.
 
+Runs every check below once per backend, each in a subprocess with
+SCANN_TORCH_BACKEND set: "python" always, "native" when scann-core-torch
+(scann_torch_ops) is importable (required if SCANN_TEST_REQUIRE_TORCH_NATIVE
+is set). Where the backends differ:
+
 - `import scann` doesn't import PyTorch, and `import scann.torch` without
   PyTorch is a clear ImportError (checked in subprocesses).
 - search / search_batched / search_batched_parallel (and calling the
@@ -25,10 +30,18 @@
   one compilation for many batch sizes, same results as eager; a model
   that encodes and then searches, compiled whole.
 - Concurrent calls from threads, eager and compiled.
-- torch.export raises (strict and non-strict), and so does the op with a
-  handle that isn't registered in this process.
-- Deleting the Searcher unregisters it; pickling it is a clear error;
-  docids, create_searcher / load_searcher / from_pybind.
+- Python backend: torch.export raises (strict and non-strict), and so
+  does the op with a handle that isn't registered in this process.
+  Native backend: strict and non-strict export give the eager results.
+- Python backend: deleting the Searcher unregisters it; pickling it is a
+  clear error. Native backend: deleting it releases the op's cached
+  searcher; pickle / deepcopy give an equivalent Searcher.
+- Docids (and changes through the pybind searcher seen by searches),
+  create_searcher / load_searcher / from_pybind.
+
+tests/python/test_torch_native.py (python_torch_native) covers the native
+backend in depth: parity for every index type, exported and AOTInductor
+programs in fresh processes, state_dict and pickling round trips.
 
 Without PyTorch the test exits with 77, which ctest reports as skipped
 (SKIP_RETURN_CODE), unless SCANN_TEST_REQUIRE_TORCH is set.
@@ -169,6 +182,7 @@ def check_eager(st, torch, db, queries, device):
     expect_raises(TypeError, lambda: s.search_batched(q, 2.5), "int or None")
     expect_raises(Exception, lambda: s.search_batched(q[:, :3]),
                   "dimensionality")
+  assert s.backend == st.backend(), (s.backend, st.backend())
 
 
 def check_padding(st, torch, device):
@@ -315,10 +329,19 @@ def check_export(st, torch, db):
   s = st.builder(db, 5, "dot_product").score_brute_force().build()
   model = make_model(torch, s)
   feats = torch.randn(3, 8)
+  if st.backend() == "native":
+    want = model(feats)
+    for strict in (True, False):
+      ep = torch.export.export(model, (feats,), strict=strict)
+      got = ep.module()(feats)
+      for g, w in zip(got, want):
+        assert torch.equal(g, w) or torch.allclose(g, w, equal_nan=True), (
+            strict, g, w)
+    return
   for strict in (True, False):
     expect_raises(Exception,
                   lambda: torch.export.export(model, (feats,), strict=strict),
-                  "planned with the native op in scann-core 0.2.1")
+                  "scann-core-torch")
   # The op with a handle that isn't registered here (a graph from another
   # process, or a deleted searcher).
   expect_raises(RuntimeError,
@@ -328,6 +351,9 @@ def check_export(st, torch, db):
 
 
 def check_lifetime(st, torch, db):
+  if st.backend() == "native":
+    check_lifetime_native(st, torch, db)
+    return
   gc.collect()
   before = st._num_live_searchers()  # pylint: disable=protected-access
   s = st.builder(db, 5, "dot_product").score_brute_force().build()
@@ -348,6 +374,38 @@ def check_lifetime(st, torch, db):
                 lambda: torch.ops.scann_py.search(
                     torch.zeros(DIM), handle, 5, -1, -1),
                 "no searcher with handle")
+
+
+def check_lifetime_native(st, torch, db):
+  import scann_torch_ops  # pylint: disable=g-import-not-at-top
+  gc.collect()
+  before = scann_torch_ops.stats()["live_searchers"]
+  s = st.builder(db, 5, "dot_product").score_brute_force().build()
+  model = make_model(torch, s)
+  compiled = torch.compile(model, fullgraph=True, dynamic=True)
+  feats = torch.randn(3, 8)
+  compiled(feats)
+  # Eager results (Inductor may round the encoder's output differently).
+  want = model(feats)
+  assert scann_torch_ops.stats()["live_searchers"] == before + 1
+  # Deep copies (of the model) and pickles (of the searcher; the model's
+  # class is local to this test) work, and search the same index.
+  copied = copy.deepcopy(model)
+  got = copied(feats)
+  assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])
+  assert copied.index._shared_name != s._shared_name  # pylint: disable=protected-access
+  unpickled = pickle.loads(pickle.dumps(s))
+  q = torch.from_numpy(db[:7])
+  for g, w in zip(unpickled.search_batched(q), s.search_batched(q)):
+    assert torch.equal(g, w)
+  assert unpickled._shared_name != s._shared_name  # pylint: disable=protected-access
+  del copied, unpickled
+  # Deleting the Searcher (and everything holding it) releases the op's
+  # cached searcher, even with compiled code around.
+  del s, model, compiled, got
+  gc.collect()
+  assert scann_torch_ops.stats()["live_searchers"] == before, (
+      scann_torch_ops.stats(), before)
 
 
 def check_docids(st, torch, db, queries):
@@ -389,12 +447,19 @@ def check_create_and_load(st, torch, db, queries):
   expect_raises(TypeError, lambda: st.Searcher(s.searcher.searcher),
                 "scann_ops_pybind.ScannSearcher")
   assert "default_num_neighbors=5" in repr(s)
-  assert not list(s.parameters()) and not list(s.buffers())
+  assert not list(s.parameters())
+  if st.backend() == "native":
+    assert [n for n, _ in s.named_buffers()] == [
+        "index_data", "index_offsets", "index_names"]
+  else:
+    assert not list(s.buffers())
   assert s.to("cpu") is s
 
 
 def main():
-  check_import_isolation()
+  backend = os.environ.get("SCANN_TORCH_TEST_BACKEND")
+  if backend is None:
+    check_import_isolation()
   try:
     import torch  # pylint: disable=g-import-not-at-top
   except ImportError as e:
@@ -402,7 +467,23 @@ def main():
       raise
     print(f"SKIPPED: torch is not importable ({e})")
     sys.exit(SKIP)
+  if backend is None:
+    # Every check, once per backend, each in a fresh process.
+    import scann.torch as st  # pylint: disable=g-import-not-at-top
+    backends = ["python"]
+    if st._load_native() is not None:  # pylint: disable=protected-access
+      backends.append("native")
+    elif os.environ.get("SCANN_TEST_REQUIRE_TORCH_NATIVE"):
+      raise AssertionError(st._native_error)  # pylint: disable=protected-access
+    for b in backends:
+      env = dict(os.environ, SCANN_TORCH_BACKEND=b, SCANN_TORCH_TEST_BACKEND=b)
+      subprocess.run([sys.executable, __file__], env=env, check=True)
+    if len(backends) == 1:
+      print("(native backend not tested: scann-core-torch isn't importable: "
+            f"{st._native_error})")  # pylint: disable=protected-access
+    return
   import scann.torch as st  # pylint: disable=g-import-not-at-top
+  assert st.backend() == backend, (st.backend(), backend)
 
   db = dataset(2000)
   queries = dataset(50, seed=1)
@@ -418,7 +499,7 @@ def main():
   check_create_and_load(st, torch, db, queries)
   gpu = (f", CUDA: {torch.cuda.get_device_name(0)}" if len(devices) > 1 else
          ", no CUDA device: GPU cases not run")
-  print(f"PASSED (torch {torch.__version__}, Python "
+  print(f"PASSED, {backend} backend (torch {torch.__version__}, Python "
         f"{sys.version.split()[0]}{gpu})")
 
 

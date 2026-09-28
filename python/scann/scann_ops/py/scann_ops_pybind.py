@@ -119,6 +119,10 @@ class ScannSearcher(object):
     # then appended to and delete() reordered.
     self.docids = None if docids is None else list(docids)
     self._docids_lock = _ReadWriteLock()
+    # scann-core: bumped by every call that may change the index (upsert,
+    # delete, rebalance), so that wrappers holding a copy of the index
+    # (scann.torch's native backend) know to refresh it.
+    self._generation = 0
     if docids is not None:
       self.docid_to_id = {docid: id for id, docid in enumerate(docids)}
       if len(docids) != len(self.docid_to_id):
@@ -246,7 +250,10 @@ class ScannSearcher(object):
       # scann-core: update the docid bookkeeping only once the index has
       # accepted the vectors; upstream updated it first, so a failed upsert
       # left docids out of sync with the index.
-      _ = self.searcher.upsert(indices, database, batch_size)
+      try:
+        _ = self.searcher.upsert(indices, database, batch_size)
+      finally:
+        self._generation += 1
 
       for idx, docid in zip(indices, docids):
         if idx is not None:
@@ -285,14 +292,20 @@ class ScannSearcher(object):
           self.docid_to_id[old_docid] = idx
         self.docids.pop()  # pyrefly: ignore[missing-attribute]
         self.docid_to_id.pop(docid)
-      _ = self.searcher.delete(indices)
+      try:
+        _ = self.searcher.delete(indices)
+      finally:
+        self._generation += 1
 
   def rebalance(self, config=None):
     """Rebalances the searcher."""
     # TODO(guorq): currently, this performs a full retrain based on the initial
     # config.
     config = "" if config is None else config
-    return self.searcher.rebalance(config)
+    try:
+      return self.searcher.rebalance(config)
+    finally:
+      self._generation += 1
 
   def reserve(self, num_datapoints):
     return self.searcher.reserve(num_datapoints)
