@@ -15,7 +15,7 @@ be installed in an environment. Remove the upstream wheel first:
 
 ```sh
 pip uninstall scann
-pip install scann-core      # release candidates: pip install --pre scann-core
+pip install scann-core
 ```
 
 A library that lists `scann` as a requirement will try to install the

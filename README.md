@@ -44,8 +44,8 @@ changed.
 
 | | |
 |---|---|
-| Python | `pip install scann-core` (release candidates: `pip install --pre scann-core`), or `pip install .` from a checkout |
-| Rust | `cargo add scann-core` (release candidates: `cargo add scann-core@<version>`), or a git/path dependency on this repository |
+| Python | `pip install scann-core`, or `pip install .` from a checkout |
+| Rust | `cargo add scann-core`, or a git/path dependency on this repository |
 | C++ | CMake `FetchContent`/`add_subdirectory`, linking `scann::core`; see [`examples/fetchcontent`](examples/fetchcontent) |
 
 All three build the C++ library from source, which needs:
