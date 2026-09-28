@@ -129,6 +129,19 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   set_tests_properties(python_langchain PROPERTIES SKIP_RETURN_CODE 77)
   scann_add_python_test(python_torch_input python/test_torch_input.py)
   set_tests_properties(python_torch_input PROPERTIES SKIP_RETURN_CODE 77)
+  # scann.torch against the pybind searcher, eagerly and compiled
+  # (torch.compile with Inductor), CPU and CUDA. Skipped without PyTorch.
+  # Inductor's and Triton's caches go to the build tree, not /tmp (TMPDIR
+  # too: Inductor keeps precompiled headers there whatever its cache dir).
+  set(_torch_cache "${CMAKE_CURRENT_BINARY_DIR}/torch_cache")
+  file(MAKE_DIRECTORY "${_torch_cache}/tmp")
+  set(SCANN_TORCH_TEST_ENV
+    "TORCHINDUCTOR_CACHE_DIR=${_torch_cache}/inductor"
+    "TRITON_CACHE_DIR=${_torch_cache}/triton"
+    "TMPDIR=${_torch_cache}/tmp")
+  scann_add_python_test(python_torch python/test_torch.py)
+  set_tests_properties(python_torch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
+                       ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
 
   # The Python examples assert their results, so they run as tests too.
   # The TensorFlow ones exit with 77 (skipped) without TensorFlow.
@@ -140,4 +153,10 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   set_tests_properties(example_py_tensorflow_wrapper
                        example_py_tensorflow_serving
                        PROPERTIES SKIP_RETURN_CODE 77)
+  # The PyTorch example: 77 without PyTorch; compiles with Inductor.
+  scann_add_python_test(example_py_torch_retrieval
+                        ../examples/python/torch_retrieval.py)
+  set_tests_properties(example_py_torch_retrieval PROPERTIES
+                       SKIP_RETURN_CODE 77 TIMEOUT 900
+                       ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
 endif()

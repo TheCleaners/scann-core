@@ -32,7 +32,8 @@
 # skipped on the others. Empty to install TensorFlow nowhere.
 # LANGCHAIN_PYTHON_VERSIONS (default: 3.12): likewise for langchain-community
 # and python_langchain; TORCH_PYTHON_VERSIONS (default: 3.12) for PyTorch
-# (the CPU build) and python_torch_input.
+# (the CPU build), python_torch_input, python_torch and
+# example_py_torch_retrieval.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
