@@ -71,6 +71,9 @@ All notable changes to scann-core. Versions follow
   refreshes its copy.
 
 ### Fixed
+- The wheels no longer contain Eigen's headers: 0.2.0's installed 681
+  files under `include/eigen3` into site-packages (from Eigen's install
+  rules). The wheel now installs only the `scann` package.
 - The `tensorflow_serving` example's recall check failed now and then:
   its query tower's weights were unseeded.
 

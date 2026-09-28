@@ -46,6 +46,9 @@ minimum-version = "build-system.requires"
 cmake.version = ">=3.27"
 cmake.build-type = "Release"
 build.targets = ["scann_python_package", "scann_pybind"]
+# Only the scann package (python/CMakeLists.txt); 0.2.0's wheels also held
+# Eigen's headers (include/eigen3) from its install rules.
+install.components = ["scann_python"]
 sdist.exclude = ["docs/tutorial/code/**/__pycache__", "build*/", "target/"]
 
 # Don't let scikit-build-core substitute Python's own compiler (often GCC,

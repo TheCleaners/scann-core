@@ -94,7 +94,10 @@ add_custom_target(scann_python_package ALL
 # pip install / wheel builds (scikit-build-core, see pyproject.toml): the
 # package is assembled in ${SCANN_PY_OUT}/scann and installed as is.
 if(SKBUILD)
+  # Component scann_python: pyproject.toml installs only it, so the
+  # dependencies' install rules (e.g. Eigen's headers) stay out of the wheel.
   install(DIRECTORY "${SCANN_PY_OUT}/scann" DESTINATION .
+          COMPONENT scann_python
           PATTERN "__pycache__" EXCLUDE
           PATTERN "*.pyc" EXCLUDE)
 endif()
