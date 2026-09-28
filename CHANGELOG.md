@@ -3,34 +3,13 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## Unreleased
-
-### Added
-- An optional TensorFlow op, built from source against the installed
-  TensorFlow with `-DSCANN_BUILD_TF_OP=ON` (Linux; not part of the wheel,
-  unsupported), and the `scann_tf_ops` package with upstream's
-  `scann_ops` API: `builder()`, `create_searcher()`, `search*()`, and
-  working `serialize_to_module()` / `searcher_from_module()`, so a model
-  that searches saves as a SavedModel, index included. Unlike upstream's
-  op it uses only TensorFlow's C API (no TensorFlow abseil/protobuf; the
-  library exports no symbols), keeps every index file in `tf.Variable`s
-  (so SOAR, int8, bfloat16 and all-deleted trees work), and caches the
-  searcher per index id and variable fingerprint, rebuilding it when the
-  variables change. Verified with TensorFlow 2.21.0 (`tensorflow-cpu`, and
-  the same library in the CUDA-built `tensorflow` wheel, also with a GPU
-  in use); it can't be
-  loaded by TensorFlow Serving's stock model server. Tests
-  `python_tf_ops`, `tf_op_symbols`, example
-  [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py),
-  a CI job, and [docs/tensorflow.md](docs/tensorflow.md#the-tensorflow-op-scann_tf_ops-build-from-source).
-- C++: `ScannInterface::LoadArtifactsFromMemory()` loads an index from its
-  files held in memory, with the same validation as loading a directory.
-
 ## 0.2.0-rc.2 (2026-09-27)
 
 Second release candidate: fixes for the rest of the audit findings
-(loading and saving indexes, config values, mutation), `scann.tf`, and
-the first release on crates.io (rc.1 was published to PyPI only).
+(loading and saving indexes, config values, mutation), TensorFlow
+(`scann.tf`, and an optional op built from source), PyTorch tensors as
+inputs, examples, and the first release on crates.io (rc.1 was published
+to PyPI only).
 
 ### Changed
 - Spherical partitioning (`tree(spherical=True)`) stores unit vectors: the
@@ -125,6 +104,25 @@ the first release on crates.io (rc.1 was published to PyPI only).
   index past that are rejected too (Python and Rust).
 
 ### Added
+- An optional TensorFlow op, built from source against the installed
+  TensorFlow with `-DSCANN_BUILD_TF_OP=ON` (Linux; not part of the wheel,
+  unsupported), and the `scann_tf_ops` package with upstream's
+  `scann_ops` API: `builder()`, `create_searcher()`, `search*()`, and
+  working `serialize_to_module()` / `searcher_from_module()`, so a model
+  that searches saves as a SavedModel, index included. Unlike upstream's
+  op it uses only TensorFlow's C API (no TensorFlow abseil/protobuf; the
+  library exports no symbols), keeps every index file in `tf.Variable`s
+  (so SOAR, int8, bfloat16 and all-deleted trees work), and caches the
+  searcher per index id and variable fingerprint, rebuilding it when the
+  variables change. Verified with TensorFlow 2.21.0 (`tensorflow-cpu`, and
+  the same library in the CUDA-built `tensorflow` wheel, also with a GPU
+  in use); it can't be
+  loaded by TensorFlow Serving's stock model server. Tests
+  `python_tf_ops`, `tf_op_symbols`, example
+  [`examples/python/tensorflow_op.py`](examples/python/tensorflow_op.py),
+  a CI job, and [docs/tensorflow.md](docs/tensorflow.md#the-tensorflow-op-scann_tf_ops-build-from-source).
+- C++: `ScannInterface::LoadArtifactsFromMemory()` loads an index from its
+  files held in memory, with the same validation as loading a directory.
 - Python: vectors can be PyTorch tensors (and other arrays numpy can read)
   everywhere: a float32 CPU tensor without a copy; a GPU tensor copied to
   host memory; a tensor that requires grad detached; bfloat16 converted.
