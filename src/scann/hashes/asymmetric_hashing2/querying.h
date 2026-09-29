@@ -81,6 +81,10 @@ struct PackedDataset {
   DatapointIndex num_datapoints = 0;
 
   uint32_t num_blocks = 0;
+
+  // scann-core: bit_packed_data is in the AVX-512 layout
+  // (hashes/internal/lut16_avx512_swizzle.h), read by the AVX-512 kernel.
+  bool avx512_layout = false;
 };
 
 PackedDataset CreatePackedDataset(const DenseDataset<uint8_t>& hashed_database);
@@ -91,6 +95,8 @@ struct PackedDatasetView {
   DatapointIndex num_datapoints = 0;
 
   DimensionIndex num_blocks = 0;
+
+  bool avx512_layout = false;
 };
 
 struct PackedDatasetMutableView {
@@ -99,6 +105,8 @@ struct PackedDatasetMutableView {
   DatapointIndex num_datapoints = 0;
 
   DimensionIndex num_blocks = 0;
+
+  bool avx512_layout = false;
 };
 
 DenseDataset<uint8_t> UnpackDataset(const PackedDatasetView& packed);
@@ -114,6 +122,13 @@ Status SetLUT16Hash(const DatapointPtr<uint8_t>& hashed, size_t index,
 
 template <typename Dataset>
 Datapoint<uint8_t> GetLUT16Hash(size_t index, const Dataset& packed_dataset);
+
+// scann-core: converts packed to the layout given (a no-op if it is in it).
+void SetLUT16Layout(PackedDataset* packed, bool avx512_layout);
+
+// scann-core: resizes bit_packed_data to num_groups groups of 32 datapoints
+// (new ones zeroed), keeping the layout. Use instead of resizing directly.
+void ResizeLUT16PackedData(PackedDataset* packed, size_t num_groups);
 
 template <typename PostprocessFunctor =
               asymmetric_hashing_internal::IdentityPostprocessFunctor,
@@ -519,6 +534,7 @@ Status FindApproxNeighborsFastTopNeighbors(
   args.num_datapoints = packed_dataset.num_datapoints;
   args.fast_topns = {ftn_ptrs.data(), kNumQueries};
   args.restrict_whitelists = restricts;
+  args.enable_avx512_codepath = packed_dataset.avx512_layout;
   asymmetric_hashing_internal::LUT16Interface::GetTopDistances(std::move(args));
 
   for (size_t batch_idx : Seq(kNumQueries)) {
@@ -640,13 +656,15 @@ Status AsymmetricQueryerBase::FindApproximateNeighborsBatched(
       ai::GetNeighborsViaAsymmetricDistanceLUT16WithInt16AccumulatorBatched2(
           lookup_spans, packed_dataset.num_datapoints,
           packed_dataset.bit_packed_data, restrict_whitelists_or_null,
-          max_dists, querying_options.postprocessing_functor, raw_top_ns);
+          max_dists, querying_options.postprocessing_functor, raw_top_ns,
+          packed_dataset.avx512_layout);
     }
   } else {
     ai::GetNeighborsViaAsymmetricDistanceLUT16WithInt32AccumulatorBatched2(
         lookup_spans, packed_dataset.num_datapoints,
         packed_dataset.bit_packed_data, restrict_whitelists_or_null, max_dists,
-        querying_options.postprocessing_functor, raw_top_ns);
+        querying_options.postprocessing_functor, raw_top_ns,
+        packed_dataset.avx512_layout);
   }
   for (size_t i = 0; i < kNumQueries; ++i) {
     const float inv_fixed_point_multiplier =
@@ -823,7 +841,8 @@ Status AsymmetricQueryerBase::FindApproximateNeighborsForceLUT16(
                       packed_dataset.num_datapoints,
                       packed_dataset.bit_packed_data,
                       params.restrict_whitelist(), fixed_point_max_distance,
-                      querying_options.postprocessing_functor, &raw_top_items);
+                      querying_options.postprocessing_functor, &raw_top_items,
+                      packed_dataset.avx512_layout);
     top_n->OverwriteFromClone(&raw_top_items,
                               [inv_fixed_point_multiplier](int32_t x) {
                                 return x * inv_fixed_point_multiplier;
@@ -846,7 +865,7 @@ Status AsymmetricQueryerBase::FindApproximateNeighborsForceLUT16(
         lookup_table.int8_lookup_table, packed_dataset.num_datapoints,
         packed_dataset.bit_packed_data, params.restrict_whitelist(),
         params.pre_reordering_epsilon(), postprocess_with_float_conversion,
-        top_n);
+        top_n, packed_dataset.avx512_layout);
   }
   return OkStatus();
 }

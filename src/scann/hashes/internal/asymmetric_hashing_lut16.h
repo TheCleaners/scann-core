@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -39,7 +43,7 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt32Accumulator2(
     ConstSpan<uint8_t> packed_dataset,
     const RestrictAllowlist* whitelist_or_null,
     PostprocessedDistance max_distance, const Postprocess& postprocess,
-    TopN* top_items);
+    TopN* top_items, int enable_avx512_codepath = 0);
 
 template <typename TopN, typename PostprocessedDistance, typename Postprocess>
 void GetNeighborsViaAsymmetricDistanceLUT16WithInt16Accumulator2(
@@ -47,7 +51,7 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt16Accumulator2(
     ConstSpan<uint8_t> packed_dataset,
     const RestrictAllowlist* whitelist_or_null,
     PostprocessedDistance max_distance, const Postprocess& postprocess,
-    TopN* top_items);
+    TopN* top_items, int enable_avx512_codepath = 0);
 
 template <size_t kNumQueries, typename TopN, typename PostprocessedDistance,
           typename Postprocess>
@@ -56,7 +60,8 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt16AccumulatorBatched2(
     ConstSpan<uint8_t> packed_dataset,
     array<const RestrictAllowlist*, kNumQueries> restrict_whitelists_or_null,
     array<PostprocessedDistance, kNumQueries> max_distances,
-    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items);
+    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items,
+    int enable_avx512_codepath = 0);
 
 template <size_t kNumQueries, typename TopN, typename PostprocessedDistance,
           typename Postprocess>
@@ -65,7 +70,8 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt32AccumulatorBatched2(
     ConstSpan<uint8_t> packed_dataset,
     array<const RestrictAllowlist*, kNumQueries> restrict_whitelists_or_null,
     array<PostprocessedDistance, kNumQueries> max_distances,
-    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items);
+    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items,
+    int enable_avx512_codepath = 0);
 
 template <typename TopN, typename PostprocessedDistance, typename Postprocess>
 void GetNeighborsViaAsymmetricDistanceLUT16WithInt32Accumulator2(
@@ -73,14 +79,15 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt32Accumulator2(
     ConstSpan<uint8_t> packed_dataset,
     const RestrictAllowlist* whitelist_or_null,
     PostprocessedDistance max_distance, const Postprocess& postprocess,
-    TopN* top_items) {
+    TopN* top_items, int enable_avx512_codepath) {
   const size_t num_32dp_simd_iters = DivRoundUp(dataset_size, 32);
 
   unique_ptr<int32_t[]> distances(new int32_t[32 * num_32dp_simd_iters]);
   size_t num_blocks = lookup.size() / 16;
 
   LUT16Interface::GetDistances(packed_dataset.data(), num_32dp_simd_iters,
-                               num_blocks, lookup.data(), distances.get());
+                               num_blocks, lookup.data(), distances.get(),
+                               enable_avx512_codepath);
 
   if (std::is_same<Postprocess, IdentityPostprocessFunctor>::value &&
       std::is_same<PostprocessedDistance, int32_t>::value &&
@@ -100,7 +107,7 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt16Accumulator2(
     ConstSpan<uint8_t> packed_dataset,
     const RestrictAllowlist* whitelist_or_null,
     PostprocessedDistance max_distance, const Postprocess& postprocess,
-    TopN* top_items) {
+    TopN* top_items, int enable_avx512_codepath) {
   if (max_distance > numeric_limits<int16_t>::max()) {
     max_distance = numeric_limits<int16_t>::max();
   } else if (max_distance < numeric_limits<int16_t>::min()) {
@@ -112,7 +119,8 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt16Accumulator2(
   size_t num_blocks = lookup.size() / 16;
 
   LUT16Interface::GetDistances(packed_dataset.data(), num_32dp_simd_iters,
-                               num_blocks, lookup.data(), distances.get());
+                               num_blocks, lookup.data(), distances.get(),
+                               enable_avx512_codepath);
 
   return WriteDistancesToTopN(whitelist_or_null, max_distance,
                               ConstSpan<int16_t>(distances.get(), dataset_size),
@@ -126,7 +134,8 @@ void GetNeighborsViaAsymmetricDistanceLUT16BatchedImpl(
     ConstSpan<uint8_t> packed_dataset,
     array<const RestrictAllowlist*, kNumQueries> restrict_whitelists_or_null,
     array<PostprocessedDistance, kNumQueries> max_distances,
-    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items) {
+    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items,
+    int enable_avx512_codepath) {
   for (auto& lookup : lookups) {
     DCHECK_EQ(lookup.size(), lookups[0].size());
   }
@@ -155,7 +164,8 @@ void GetNeighborsViaAsymmetricDistanceLUT16BatchedImpl(
 
   const size_t num_blocks = lookups[0].size() / 16;
   LUT16Interface::GetDistances(packed_dataset.data(), num_32dp_simd_iters,
-                               num_blocks, lookup_ptrs, distances);
+                               num_blocks, lookup_ptrs, distances,
+                               enable_avx512_codepath);
 
   for (size_t i = 0; i < kNumQueries; ++i) {
     WriteDistancesToTopN(restrict_whitelists_or_null[i],
@@ -172,11 +182,12 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt16AccumulatorBatched2(
     ConstSpan<uint8_t> packed_dataset,
     array<const RestrictAllowlist*, kNumQueries> restrict_whitelists_or_null,
     array<PostprocessedDistance, kNumQueries> max_distances,
-    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items) {
+    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items,
+    int enable_avx512_codepath) {
   GetNeighborsViaAsymmetricDistanceLUT16BatchedImpl<
       kNumQueries, TopN, PostprocessedDistance, int16_t, Postprocess>(
       lookups, dataset_size, packed_dataset, restrict_whitelists_or_null,
-      max_distances, postprocess, top_items);
+      max_distances, postprocess, top_items, enable_avx512_codepath);
 }
 
 template <size_t kNumQueries, typename TopN, typename PostprocessedDistance,
@@ -186,11 +197,12 @@ void GetNeighborsViaAsymmetricDistanceLUT16WithInt32AccumulatorBatched2(
     ConstSpan<uint8_t> packed_dataset,
     array<const RestrictAllowlist*, kNumQueries> restrict_whitelists_or_null,
     array<PostprocessedDistance, kNumQueries> max_distances,
-    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items) {
+    const Postprocess& postprocess, array<TopN*, kNumQueries> top_items,
+    int enable_avx512_codepath) {
   GetNeighborsViaAsymmetricDistanceLUT16BatchedImpl<
       kNumQueries, TopN, PostprocessedDistance, int32_t, Postprocess>(
       lookups, dataset_size, packed_dataset, restrict_whitelists_or_null,
-      max_distances, postprocess, top_items);
+      max_distances, postprocess, top_items, enable_avx512_codepath);
 }
 
 }  // namespace asymmetric_hashing_internal

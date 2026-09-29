@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_HASHES_INTERNAL_LUT16_INTERFACE_H_
 #define SCANN_HASHES_INTERNAL_LUT16_INTERFACE_H_
@@ -58,14 +62,18 @@ class LUT16Interface {
   SCANN_INLINE static void GetFloatDistances(
       LUT16Args<float> args, ConstSpan<float> inv_fp_multipliers);
 
+  // scann-core: enable_avx512_codepath (here and below) says the codes are in
+  // the AVX-512 layout (lut16_avx512_swizzle.h).
   template <typename DistT>
   SCANN_INLINE static void GetDistances(const uint8_t* packed_dataset,
                                         size_t num_32dp_simd_iters,
                                         size_t num_blocks,
                                         ConstSpan<const uint8_t*> lookups,
-                                        ConstSpan<DistT*> distances) {
+                                        ConstSpan<DistT*> distances,
+                                        int enable_avx512_codepath = 0) {
     LUT16Args<DistT> args;
     args.packed_dataset = packed_dataset;
+    args.enable_avx512_codepath = enable_avx512_codepath;
     args.num_32dp_simd_iters = num_32dp_simd_iters;
     args.num_blocks = num_blocks;
     args.lookups = lookups;
@@ -79,9 +87,11 @@ class LUT16Interface {
       size_t num_32dp_simd_iters, size_t num_blocks,
       ConstSpan<const uint8_t*> lookups, DatapointIndex first_dp_index,
       DatapointIndex num_datapoints,
-      ConstSpan<FastTopNeighbors<DistT>*> fast_topns) {
+      ConstSpan<FastTopNeighbors<DistT>*> fast_topns,
+      int enable_avx512_codepath = 0) {
     LUT16ArgsTopN<DistT> args;
     args.packed_dataset = packed_dataset;
+    args.enable_avx512_codepath = enable_avx512_codepath;
     args.prefetch_strategy =
         should_prefetch ? PrefetchStrategy::kSeq : PrefetchStrategy::kOff;
     args.num_32dp_simd_iters = num_32dp_simd_iters;
@@ -97,9 +107,10 @@ class LUT16Interface {
   SCANN_INLINE static void GetDistances(
       const uint8_t* packed_dataset, size_t num_32dp_simd_iters,
       size_t num_blocks, array<const uint8_t*, kNumQueries> lookups,
-      array<DistT*, kNumQueries> distances) {
+      array<DistT*, kNumQueries> distances, int enable_avx512_codepath = 0) {
     GetDistances(packed_dataset, num_32dp_simd_iters, num_blocks,
-                 MakeConstSpan(lookups), MakeConstSpan(distances));
+                 MakeConstSpan(lookups), MakeConstSpan(distances),
+                 enable_avx512_codepath);
   }
 
   template <typename DistT>
@@ -107,10 +118,11 @@ class LUT16Interface {
                                         size_t num_32dp_simd_iters,
                                         size_t num_blocks,
                                         const uint8_t* lookups1,
-                                        DistT* distances1) {
+                                        DistT* distances1,
+                                        int enable_avx512_codepath = 0) {
     GetDistances(packed_dataset, num_32dp_simd_iters, num_blocks,
                  ConstSpan<const uint8_t*>(&lookups1, 1),
-                 ConstSpan<DistT*>(&distances1, 1));
+                 ConstSpan<DistT*>(&distances1, 1), enable_avx512_codepath);
   }
 
   template <typename DistT>
@@ -118,11 +130,12 @@ class LUT16Interface {
       const uint8_t* packed_dataset, bool should_prefetch,
       size_t num_32dp_simd_iters, size_t num_blocks, const uint8_t* lookups1,
       DatapointIndex first_dp_index, DatapointIndex num_datapoints,
-      FastTopNeighbors<DistT>* fast_topn) {
+      FastTopNeighbors<DistT>* fast_topn, int enable_avx512_codepath = 0) {
     GetTopDistances(packed_dataset, should_prefetch, num_32dp_simd_iters,
                     num_blocks, ConstSpan<const uint8_t*>(&lookups1, 1),
                     first_dp_index, num_datapoints,
-                    ConstSpan<FastTopNeighbors<DistT>*>(&fast_topn, 1));
+                    ConstSpan<FastTopNeighbors<DistT>*>(&fast_topn, 1),
+                    enable_avx512_codepath);
   }
 
   static AlignedBuffer PlatformSpecificSwizzle(const uint8_t* packed_dataset,
@@ -133,6 +146,15 @@ class LUT16Interface {
                                              int num_datapoints,
                                              int num_blocks);
 };
+
+// scann-core: whether codes packed now should use the AVX-512 layout.
+inline bool UseAvx512Lut16Layout() {
+#if defined(__x86_64__) && !defined(SCANN_FORCE_HIGHWAY_LUT16)
+  return RuntimeSupportsAvx512();
+#else
+  return false;
+#endif
+}
 
 #define SCANN_CALL_LUT16_FUNCTION_1(batch_size, kPrefetch, ClassName, \
                                     Function, ...)                    \
@@ -161,10 +183,13 @@ class LUT16Interface {
 
 #if defined(__x86_64__) && !defined(SCANN_FORCE_HIGHWAY_LUT16)
 
+// scann-core: the AVX-512 kernel runs whenever the codes are in its layout
+// (upstream also required RuntimeSupportsAvx512(); the layout is only
+// produced when it holds, and the other kernels can't read it).
 #define SCANN_CALL_LUT16_FUNCTION(enable_avx512_codepath, batch_size,     \
                                   prefetch_strategy, Function, ...)       \
   if (prefetch_strategy == PrefetchStrategy::kOff) {                      \
-    if (enable_avx512_codepath && RuntimeSupportsAvx512()) {              \
+    if (enable_avx512_codepath) {                                         \
       SCANN_CALL_LUT16_FUNCTION_1(batch_size, PrefetchStrategy::kOff,     \
                                   LUT16Avx512, Function, __VA_ARGS__);    \
     }                                                                     \
@@ -176,7 +201,7 @@ class LUT16Interface {
                                   LUT16Sse4, Function, __VA_ARGS__);      \
     }                                                                     \
   } else if (prefetch_strategy == PrefetchStrategy::kSeq) {               \
-    if (enable_avx512_codepath && RuntimeSupportsAvx512()) {              \
+    if (enable_avx512_codepath) {                                         \
       SCANN_CALL_LUT16_FUNCTION_1(batch_size, PrefetchStrategy::kSeq,     \
                                   LUT16Avx512, Function, __VA_ARGS__);    \
     }                                                                     \
@@ -188,7 +213,7 @@ class LUT16Interface {
                                   LUT16Sse4, Function, __VA_ARGS__);      \
     }                                                                     \
   } else if (prefetch_strategy == PrefetchStrategy::kSmartT0) {           \
-    if (enable_avx512_codepath && RuntimeSupportsAvx512()) {              \
+    if (enable_avx512_codepath) {                                         \
       SCANN_CALL_LUT16_FUNCTION_1(batch_size, PrefetchStrategy::kSmart,   \
                                   LUT16Avx512, Function, __VA_ARGS__);    \
     }                                                                     \
@@ -200,7 +225,7 @@ class LUT16Interface {
                                   LUT16Sse4, Function, __VA_ARGS__);      \
     }                                                                     \
   } else {                                                                \
-    if (enable_avx512_codepath && RuntimeSupportsAvx512()) {              \
+    if (enable_avx512_codepath) {                                         \
       SCANN_CALL_LUT16_FUNCTION_1(batch_size, PrefetchStrategy::kSmart,   \
                                   LUT16Avx512, Function, __VA_ARGS__);    \
     }                                                                     \

@@ -776,6 +776,9 @@ Status TreeAHHybridResidual::FindNeighborsBatchedImpl(
       args.num_blocks = num_blocks;
       args.first_dp_index = cur_data.leaf_index << global_topn_shift;
       args.num_datapoints = cur_data.leaf_size;
+      // scann-core: the leaf's code layout picks the kernel.
+      args.enable_avx512_codepath =
+          leaf_searchers_[cur_data.leaf_index]->packed_dataset().avx512_layout;
 
       size_t cur_numq = cur_data.queries.size();
       for (size_t batch_start = 0; batch_start < cur_numq;) {
@@ -992,6 +995,9 @@ Status TreeAHHybridResidual::FindNeighborsInternal1(
       args.fast_topns = tops;
       args.prefetch_strategy =
           asymmetric_hashing_internal::PrefetchStrategy::kSmart;
+      // scann-core: the leaf's code layout picks the kernel.
+      args.enable_avx512_codepath =
+          leaf_searchers_[token]->packed_dataset().avx512_layout;
 
       args.restrict_whitelists = allowlists;
       asymmetric_hashing_internal::LUT16Interface::GetTopFloatDistances(
