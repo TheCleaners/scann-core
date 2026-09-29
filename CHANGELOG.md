@@ -81,6 +81,15 @@ All notable changes to scann-core. Versions follow
   so results are bit-identical). The time saved was within the noise
   (glibc's per-thread cache made those allocations cheap), but a search no
   longer allocates and zero-fills 4–8 KB per query.
+- The lookup table of a dot-product AH index (LUT16, the default with
+  `score_ah(1–4)` on `dot_product` and `l2_as_dot_product` indexes) is
+  computed in one pass over all blocks (it was one distance call per
+  block, 50 for GloVe-100) and its conversion to int8 vectorizes, with the
+  same values bit for bit: the new code evaluates each entry with the
+  operations the generic code uses on this build, and checks that against
+  the generic code when the index is first searched (falling back to it
+  otherwise). C++ `Search()` with 1 leaf and 10 candidates: GloVe-100
+  9.1 → 8.4 µs, SIFT-128 (`l2_as_dot_product`) 8.2 → 7.7 µs.
 
 ### Changed
 - The x86 builds use `-mpopcnt` by default (`SCANN_ARCH_FLAGS`), and the

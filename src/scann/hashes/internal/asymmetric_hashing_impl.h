@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -152,6 +153,52 @@ struct AhImpl {
 };
 
 SCANN_INSTANTIATE_TYPED_CLASS(extern, AhImpl);
+
+// scann-core: the raw float lookup table of a dot-product LUT16 model (16
+// centers per block, blocks of 1 to 4 dimensions), computed for all blocks
+// in one pass over a column-major copy of the centers. The generic path
+// (CreateRawFloatLookupTable) makes one DenseDistanceOneToMany call per
+// block, a 16 x 2 problem each, which with the dispatch and the per-row
+// reductions cost about 1 us of a GloVe-100 query (50 blocks). The values
+// are bit-identical to the generic path's: each center's distance is
+// evaluated with the same floating-point operations in the same order as
+// DenseAccumulatingDistanceMeasureOneToManyInternal does for its build's
+// Highway lane count (see the .cc). Create() checks that on a set of test
+// inputs against the generic path and returns nullptr, so the generic path
+// stays in use, for anything it doesn't cover or reproduce exactly.
+class Lut16DotProductLookupBuilder {
+ public:
+  static std::unique_ptr<const Lut16DotProductLookupBuilder> Create(
+      ConstSpan<DenseDataset<float>> centers);
+
+  // Whether `projected` has this model's block structure.
+  bool Accepts(const ChunkedDatapoint<float>& projected) const;
+
+  // result.size() == 16 * number of blocks.
+  void Compute(const ChunkedDatapoint<float>& projected,
+               MutableSpan<float> result) const;
+
+  // The same for blocks that are consecutive slices of `query` (a plain
+  // chunking projection; query has total_dims() values).
+  void ComputeContiguous(const float* query, MutableSpan<float> result) const;
+
+  size_t total_dims() const { return total_dims_; }
+
+ private:
+  Lut16DotProductLookupBuilder() = default;
+
+  void ComputeBlock(size_t block, const float* query,
+                    float* __restrict__ result) const;
+
+  // Per block: its dimensionality and the offset of its centers in
+  // columns_, which holds dims x 16 floats per block (dimension-major).
+  std::vector<uint32_t> dims_;
+  std::vector<uint32_t> offsets_;
+  std::vector<float> columns_;
+  ConstSpan<DenseDataset<float>> centers_;
+  size_t lanes_ = 0;
+  size_t total_dims_ = 0;
+};
 
 template <typename T>
 StatusOr<std::vector<DenseDataset<double>>> TrainAsymmetricHashing(

@@ -19,9 +19,13 @@
 #include "scann/hashes/internal/asymmetric_hashing_impl.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <numeric>
+#include <random>
 #include <type_traits>
 #include <utility>
 
@@ -29,6 +33,7 @@
 #include "absl/status/status.h"
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/dataset.h"
+#include "scann/distance_measures/one_to_one/dot_product.h"
 #include "scann/distance_measures/one_to_many/one_to_many.h"
 #include "scann/distance_measures/one_to_many/one_to_many_symmetric.h"
 #include "scann/hashes/internal/asymmetric_hashing_impl_neon.h"
@@ -631,6 +636,16 @@ inline TargetT SafeSaturatingCast(float f) {
   return static_cast<TargetT>(f);
 }
 
+// scann-core: SafeSaturatingCast<int8_t>(f) (truncating) without branches,
+// so that the conversion loop vectorizes: NaN -> 0, then clamping to
+// [-128, 127] before truncating gives the same value for every input
+// (f >= 127 -> 127, f <= -128 -> -128, anything in between truncates alike).
+inline int8_t SaturatingTruncateToInt8(float f) {
+  f = std::isnan(f) ? 0.0f : f;
+  f = std::min(std::max(f, -128.0f), 127.0f);
+  return static_cast<int8_t>(static_cast<int32_t>(f));
+}
+
 template <typename T, typename Lambda>
 inline vector<T> ConvertLookupToFixedPointImpl(ConstSpan<float> raw_lookup,
                                                Lambda convert_to_int_lambda,
@@ -664,6 +679,10 @@ vector<T> ConvertLookupToFixedPoint(
       return ConvertLookupToFixedPointImpl<T>(
           raw_lookup,
           [](float f) { return SafeSaturatingCast<SignedT>(std::round(f)); },
+          *multiplier);
+    } else if constexpr (std::is_same_v<SignedT, int8_t>) {
+      return ConvertLookupToFixedPointImpl<T>(
+          raw_lookup, [](float f) { return SaturatingTruncateToInt8(f); },
           *multiplier);
     } else {
       return ConvertLookupToFixedPointImpl<T>(
@@ -784,6 +803,237 @@ template class PopulateDistancesIterator<6, AddBiasFunctor>;
 template class PopulateDistancesIterator<6, LimitedInnerFunctor>;
 
 SCANN_INSTANTIATE_TYPED_CLASS(, AhImpl);
+
+// scann-core: Lut16DotProductLookupBuilder (see the header).
+//
+// For a dot-product lookup distance and a block of d <= 4 dimensions,
+// CreateRawFloatLookupTable's DenseDistanceOneToMany(lookup_distance, q,
+// centers, row) runs DenseAccumulatingDistanceMeasureOneToManyInternal
+// (d < 8), whose arithmetic depends on the Highway static target's lane
+// count L (`lanes_`): rows are taken in groups of three (rows 0-14 of 16),
+// and for each
+//   - L full lanes (only if d >= L), then L / 2 lanes (if d >= L / 2) are
+//     accumulated as NegMulAdd(q, c, 0), i.e. -(q * c) rounded once
+//     (whether or not the target fuses it: the addend is +0);
+//   - the lanes are summed by ReduceSum: for L = 4, (a0 + a3) + (a1 + a2);
+//     for L = 8, first a[i] + a[i + 4], then the same within the block;
+//   - the remaining dimensions are added with the scalar
+//     DotProductDistanceLambdas::AccTerm (acc - q * c, as the compiler
+//     contracts it), one by one;
+// and row 15 is DotProductDistance::GetDistanceDense. ComputeBlock()
+// evaluates exactly that, 16 centers at a time from a dimension-major copy
+// of the centers (the loops over rows vectorize without reassociating
+// anything). The zero lanes' +0.0f terms are kept: they only matter for
+// the sign of a zero, but they keep the evaluation literal.
+namespace {
+
+using DotLambdas = one_to_many_low_level::DotProductDistanceLambdas<float>;
+constexpr size_t kLut16Centers = 16;
+constexpr size_t kGroupedRows = 15;
+
+size_t StaticTargetFloatLanes() {
+  namespace hn = hwy::HWY_NAMESPACE;
+  return hn::Lanes(hn::ScalableTag<float>());
+}
+
+}  // namespace
+
+void Lut16DotProductLookupBuilder::ComputeBlock(
+    size_t block, const float* query, float* __restrict__ result) const {
+  const uint32_t dims = dims_[block];
+  const float* c0 = columns_.data() + offsets_[block];
+  const float* c1 = c0 + kLut16Centers;
+  const float* c2 = c1 + kLut16Centers;
+  const float* c3 = c2 + kLut16Centers;
+  const float q0 = query[0];
+  const float q1 = dims > 1 ? query[1] : 0.0f;
+  const float q2 = dims > 2 ? query[2] : 0.0f;
+  const float q3 = dims > 3 ? query[3] : 0.0f;
+  const bool lane_sum = lanes_ == 4 || (lanes_ == 8 && dims == 4);
+  if (!lane_sum) {
+    // L / 2 > d: no vector lanes; ReduceSum of zeros, then all of the
+    // dimensions through AccTerm.
+    for (size_t r = 0; r < kGroupedRows; ++r) {
+      float acc = 0.0f;
+      acc = DotLambdas::AccTerm(acc, q0, c0[r]);
+      if (dims > 1) acc = DotLambdas::AccTerm(acc, q1, c1[r]);
+      if (dims > 2) acc = DotLambdas::AccTerm(acc, q2, c2[r]);
+      if (dims > 3) acc = DotLambdas::AccTerm(acc, q3, c3[r]);
+      result[r] = acc;
+    }
+  } else if (dims == 1) {
+    // L = 4: nothing fills a vector lane.
+    for (size_t r = 0; r < kGroupedRows; ++r) {
+      result[r] = DotLambdas::AccTerm(0.0f, q0, c0[r]);
+    }
+  } else if (dims <= 3) {
+    // L = 4: two lanes, then (for d = 3) one AccTerm.
+    for (size_t r = 0; r < kGroupedRows; ++r) {
+      const float p0 = q0 * c0[r];
+      const float p1 = q1 * c1[r];
+      const float a0 = 0.0f - p0;
+      const float a1 = 0.0f - p1;
+      result[r] = (a0 + 0.0f) + (a1 + 0.0f);
+    }
+    if (dims == 3) {
+      for (size_t r = 0; r < kGroupedRows; ++r) {
+        result[r] = DotLambdas::AccTerm(result[r], q2, c2[r]);
+      }
+    }
+  } else if (lanes_ == 4) {
+    for (size_t r = 0; r < kGroupedRows; ++r) {
+      const float p0 = q0 * c0[r];
+      const float p1 = q1 * c1[r];
+      const float p2 = q2 * c2[r];
+      const float p3 = q3 * c3[r];
+      const float a0 = 0.0f - p0;
+      const float a1 = 0.0f - p1;
+      const float a2 = 0.0f - p2;
+      const float a3 = 0.0f - p3;
+      result[r] = (a0 + a3) + (a1 + a2);
+    }
+  } else {
+    // L = 8, d = 4: four lanes of the lower block; the upper block is zero.
+    for (size_t r = 0; r < kGroupedRows; ++r) {
+      const float p0 = q0 * c0[r];
+      const float p1 = q1 * c1[r];
+      const float p2 = q2 * c2[r];
+      const float p3 = q3 * c3[r];
+      const float b0 = (0.0f - p0) + 0.0f;
+      const float b1 = (0.0f - p1) + 0.0f;
+      const float b2 = (0.0f - p2) + 0.0f;
+      const float b3 = (0.0f - p3) + 0.0f;
+      result[r] = (b0 + b3) + (b1 + b2);
+    }
+  }
+  // Row 15: -DenseDotProduct(q, c), which on x86 is DenseDotProductSse4:
+  // the products go to lanes (d = 4: 0-3; d = 2, 3: the first two to lanes
+  // 2 and 3, a third one to lane 0; d = 1: lane 0), each added to +0, and
+  // two hadds sum them as (l0 + l1) + (l2 + l3). The double result negated
+  // and cast back to float is exact.
+#if defined(__x86_64__)
+  {
+    const size_t r = kGroupedRows;
+    float l0 = 0.0f, l1 = 0.0f, l2 = 0.0f, l3 = 0.0f;
+    if (dims == 4) {
+      l0 = 0.0f + q0 * c0[r];
+      l1 = 0.0f + q1 * c1[r];
+      l2 = 0.0f + q2 * c2[r];
+      l3 = 0.0f + q3 * c3[r];
+    } else if (dims >= 2) {
+      l0 = 0.0f + 0.0f;
+      l1 = 0.0f + 0.0f;
+      l2 = 0.0f + q0 * c0[r];
+      l3 = 0.0f + q1 * c1[r];
+      if (dims == 3) l0 += q2 * c2[r];
+    } else {
+      l0 += q0 * c0[r];
+    }
+    result[r] = -((l0 + l1) + (l2 + l3));
+  }
+#else
+  static const DotProductDistance* const kDot = new DotProductDistance();
+  result[kGroupedRows] = static_cast<float>(kDot->GetDistanceDense(
+      DatapointPtr<float>(nullptr, query, dims, dims),
+      centers_[block][kGroupedRows]));
+#endif
+}
+
+bool Lut16DotProductLookupBuilder::Accepts(
+    const ChunkedDatapoint<float>& projected) const {
+  if (projected.size() != dims_.size()) return false;
+  for (size_t b = 0; b < dims_.size(); ++b) {
+    const DatapointPtr<float> chunk = projected[b];
+    if (!chunk.IsDense() || chunk.dimensionality() != dims_[b] ||
+        chunk.nonzero_entries() != dims_[b]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void Lut16DotProductLookupBuilder::Compute(
+    const ChunkedDatapoint<float>& projected, MutableSpan<float> result) const {
+  DCHECK_EQ(result.size(), kLut16Centers * dims_.size());
+  for (size_t b = 0; b < dims_.size(); ++b) {
+    ComputeBlock(b, projected[b].values(), result.data() + kLut16Centers * b);
+  }
+}
+
+void Lut16DotProductLookupBuilder::ComputeContiguous(
+    const float* query, MutableSpan<float> result) const {
+  DCHECK_EQ(result.size(), kLut16Centers * dims_.size());
+  for (size_t b = 0; b < dims_.size(); ++b) {
+    ComputeBlock(b, query, result.data() + kLut16Centers * b);
+    query += dims_[b];
+  }
+}
+
+std::unique_ptr<const Lut16DotProductLookupBuilder>
+Lut16DotProductLookupBuilder::Create(ConstSpan<DenseDataset<float>> centers) {
+  if (centers.empty()) return nullptr;
+  const size_t lanes = StaticTargetFloatLanes();
+  if (lanes != 4 && lanes != 8 && lanes != 16) return nullptr;
+  std::unique_ptr<Lut16DotProductLookupBuilder> result(
+      new Lut16DotProductLookupBuilder());
+  result->lanes_ = lanes;
+  result->centers_ = centers;
+  for (const DenseDataset<float>& block : centers) {
+    const size_t dims = block.dimensionality();
+    if (block.size() != kLut16Centers || !block.IsDense() || dims < 1 ||
+        dims > 4) {
+      return nullptr;
+    }
+    result->dims_.push_back(dims);
+    result->total_dims_ += dims;
+    result->offsets_.push_back(result->columns_.size());
+    for (size_t d = 0; d < dims; ++d) {
+      for (size_t r = 0; r < kLut16Centers; ++r) {
+        result->columns_.push_back(block[r].values()[d]);
+      }
+    }
+  }
+
+  // The check: the generic computation and ComputeBlock on the same inputs,
+  // bit for bit. Inputs: random values over many magnitudes (products
+  // underflow and cancel), the centers themselves and their negations,
+  // zeros of both signs.
+  std::mt19937 rng(0x5ca77);
+  std::normal_distribution<float> normal;
+  std::uniform_real_distribution<float> log_scale(-12.0f, 12.0f);
+  const DotProductDistance dot;
+  std::array<float, kLut16Centers> expected, actual;
+  std::array<float, 4> query;
+  for (size_t b = 0; b < centers.size(); ++b) {
+    const size_t dims = result->dims_[b];
+    auto check = [&]() {
+      DenseDistanceOneToMany(
+          dot, DatapointPtr<float>(nullptr, query.data(), dims, dims),
+          centers[b], MakeMutableSpan(expected));
+      result->ComputeBlock(b, query.data(), actual.data());
+      return std::memcmp(expected.data(), actual.data(),
+                         sizeof(expected)) == 0;
+    };
+    for (int t = 0; t < 64; ++t) {
+      const float scale = std::pow(10.0f, t < 32 ? 0.0f : log_scale(rng));
+      for (size_t d = 0; d < dims; ++d) query[d] = normal(rng) * scale;
+      if (!check()) return nullptr;
+    }
+    for (size_t r = 0; r < kLut16Centers; ++r) {
+      for (float sign : {1.0f, -1.0f}) {
+        for (size_t d = 0; d < dims; ++d) {
+          query[d] = sign * centers[b][r].values()[d];
+        }
+        if (!check()) return nullptr;
+      }
+    }
+    for (float zero : {0.0f, -0.0f}) {
+      std::fill(query.begin(), query.end(), zero);
+      if (!check()) return nullptr;
+    }
+  }
+  return result;
+}
 
 }  // namespace asymmetric_hashing_internal
 }  // namespace research_scann
