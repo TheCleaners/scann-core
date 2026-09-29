@@ -150,6 +150,9 @@ Status KMeansTreePartitioner<T>::TokenForDatapoint(
     auto tokenization_options = KMeansTree::TokenizationOptions::NoSpilling(
         static_cast<KMeansTree::TokenizationType>(cur_type));
     tokenization_options.num_tokenized_branch = num_tokenized_branch_;
+    // scann-core: queries may use the fast int8 centroid kernel; datapoints
+    // (build, mutations) keep ScaNN's.
+    tokenization_options.allow_fast_int8 = is_query_mode;
     SCANN_RETURN_IF_ERROR(
         kmeans_tree_->Tokenize(dptr, *dist, tokenization_options, &result_vec));
     *result = result_vec[0];
@@ -218,13 +221,13 @@ Status KMeansTreePartitioner<T>::TokensForDatapointWithSpilling(
           dptr, result, max_centers, pre_reordering_num_neighbors);
     }
 
-    return kmeans_tree_->Tokenize(
-        dptr, *query_tokenization_dist_,
-        KMeansTree::TokenizationOptions::UserSpecifiedSpilling(
-            query_spilling_type_, query_spilling_threshold_, max_centers,
-            static_cast<KMeansTree::TokenizationType>(
-                query_tokenization_type_)),
-        result);
+    auto opts = KMeansTree::TokenizationOptions::UserSpecifiedSpilling(
+        query_spilling_type_, query_spilling_threshold_, max_centers,
+        static_cast<KMeansTree::TokenizationType>(query_tokenization_type_));
+    // scann-core: see TokenForDatapoint.
+    opts.allow_fast_int8 = true;
+    return kmeans_tree_->Tokenize(dptr, *query_tokenization_dist_, opts,
+                                  result);
   } else if (this->tokenization_mode() == UntypedPartitioner::DATABASE) {
     if (orthogonality_amplified_database_spilling()) {
       if (!dptr.IsDense()) {

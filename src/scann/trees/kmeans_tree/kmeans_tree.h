@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -155,6 +159,11 @@ class KMeansTree final : public KMeansTreeTrainerInterface,
     TokenizationType tokenization_type = FLOAT;
 
     int32_t num_tokenized_branch = 1;
+
+    // scann-core: FIXED_POINT_INT8 may use the fast fixed-point kernel
+    // (x86-64; scann_core/fast_int8_centers.h). The partitioner sets it for
+    // query tokenization only.
+    bool allow_fast_int8 = false;
   };
 
   template <typename T, typename ResT>
@@ -203,7 +212,8 @@ class KMeansTree final : public KMeansTreeTrainerInterface,
                                      const DistanceMeasure& dist,
                                      int32_t num_tokenized_branch,
                                      const KMeansTreeNode* root,
-                                     KMeansTreeSearchResult* result) const;
+                                     KMeansTreeSearchResult* result,
+                                     bool allow_fast_int8 = false) const;
 
   template <typename CentersType>
   Status TokenizeWithSpillingImpl(
@@ -211,7 +221,8 @@ class KMeansTree final : public KMeansTreeTrainerInterface,
       QuerySpillingConfig::SpillingType spilling_type,
       double spilling_threshold, int32_t max_centers,
       int32_t num_tokenized_branch, const KMeansTreeNode* current_node,
-      std::vector<KMeansTreeSearchResult>* results) const;
+      std::vector<KMeansTreeSearchResult>* results,
+      bool allow_fast_int8 = false) const;
 
   template <typename CentersType>
   Status TokenizeWithSpillingImpl(
@@ -219,7 +230,8 @@ class KMeansTree final : public KMeansTreeTrainerInterface,
       QuerySpillingConfig::SpillingType spilling_type,
       double spilling_threshold, int32_t max_centers,
       int32_t num_tokenized_branch, const KMeansTreeNode* current_node,
-      std::vector<pair<DatapointIndex, float>>* results) const;
+      std::vector<pair<DatapointIndex, float>>* results,
+      bool allow_fast_int8 = false) const;
 
   template <typename CallbackType, typename RetValueType>
   pair<bool, RetValueType> NodeIteratingHelper(
@@ -333,11 +345,13 @@ Status KMeansTree::TokenizeImpl(const DatapointPtr<float>& query,
       result->resize(1);
       if constexpr (std::is_same_v<ResT, KMeansTreeSearchResult>) {
         return TokenizeWithoutSpillingImpl<CentersType>(
-            query, dist, opts.num_tokenized_branch, &root_, result->data());
+            query, dist, opts.num_tokenized_branch, &root_, result->data(),
+            opts.allow_fast_int8);
       } else {
         KMeansTreeSearchResult kmeans_res;
         SCANN_RETURN_IF_ERROR(TokenizeWithoutSpillingImpl<CentersType>(
-            query, dist, opts.num_tokenized_branch, &root_, &kmeans_res));
+            query, dist, opts.num_tokenized_branch, &root_, &kmeans_res,
+            opts.allow_fast_int8));
         DCHECK(kmeans_res.node != nullptr);
         result->front() = {kmeans_res.node->LeafId(),
                            kmeans_res.distance_to_center};
@@ -348,12 +362,13 @@ Status KMeansTree::TokenizeImpl(const DatapointPtr<float>& query,
           query, dist,
           static_cast<QuerySpillingConfig::SpillingType>(
               learned_spilling_type_),
-          NAN, max_spill_centers_, opts.num_tokenized_branch, &root_, result);
+          NAN, max_spill_centers_, opts.num_tokenized_branch, &root_, result,
+          opts.allow_fast_int8);
     case TokenizationOptions::USER_SPECIFIED:
       return TokenizeWithSpillingImpl<CentersType>(
           query, dist, opts.user_specified_spilling_type,
           opts.spilling_threshold, opts.max_spilling_centers,
-          opts.num_tokenized_branch, &root_, result);
+          opts.num_tokenized_branch, &root_, result, opts.allow_fast_int8);
     default:
       return InternalError(
           absl::StrCat("Invalid spilling type:  ", opts.spilling_type));
@@ -372,7 +387,7 @@ template <typename CentersType>
 Status KMeansTree::TokenizeWithoutSpillingImpl(
     const DatapointPtr<float>& query, const DistanceMeasure& dist,
     int32_t num_tokenized_branch, const KMeansTreeNode* root,
-    KMeansTreeSearchResult* result) const {
+    KMeansTreeSearchResult* result, bool allow_fast_int8) const {
   CHECK(result);
   if (root->IsLeaf()) {
     result->node = root;
@@ -383,7 +398,8 @@ Status KMeansTree::TokenizeWithoutSpillingImpl(
       root->GetCentersByTemplateType<CentersType>();
   std::vector<double> distances(centers.size());
   if (std::is_same_v<CentersType, int8_t>) {
-    SCANN_RETURN_IF_ERROR(root->GetAllDistancesInt8(dist, query, &distances));
+    SCANN_RETURN_IF_ERROR(
+        root->GetAllDistancesInt8(dist, query, &distances, allow_fast_int8));
   } else {
     root->GetAllDistancesFloatingPoint(dist, query, &distances);
   }
@@ -405,7 +421,7 @@ Status KMeansTree::TokenizeWithoutSpillingImpl(
     } else {
       return TokenizeWithoutSpillingImpl<CentersType>(
           query, dist, num_tokenized_branch,
-          &root->Children()[nearest_center_index], result);
+          &root->Children()[nearest_center_index], result, allow_fast_int8);
     }
   } else {
     std::vector<std::pair<int, double>> index_distances;
@@ -423,7 +439,8 @@ Status KMeansTree::TokenizeWithoutSpillingImpl(
       const auto& child = root->Children()[index_distances[branch_id].first];
       KMeansTreeSearchResult child_result;
       auto status = TokenizeWithoutSpillingImpl<CentersType>(
-          query, dist, num_tokenized_branch, &child, &child_result);
+          query, dist, num_tokenized_branch, &child, &child_result,
+          allow_fast_int8);
       if (status.ok()) {
         DCHECK_NE(child_result.node, nullptr);
         if (child.IsLeaf()) {
@@ -455,7 +472,7 @@ Status KMeansTree::TokenizeWithSpillingImpl(
     QuerySpillingConfig::SpillingType spilling_type, double spilling_threshold,
     int32_t max_centers, int32_t num_tokenized_branch,
     const KMeansTreeNode* current_node,
-    std::vector<KMeansTreeSearchResult>* results) const {
+    std::vector<KMeansTreeSearchResult>* results, bool allow_fast_int8) const {
   DCHECK(results);
   DCHECK(current_node);
 
@@ -476,7 +493,8 @@ Status KMeansTree::TokenizeWithSpillingImpl(
   SCANN_RETURN_IF_ERROR(
       (current_node->FindChildrenWithSpilling<float, CentersType>(
           query, spilling_type, possibly_learned_spilling_threshold,
-          max_centers, num_tokenized_branch, dist, &children_to_search)));
+          max_centers, num_tokenized_branch, dist, &children_to_search,
+          allow_fast_int8)));
   for (const auto& elem : children_to_search) {
     const int32_t child_index = elem.first;
     const float distance_to_child_center = elem.second;
@@ -489,7 +507,7 @@ Status KMeansTree::TokenizeWithSpillingImpl(
       SCANN_RETURN_IF_ERROR((TokenizeWithSpillingImpl<CentersType>(
           query, dist, spilling_type, spilling_threshold, max_centers,
           num_tokenized_branch, &current_node->Children()[child_index],
-          results)));
+          results, allow_fast_int8)));
     }
   }
 
@@ -508,7 +526,8 @@ Status KMeansTree::TokenizeWithSpillingImpl(
     QuerySpillingConfig::SpillingType spilling_type, double spilling_threshold,
     int32_t max_centers, int32_t num_tokenized_branch,
     const KMeansTreeNode* current_node,
-    std::vector<pair<DatapointIndex, float>>* results) const {
+    std::vector<pair<DatapointIndex, float>>* results,
+    bool allow_fast_int8) const {
   if (ABSL_PREDICT_TRUE(is_flat_)) {
     const double possibly_learned_spilling_threshold =
         (std::isnan(spilling_threshold))
@@ -517,7 +536,8 @@ Status KMeansTree::TokenizeWithSpillingImpl(
     SCANN_RETURN_IF_ERROR(
         (current_node->FindChildrenWithSpilling<float, CentersType>(
             query, spilling_type, possibly_learned_spilling_threshold,
-            max_centers, num_tokenized_branch, dist, results)));
+            max_centers, num_tokenized_branch, dist, results,
+            allow_fast_int8)));
     ZipSortBranchOptimized(DistanceComparatorBranchOptimized(),
                            results->begin(), results->end());
     return OkStatus();
@@ -525,7 +545,7 @@ Status KMeansTree::TokenizeWithSpillingImpl(
     vector<KMeansTreeSearchResult> full_results;
     SCANN_RETURN_IF_ERROR(TokenizeWithSpillingImpl<CentersType>(
         query, dist, spilling_type, spilling_threshold, max_centers,
-        num_tokenized_branch, current_node, &full_results));
+        num_tokenized_branch, current_node, &full_results, allow_fast_int8));
     results->resize(full_results.size());
     for (const auto& [i, full_res] : Enumerate(full_results)) {
       (*results)[i] = {full_res.node->LeafId(), full_res.distance_to_center};

@@ -285,6 +285,14 @@ void KMeansTreeNode::CreateFixedPointCenters() {
       ScalarQuantizeFloatDataset(float_centers_, 1.0, NAN);
   inv_int8_multipliers_ = std::move(results.inverse_multiplier_by_dimension);
   fixed_point_centers_ = std::move(results.quantized_dataset);
+  // scann-core: the same centroids for the fast query-time kernel.
+  if (!fixed_point_centers_.empty()) {
+    fast_int8_centers_.Build(fixed_point_centers_.data().data(),
+                             fixed_point_centers_.size(),
+                             fixed_point_centers_.dimensionality());
+  } else {
+    fast_int8_centers_.Clear();
+  }
 
   for (KMeansTreeNode& child : children_) {
     child.CreateFixedPointCenters();

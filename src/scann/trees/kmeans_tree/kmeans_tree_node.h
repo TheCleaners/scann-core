@@ -48,6 +48,7 @@
 #include "scann/utils/fast_top_neighbors.h"
 #include "scann/utils/types.h"
 #include "scann/utils/zip_sort.h"
+#include "scann_core/fast_int8_centers.h"
 #include "scann_core/scratch.h"
 
 namespace research_scann {
@@ -102,7 +103,8 @@ class KMeansTreeNode {
       QuerySpillingConfig::SpillingType spilling_type,
       double spilling_threshold, int32_t max_centers,
       int32_t num_tokenized_branch, const DistanceMeasure& dist,
-      std::vector<pair<DatapointIndex, float>>* child_centers) const;
+      std::vector<pair<DatapointIndex, float>>* child_centers,
+      bool allow_fast_int8 = false) const;
 
   template <typename Real, typename OutT = double>
   void GetAllDistancesFloatingPoint(const DistanceMeasure& dist,
@@ -111,7 +113,8 @@ class KMeansTreeNode {
   template <typename OutT = double>
   Status GetAllDistancesInt8(const DistanceMeasure& dist,
                              const DatapointPtr<float>& query,
-                             std::vector<OutT>* distances) const;
+                             std::vector<OutT>* distances,
+                             bool allow_fast_int8 = false) const;
 
   void CreateFixedPointCenters();
 
@@ -132,6 +135,11 @@ class KMeansTreeNode {
   DenseDataset<float> float_centers_;
 
   DenseDataset<int8_t> fixed_point_centers_;
+
+  // scann-core: fixed_point_centers_ in the fast kernel's layout (x86-64;
+  // empty elsewhere), built and cleared with them. See
+  // scann_core/fast_int8_centers.h.
+  scann_core::FastInt8Centers fast_int8_centers_;
 
   std::vector<float> inv_int8_multipliers_ = {};
 
@@ -229,7 +237,8 @@ void KMeansTreeNode::GetAllDistancesFloatingPoint(
 template <typename OutT>
 Status KMeansTreeNode::GetAllDistancesInt8(const DistanceMeasure& dist,
                                            const DatapointPtr<float>& query,
-                                           std::vector<OutT>* distances) const {
+                                           std::vector<OutT>* distances,
+                                           bool allow_fast_int8) const {
   const auto& centers = fixed_point_centers_;
   const bool is_sq_l2 =
       dist.specially_optimized_distance_tag() == DistanceMeasure::SQUARED_L2;
@@ -267,8 +276,29 @@ Status KMeansTreeNode::GetAllDistancesInt8(const DistanceMeasure& dist,
       adjusted_values[i] *= inv_mult;
   }
 
-  DenseDotProductDistanceOneToManyInt8Float(adjusted, centers,
-                                            MakeMutableSpan(*distances));
+  // scann-core: query-time tokenization on x86-64 scores the centroids in
+  // 16-bit fixed point (not bit-identical to the float kernel below; see
+  // scann_core/fast_int8_centers.h), unless the exact kernel was requested.
+  bool fast = false;
+  if (allow_fast_int8 && query.IsDense() &&
+      fast_int8_centers_.size() == centers.size() &&
+      fast_int8_centers_.dimensionality() == centers.dimensionality() &&
+      adjusted_values.size() == centers.dimensionality()) {
+    if constexpr (std::is_same_v<OutT, float>) {
+      fast = fast_int8_centers_.DotProductDistances(adjusted_values.data(),
+                                                    distances->data());
+    } else {
+      scann_core::ScratchLease<std::vector<float>> tmp;
+      tmp->resize(centers.size());
+      fast = fast_int8_centers_.DotProductDistances(adjusted_values.data(),
+                                                    tmp->data());
+      if (fast) std::copy(tmp->begin(), tmp->end(), distances->begin());
+    }
+  }
+  if (!fast) {
+    DenseDotProductDistanceOneToManyInt8Float(adjusted, centers,
+                                              MakeMutableSpan(*distances));
+  }
   if (is_sq_l2) {
     DCHECK_EQ(center_squared_l2_norms_.size(), distances->size());
     float query_norm = SquaredL2Norm(query);
@@ -284,7 +314,8 @@ Status KMeansTreeNode::FindChildrenWithSpilling(
     QuerySpillingConfig::SpillingType spilling_type, double spilling_threshold,
     int32_t max_centers, int32_t num_tokenized_branch,
     const DistanceMeasure& dist,
-    std::vector<pair<DatapointIndex, float>>* child_centers) const {
+    std::vector<pair<DatapointIndex, float>>* child_centers,
+    bool allow_fast_int8) const {
   const auto& centers = this->GetCentersByTemplateType<DataType>();
   DCHECK_GT(centers.size(), 0);
   DCHECK(child_centers);
@@ -301,7 +332,8 @@ Status KMeansTreeNode::FindChildrenWithSpilling(
     this->GetAllDistancesFloatingPoint(dist, query, &distances);
   } else {
     static_assert(std::is_same_v<DataType, int8_t>);
-    SCANN_RETURN_IF_ERROR(this->GetAllDistancesInt8(dist, query, &distances));
+    SCANN_RETURN_IF_ERROR(
+        this->GetAllDistancesInt8(dist, query, &distances, allow_fast_int8));
   }
 
   return kmeans_tree_internal::PostprocessDistancesForSpilling(
@@ -388,6 +420,7 @@ Status KMeansTreeNode::ApplyAvq(
 
   float_centers_ = std::move(new_centers);
   fixed_point_centers_ = decltype(fixed_point_centers_)();
+  fast_int8_centers_.Clear();
   inv_int8_multipliers_.clear();
 
   return OkStatus();
