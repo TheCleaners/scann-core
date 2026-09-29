@@ -62,6 +62,7 @@
 #include "scann/utils/fast_top_neighbors.h"
 #include "scann/utils/parallel_for.h"
 #include "scann/utils/types.h"
+#include "scann_core/scratch.h"
 
 namespace research_scann {
 
@@ -539,7 +540,10 @@ Status TreeAHHybridResidual::FindNeighborsImpl(const DatapointPtr<float>& query,
   if (tree_x_params) {
     num_centers = tree_x_params->num_partitions_to_search_override();
   }
-  vector<pair<DatapointIndex, float>> centers_to_search_storage;
+  // scann-core: the tokens go to a per-thread buffer (upstream: a new vector
+  // per query), emptied first as a new one would be.
+  scann_core::ScratchLease<vector<pair<DatapointIndex, float>>>
+      centers_to_search_storage;
   ConstSpan<pair<DatapointIndex, float>> centers_to_search;
   if (tree_x_params &&
       tree_x_params->pre_tokenization_with_distances_enabled()) {
@@ -547,10 +551,12 @@ Status TreeAHHybridResidual::FindNeighborsImpl(const DatapointPtr<float>& query,
     SCANN_RETURN_IF_ERROR(
         ValidateTokenList(centers_to_search, query_tokenizer_ != nullptr));
   } else {
+    centers_to_search_storage->clear();
     SCANN_RETURN_IF_ERROR(
         maybe_projected_query_tokenizer_->TokensForDatapointWithSpilling(
-            maybe_projected_query, num_centers, &centers_to_search_storage));
-    centers_to_search = centers_to_search_storage;
+            maybe_projected_query, num_centers,
+            centers_to_search_storage.get()));
+    centers_to_search = *centers_to_search_storage;
   }
   return FindNeighborsInternal1(maybe_projected_query, params,
                                 centers_to_search, result);
@@ -923,9 +929,13 @@ Status TreeAHHybridResidual::FindNeighborsInternal1(
   const uint8_t global_topn_shift = GlobalTopNShift();
   if (global_topn_shift > 0 &&
       lookup_table->precomputed_lookup_table().can_use_int16_accumulator) {
-    FastTopNeighbors<float> top_n(NumNeighborsWithSpillingMultiplier(
-                                      params.pre_reordering_num_neighbors()),
-                                  params.pre_reordering_epsilon());
+    // scann-core: a per-thread FastTopNeighbors and leaf list (upstream: new
+    // ones per query), initialized as new ones.
+    scann_core::ScratchLease<FastTopNeighbors<float>> top_n_scratch;
+    FastTopNeighbors<float>& top_n = *top_n_scratch;
+    top_n.InitLikeNew(NumNeighborsWithSpillingMultiplier(
+                          params.pre_reordering_num_neighbors()),
+                      params.pre_reordering_epsilon());
     DCHECK(result);
 
     std::array<const uint8_t*, 1> lookups = {
@@ -935,8 +945,10 @@ Status TreeAHHybridResidual::FindNeighborsInternal1(
 
     size_t num_blocks = 0;
 
-    vector<pair<const uint8_t*, uint32_t>> center_data(
-        centers_to_search.size() + 1);
+    scann_core::ScratchLease<vector<pair<const uint8_t*, uint32_t>>>
+        center_data_scratch;
+    vector<pair<const uint8_t*, uint32_t>>& center_data = *center_data_scratch;
+    center_data.assign(centers_to_search.size() + 1, {nullptr, 0});
     for (size_t i : IndicesOf(centers_to_search)) {
       const asymmetric_hashing2::PackedDataset& packed =
           leaf_searchers_[centers_to_search[i].first]->packed_dataset();

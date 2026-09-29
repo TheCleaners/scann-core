@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_TREES_KMEANS_TREE_KMEANS_TREE_NODE_H_
 #define SCANN_TREES_KMEANS_TREE_KMEANS_TREE_NODE_H_
@@ -44,6 +48,7 @@
 #include "scann/utils/fast_top_neighbors.h"
 #include "scann/utils/types.h"
 #include "scann/utils/zip_sort.h"
+#include "scann_core/scratch.h"
 
 namespace research_scann {
 
@@ -235,18 +240,34 @@ Status KMeansTreeNode::GetAllDistancesInt8(const DistanceMeasure& dist,
         "dot-product distance and squared L2 distance.");
   }
 
+  // scann-core: a dense query is adjusted in a per-thread buffer (upstream
+  // copied it into a new Datapoint on every call); same values.
   Datapoint<float> inv_adjusted;
-  CopyToDatapoint(query, &inv_adjusted);
+  scann_core::ScratchLease<std::vector<float>> dense_scratch;
+  MutableSpan<float> adjusted_values;
+  DatapointPtr<float> adjusted;
+  if (query.IsDense()) {
+    dense_scratch->assign(query.values(),
+                          query.values() + query.nonzero_entries());
+    adjusted_values = MakeMutableSpan(*dense_scratch);
+    adjusted = DatapointPtr<float>(nullptr, dense_scratch->data(),
+                                   query.nonzero_entries(),
+                                   query.dimensionality());
+  } else {
+    CopyToDatapoint(query, &inv_adjusted);
+    adjusted_values = inv_adjusted.mutable_values_span();
+    adjusted = inv_adjusted.ToPtr();
+  }
 
   if (is_sq_l2) {
     for (const auto& [i, inv_mult] : Enumerate(inv_int8_multipliers_))
-      inv_adjusted.mutable_values_span()[i] *= inv_mult * 2;
+      adjusted_values[i] *= inv_mult * 2;
   } else {
     for (const auto& [i, inv_mult] : Enumerate(inv_int8_multipliers_))
-      inv_adjusted.mutable_values_span()[i] *= inv_mult;
+      adjusted_values[i] *= inv_mult;
   }
 
-  DenseDotProductDistanceOneToManyInt8Float(inv_adjusted.ToPtr(), centers,
+  DenseDotProductDistanceOneToManyInt8Float(adjusted, centers,
                                             MakeMutableSpan(*distances));
   if (is_sq_l2) {
     DCHECK_EQ(center_squared_l2_norms_.size(), distances->size());
@@ -269,7 +290,11 @@ Status KMeansTreeNode::FindChildrenWithSpilling(
   DCHECK(child_centers);
   SCANN_RET_CHECK(query.IsFinite());
 
-  std::vector<float> distances(centers.size());
+  // scann-core: a per-thread buffer (upstream allocated and zero-filled a
+  // vector per call); every element is written below before it's read.
+  scann_core::ScratchLease<std::vector<float>> distances_scratch;
+  std::vector<float>& distances = *distances_scratch;
+  distances.resize(centers.size());
   DCHECK(centers.IsDense());
 
   if constexpr (std::is_floating_point_v<DataType>) {

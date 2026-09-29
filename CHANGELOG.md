@@ -74,6 +74,13 @@ All notable changes to scann-core. Versions follow
   operations in the same order). Its bfloat16 twin, used for reordering,
   gets the same. C++ `Search()` with 1 leaf and 10 candidates on GloVe-100
   (1,500 leaves): 10.3 → 9.35 µs.
+- A tree + AH `search()` makes 4 heap allocations instead of 14: the
+  distances to the centroids, the int8-adjusted query, the list of leaves
+  and the top-N buffers of tokenization and of the leaf scan are per-thread
+  buffers that are reused (the top-N ones initialized exactly as new ones,
+  so results are bit-identical). The time saved was within the noise
+  (glibc's per-thread cache made those allocations cheap), but a search no
+  longer allocates and zero-fills 4–8 KB per query.
 
 ### Changed
 - The x86 builds use `-mpopcnt` by default (`SCANN_ARCH_FLAGS`), and the

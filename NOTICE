@@ -391,6 +391,19 @@ isn't a one-line change:
       computed exactly as before), HandleXDims expands each 8-byte half of
       16 int8 values straight from memory, and the paired path prefetches
       each cache line of the next rows once instead of every 16 elements.
+  src/scann/utils/fast_top_neighbors.h
+      InitLikeNew(): the state a new object gets from Init(), reusing the
+      object's arrays when they are large enough (allocated_capacity_);
+      ScratchIsRetainable() for scann_core::ScratchLease.
+  src/scann/trees/kmeans_tree/kmeans_tree_node.h,
+  src/scann/trees/kmeans_tree/kmeans_tree_node.cc,
+  src/scann/tree_x_hybrid/tree_ah_hybrid_residual.cc
+      FindChildrenWithSpilling(), GetAllDistancesInt8() (dense queries),
+      PostprocessDistancesForSpilling(), FindNeighborsImpl() and
+      FindNeighborsInternal1() (global top-N) use per-thread scratch objects
+      (scann_core::ScratchLease, core/scann_core/scratch.h) for the
+      centroid distances, the adjusted query, the top-N buffers, the token
+      list and the leaf list, instead of allocating them per query.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
       directly (no docid lock, no context manager). upsert() passes the rows
