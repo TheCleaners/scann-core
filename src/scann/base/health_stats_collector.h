@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -36,7 +37,10 @@
 #include "scann/partitioning/kmeans_tree_like_partitioner.h"
 #include "scann/partitioning/projecting_decorator.h"
 #include "scann/utils/common.h"
+#include "scann/utils/parallel_for.h"
+#include "scann/utils/threads.h"
 #include "scann/utils/types.h"
+#include "scann_core/available_cpus.h"
 
 namespace research_scann {
 
@@ -203,29 +207,49 @@ Status HealthStatsCollector<Searcher, InDataType, InAccamulationType,
         // scann-core: sums over datapoints mapped into the centroids' space
         // (see projector_).
         const size_t centroid_dims = centroids.dimensionality();
-        InAccamulationType total_squared_qe = 0.0;
-        Datapoint<float> projected;
-
-        for (const auto& [token, dps] : Enumerate(datapoints_by_token)) {
+        // scann-core: the partitions are summed in parallel (upstream: one
+        // thread, a random-access pass over the whole dataset on every
+        // build, load and rebalance: 45 % of loading GloVe-100 with float
+        // reordering), each exactly as before, and the total is added up in
+        // partition order afterwards, so the statistics are bit-identical.
+        // The pool is sized by scann_core::AvailableCPUs(), and started only
+        // for datasets large enough to be worth it.
+        const size_t n_tokens = datapoints_by_token.size();
+        std::vector<uint8_t> lost(n_tokens, 0);
+        auto token_stats = [&](size_t token) {
+          const auto& dps = datapoints_by_token[token];
           Datapoint<InAccamulationType> sum_dims;
           sum_dims.ZeroFill(centroid_dims);
           DatapointPtr<DataType> centroid = centroids[token];
           InAccamulationType v = 0;
+          Datapoint<float> projected;
           for (auto dp_idx : dps) {
             DatapointPtr<DataType> dp;
             if (!ToCentroidSpace(ds[dp_idx], &projected, &dp)) {
-              quantization_error_lost_ = true;
-              break;
+              lost[token] = 1;
+              return;
             }
             v += SquaredL2DistanceBetween(dp, centroid);
             AddDelta(sum_dims, dp, centroid);
           }
-          if (quantization_error_lost_) break;
           squared_quantization_error_by_token_[token] = v;
           sum_qe_by_token_[token] = std::move(sum_dims);
-          total_squared_qe += v;
-        }
+        };
+        constexpr size_t kMinDatapointsForThreads = 1 << 16;
+        std::unique_ptr<ThreadPool> pool;
+        if (sum_partition_sizes_ >= kMinDatapointsForThreads)
+          pool = StartThreadPool("health_stats",
+                                 scann_core::AvailableCPUs() - 1);
+        ParallelFor<1>(Seq(n_tokens), pool.get(), token_stats);
 
+        InAccamulationType total_squared_qe = 0.0;
+        for (size_t token = 0; token < n_tokens; ++token) {
+          if (lost[token]) {
+            quantization_error_lost_ = true;
+            break;
+          }
+          total_squared_qe += squared_quantization_error_by_token_[token];
+        }
         sum_squared_quantization_error_ = total_squared_qe;
       } else {
         quantization_error_lost_ = true;

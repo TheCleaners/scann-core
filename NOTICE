@@ -320,6 +320,13 @@ isn't a one-line change:
       the search's chunks (upstream copied the results twice, the second
       time with the GIL held). Search() writes the results into the
       returned arrays directly (upstream: into two vectors, then copied).
+      Loading an index (the ScannNumpy(dir, ...) constructor) releases the
+      GIL (upstream held it for the whole load).
+  src/scann/base/health_stats_collector.h
+      Initialize() computes the per-partition quantization error in
+      parallel (a pool sized by scann_core::AvailableCPUs(), for 65,536
+      datapoints or more) and sums the partitions in order afterwards: the
+      same statistics, bit for bit.
   src/scann/utils/reordering_helper_interface.h,
   src/scann/utils/reordering_helper.h, src/scann/base/single_machine_base.cc
       NonEmptyDatasetDimensionality(): the query dimensionality check in

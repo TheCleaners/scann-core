@@ -65,6 +65,9 @@ constexpr uint64_t kMaxDatapoints = kInvalidDatapointIndex;
 
 ScannNumpy::ScannNumpy(const std::string& artifacts_dir,
                        const std::string& scann_assets_pbtxt) {
+  // scann-core: loading takes seconds for a large index; upstream held the
+  // GIL throughout, stalling every Python thread.
+  pybind11::gil_scoped_release gil_release;
   auto status_or =
       ScannInterface::LoadArtifacts(artifacts_dir, scann_assets_pbtxt);
   RuntimeErrorIfNotOk("Error loading artifacts: ", status_or.status());

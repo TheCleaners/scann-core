@@ -43,6 +43,12 @@ All notable changes to scann-core. Versions follow
   duplicate merge no longer allocates. On a 1,000-point index (1 leaf,
   reorder 10): 3.54 → 3.00 µs per `search()` call (−0.53 µs; −0.26 µs of
   it in C++). On GloVe-100 (53 µs per query) that is within the noise.
+- Loading an index (`load_searcher`, and building one) computes the
+  health statistics' quantization error in parallel (bit-identical; it
+  was a serial pass over the whole dataset): `load_searcher` of GloVe-100
+  with float reordering 0.62 → 0.43 s on 16 CPUs. And `load_searcher`
+  releases the GIL: other Python threads kept running (the longest stall
+  a 1 ms ticker thread saw went from 624 ms to 1 ms).
 
 ### Changed
 - `set_num_threads(n)` (Python, `ScannInterface::SetNumThreads`, Rust
