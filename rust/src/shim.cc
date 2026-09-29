@@ -243,15 +243,17 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
           "upsert: vector at row ", i / dim,
           " contains NaN or infinity; ScaNN only supports finite values"));
 
-  // An index with spherical partitioning stores unit vectors; see
-  // ScannInterface::NormalizeDatapoints.
-  std::vector<float> normalized;
+  // The vectors as the index stores them: unit vectors with spherical
+  // partitioning, with l2_as_dot_product's extra coordinate; see
+  // ScannInterface::ToStoredDatapoints.
+  std::vector<float> stored;
   const float* rows = vectors.data();
-  if (idx.NormalizesDatapoints()) {
-    normalized.assign(vectors.begin(), vectors.end());
-    idx.NormalizeDatapoints(research_scann::MakeMutableSpan(normalized));
-    rows = normalized.data();
+  if (idx.TransformsDatapoints()) {
+    idx.ToStoredDatapoints(ConstSpan<float>(vectors.data(), vectors.size()),
+                           &stored);
+    rows = stored.data();
   }
+  const size_t stored_dim = idx.stored_dimensionality();
 
   const bool attach_pool = batch_size > 1;
   auto* mutator = GetMutator(idx);
@@ -261,12 +263,14 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
   for (size_t begin = 0; begin < n; begin += batch_size) {
     const size_t bs = std::min<size_t>(n - begin, batch_size);
     DenseDataset<float> ds(
-        std::vector<float>(rows + begin * dim, rows + (begin + bs) * dim),
+        std::vector<float>(rows + begin * stored_dim,
+                           rows + (begin + bs) * stored_dim),
         bs);
     auto precomputed =
         mutator->ComputePrecomputedMutationArtifacts(ds, idx.parallel_query_pool());
     for (size_t i = 0; i < bs; ++i) {
-      DatapointPtr<float> dptr(nullptr, rows + (begin + i) * dim, dim, dim);
+      DatapointPtr<float> dptr(nullptr, rows + (begin + i) * stored_dim,
+                               stored_dim, stored_dim);
       research_scann::UntypedSingleMachineSearcherBase::MutationOptions mo{.precomputed_mutation_artifacts =
                                              precomputed[i].get()};
       const int64_t id = ids[begin + i];
@@ -388,6 +392,14 @@ void config_builder_autopilot(ConfigBuilder& b, IncrementalMode mode,
                   ? scann_core::IncrementalMode::kOnlineIncremental
                   : scann_core::IncrementalMode::kNone,
               ToCore(quantize));
+}
+
+void config_builder_l2_as_dot_product(ConfigBuilder& b, double scale,
+                                      double center) {
+  scann_core::L2AsDotProductOptions o;
+  o.scale = OptF(scale);
+  o.center = OptF(center);
+  b.L2AsDotProduct(o);
 }
 
 rust::String config_builder_build(const ConfigBuilder& b, uint64_t num_points) {

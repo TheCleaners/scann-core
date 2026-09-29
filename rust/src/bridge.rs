@@ -197,6 +197,8 @@ pub(crate) mod ffi {
             mode: IncrementalMode,
             quantize: Quantization,
         );
+        /// NaN = unset.
+        fn config_builder_l2_as_dot_product(b: Pin<&mut ConfigBuilder>, scale: f64, center: f64);
         fn config_builder_build(b: &ConfigBuilder, num_points: u64) -> Result<String>;
     }
 }

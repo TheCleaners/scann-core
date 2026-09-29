@@ -174,22 +174,24 @@ vector<DatapointIndex> ScannNumpy::UpsertRows(
   vector<DatapointIndex> result;
   result.reserve(n);
 
-  // scann-core: an index with spherical partitioning stores unit vectors;
-  // see ScannInterface::NormalizeDatapoints.
+  // scann-core: the vectors as the index stores them: unit vectors with
+  // spherical partitioning, with l2_as_dot_product's extra coordinate; see
+  // ScannInterface::ToStoredDatapoints.
   const size_t dim = scann_.dimensionality();
-  vector<float> normalized;
-  if (scann_.NormalizesDatapoints()) {
-    normalized.resize(n_rows * dim);
+  const size_t stored_dim = scann_.stored_dimensionality();
+  vector<float> stored;
+  if (scann_.TransformsDatapoints()) {
+    vector<float> given(n_rows * dim);
     for (size_t row : Seq(n_rows)) {
       const ConstSpan<float> vec = rows(row);
-      std::copy(vec.begin(), vec.end(), normalized.begin() + row * dim);
+      std::copy(vec.begin(), vec.end(), given.begin() + row * dim);
     }
-    scann_.NormalizeDatapoints(MakeMutableSpan(normalized));
+    scann_.ToStoredDatapoints(given, &stored);
   }
   auto row_ptr = [&](size_t row) {
-    return MakeDatapointPtr(
-        normalized.empty() ? rows(row).data() : normalized.data() + row * dim,
-        dim);
+    return MakeDatapointPtr(stored.empty() ? rows(row).data()
+                                           : stored.data() + row * stored_dim,
+                            stored_dim);
   };
 
   for (size_t b : Seq(DivRoundUp(n, batch_size))) {

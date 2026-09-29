@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -69,6 +73,10 @@ message ScannConfig {
 
   optional AutopilotConfig autopilot = 43;
 
+  // scann-core: squared-L2 search through an inner-product index; see
+  // L2AsDotProductConfig. Upstream ScaNN doesn't have this field.
+  optional L2AsDotProductConfig l2_as_dot_product = 900;
+
   reserved 11;
   reserved 14;
   reserved 15;
@@ -113,4 +121,31 @@ message ScannConfig {
   optional SearchType search_type = 2;
 
   reserved 25;
+}
+
+// scann-core: the exact L2 -> inner-product (MIPS) reduction. With it, an
+// index whose distance_measure is SquaredL2Distance is searched as an
+// inner-product index over one more dimension: each datapoint x is stored as
+// x' = [x, (center - |x|^2) / (2 scale)] and each query q is searched as
+// q' = [q, scale]. Then q'.x' = q.x - |x|^2 / 2 + center / 2, so the largest
+// q'.x' is exactly the smallest |q - x|^2, and ScaNN's inner-product-only
+// techniques (residual and anisotropic AH, tree AVQ, SOAR) apply to
+// euclidean data. research_scann::ScannInterface applies the reduction to
+// the dataset, queries and upserts, and returns squared L2 distances
+// (|q|^2 + center - 2 q'.x'). The rest of the config (partitioning, hash,
+// reordering) is that of a DotProductDistance index over dimensionality + 1
+// dimensions; pure_dynamic_config.dimensionality is the data's
+// dimensionality (without the extra coordinate). Saved indexes record this
+// message and a distance_measure that loaders without it reject.
+message L2AsDotProductConfig {
+  // The query's extra coordinate (> 0). Unset when building: 0.4 times the
+  // dataset's RMS norm, 0.4 sqrt(mean |x|^2) (0.4 sqrt(center) for an empty
+  // dataset). It sets how much the extra coordinate weighs in partitioning
+  // and quantization, not the results' exactness; see docs/tuning.md for
+  // the measurements behind 0.4. Relative to the norm, so scaling the data
+  // scales the whole index.
+  optional double scale = 1;
+  // Any constant; it only centres the datapoints' extra coordinate. Unset
+  // when building: the dataset's mean |x|^2 (0 for an empty dataset).
+  optional double center = 2;
 }

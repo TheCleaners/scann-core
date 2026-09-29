@@ -237,6 +237,168 @@ Status AddTokenizationToOptions(SingleMachineFactoryOptions& opts,
   return OkStatus();
 }
 
+// scann-core: helpers for the exact L2 -> inner-product reduction (the
+// config's l2_as_dot_product; see L2AsDotProductConfig in scann.proto).
+
+// The distance_measure of a saved index with l2_as_dot_product. Loaders that
+// don't know the reduction (upstream ScaNN, scann-core < 0.2.1) fail to load
+// it ("Invalid distance_measure: ...") rather than serve an inner-product
+// index over the stored vectors, which have an extra coordinate.
+constexpr absl::string_view kL2AsDotProductSavedDistance =
+    "SquaredL2Distance [l2_as_dot_product: needs scann-core >= 0.2.1]";
+
+// The default scale, relative to the dataset's RMS norm. Measured (see
+// docs/tuning.md): on synthetic Gaussian and clustered data (d = 16, 64;
+// 2 and 3 dimensions per AH block), recall was best at 0.25-0.5, fell
+// quickly below 0.2 and slowly above 1; SIFT-128 was flat from 0.05 to 20.
+constexpr double kL2AsDotProductDefaultScale = 0.4;
+
+// The datapoint's extra coordinate, (center - |x|^2) / (2 scale), computed
+// in double: |x|^2 is up to ~2.6e5 on SIFT, where float32 would lose the
+// small differences between neighbours' norms.
+float L2AsDotProductCoordinate(const float* x, size_t dim,
+                               const ScannInterface::L2AsDotProduct& p) {
+  double sq = 0;
+  for (size_t j = 0; j < dim; ++j) sq += static_cast<double>(x[j]) * x[j];
+  return static_cast<float>((p.center - sq) / (2.0 * p.scale));
+}
+
+// Checks the config's l2_as_dot_product and turns the config into the one
+// the searcher runs: DotProductDistance over one more dimension, without
+// l2_as_dot_product. Returns the reduction's parameters (nullopt for a
+// config without it).
+StatusOr<std::optional<ScannInterface::L2AsDotProduct>> ToSearcherConfig(
+    ScannConfig* config) {
+  const std::string distance = config->distance_measure().distance_measure();
+  if (!config->has_l2_as_dot_product()) {
+    if (distance == kL2AsDotProductSavedDistance)
+      return InvalidArgumentError(absl::StrCat(
+          "The config's distance_measure is \"", distance,
+          "\", but it has no l2_as_dot_product."));
+    return std::nullopt;
+  }
+  if (distance != "SquaredL2Distance" &&
+      distance != kL2AsDotProductSavedDistance)
+    return InvalidArgumentError(absl::StrCat(
+        "l2_as_dot_product searches by squared L2 distance through an "
+        "inner-product index: the config's distance_measure must be "
+        "SquaredL2Distance, not \"", distance, "\"."));
+  const L2AsDotProductConfig& p = config->l2_as_dot_product();
+  if (!p.has_scale() || !p.has_center())
+    return InvalidArgumentError(
+        "l2_as_dot_product needs its scale and center here (building an "
+        "index fills in the ones left unset; a saved index has both).");
+  if (!std::isfinite(p.scale()) || p.scale() <= 0)
+    return InvalidArgumentError(absl::StrCat(
+        "l2_as_dot_product.scale must be positive and finite, not ",
+        p.scale(), "."));
+  if (!std::isfinite(p.center()))
+    return InvalidArgumentError(absl::StrCat(
+        "l2_as_dot_product.center must be finite, not ", p.center(), "."));
+  if (IsSphericalPartitioning(*config))
+    return InvalidArgumentError(
+        "l2_as_dot_product can't be combined with spherical partitioning, "
+        "which normalizes the stored vectors (extra coordinate included).");
+  if (std::isfinite(config->epsilon_distance()) || config->has_min_distance())
+    return InvalidArgumentError(
+        "epsilon_distance and min_distance aren't supported with "
+        "l2_as_dot_product (the searcher's distances are inner products).");
+  const ScannInterface::L2AsDotProduct params{p.scale(), p.center()};
+  config->mutable_distance_measure()->set_distance_measure(
+      "DotProductDistance");
+  config->clear_l2_as_dot_product();
+  if (config->input_output().pure_dynamic_config().has_dimensionality()) {
+    auto* dynamic =
+        config->mutable_input_output()->mutable_pure_dynamic_config();
+    dynamic->set_dimensionality(dynamic->dimensionality() + 1);
+  }
+  return std::optional<ScannInterface::L2AsDotProduct>(params);
+}
+
+// The inverse of ToSearcherConfig: the config as given, from the searcher's.
+void ToGivenConfig(const ScannInterface::L2AsDotProduct& params,
+                   ScannConfig* config) {
+  config->mutable_distance_measure()->set_distance_measure("SquaredL2Distance");
+  config->mutable_l2_as_dot_product()->set_scale(params.scale);
+  config->mutable_l2_as_dot_product()->set_center(params.center);
+  if (config->input_output().pure_dynamic_config().has_dimensionality()) {
+    auto* dynamic =
+        config->mutable_input_output()->mutable_pure_dynamic_config();
+    if (dynamic->dimensionality() > 0)
+      dynamic->set_dimensionality(dynamic->dimensionality() - 1);
+  }
+}
+
+// pure_dynamic_config.dimensionality as the searcher sees it: with
+// l2_as_dot_product, the config states the data's dimensionality.
+DimensionIndex SearcherPureDynamicDimensionality(const ScannConfig& config) {
+  if (!config.input_output().pure_dynamic_config().has_dimensionality())
+    return kInvalidDimension;
+  return config.input_output().pure_dynamic_config().dimensionality() +
+         (config.has_l2_as_dot_product() ? 1 : 0);
+}
+
+// Build time: fills in the config's unset l2_as_dot_product parameters from
+// the dataset (n_points rows; dimensionality n_dim if it is empty) and
+// returns the dataset as the index stores it, with the extra coordinate.
+StatusOr<shared_ptr<DenseDataset<float>>> L2AsDotProductDataset(
+    ConstSpan<float> dataset, DatapointIndex n_points, DimensionIndex n_dim,
+    ScannConfig* config) {
+  const std::string& distance = config->distance_measure().distance_measure();
+  if (distance != "SquaredL2Distance")
+    return InvalidArgumentError(absl::StrCat(
+        "l2_as_dot_product searches by squared L2 distance through an "
+        "inner-product index: the config's distance_measure must be "
+        "SquaredL2Distance, not \"", distance, "\"."));
+  size_t dim;
+  if (n_points > 0) {
+    dim = dataset.size() / n_points;
+  } else if (n_dim != kInvalidDimension && n_dim > 0) {
+    dim = n_dim;
+  } else {
+    return InvalidArgumentError(
+        "l2_as_dot_product with an empty dataset needs "
+        "input_output.pure_dynamic_config.dimensionality.");
+  }
+  L2AsDotProductConfig* p = config->mutable_l2_as_dot_product();
+  double sum_sq = 0;
+  for (float v : dataset) sum_sq += static_cast<double>(v) * v;
+  const double mean_sq = n_points > 0 ? sum_sq / n_points : 0.0;
+  if (!p->has_center()) p->set_center(mean_sq);
+  if (!p->has_scale()) {
+    // 0.4 times the RMS norm; see L2AsDotProductConfig and docs/tuning.md.
+    const double ms = n_points > 0 ? mean_sq : p->center();
+    if (ms > 0 && std::isfinite(ms)) {
+      p->set_scale(kL2AsDotProductDefaultScale * std::sqrt(ms));
+    } else if (n_points > 0) {
+      p->set_scale(1.0);  // Every datapoint is 0 (or the data isn't finite).
+    } else {
+      return InvalidArgumentError(
+          "l2_as_dot_product with an empty dataset needs a scale (or a "
+          "positive center): its default is computed from the data.");
+    }
+  }
+  if (!std::isfinite(p->scale()) || p->scale() <= 0)
+    return InvalidArgumentError(absl::StrCat(
+        "l2_as_dot_product.scale must be positive and finite, not ",
+        p->scale(), "."));
+  if (!std::isfinite(p->center()))
+    return InvalidArgumentError(absl::StrCat(
+        "l2_as_dot_product.center must be finite, not ", p->center(),
+        n_points > 0 ? " (the dataset's mean squared norm)." : "."));
+  const ScannInterface::L2AsDotProduct params{p->scale(), p->center()};
+  vector<float> stored(static_cast<size_t>(n_points) * (dim + 1));
+  for (size_t i = 0; i < n_points; ++i) {
+    const float* x = dataset.data() + i * dim;
+    float* out = stored.data() + i * (dim + 1);
+    std::copy(x, x + dim, out);
+    out[dim] = L2AsDotProductCoordinate(x, dim, params);
+  }
+  auto ds = std::make_shared<DenseDataset<float>>(std::move(stored), n_points);
+  if (n_points == 0) ds->set_dimensionality(dim + 1);
+  return ds;
+}
+
 }  // namespace
 
 namespace {
@@ -636,8 +798,11 @@ StatusOr<ScannInterface::ScannArtifacts> LoadArtifactsWith(
   }
   if (config.input_output().pure_dynamic_config().has_dimensionality())
     SCANN_RETURN_IF_ERROR(
-        dims.Add("the config (pure_dynamic_config.dimensionality)",
-                 config.input_output().pure_dynamic_config().dimensionality()));
+        dims.Add(config.has_l2_as_dot_product()
+                     ? "the config (pure_dynamic_config.dimensionality, + 1 "
+                       "for l2_as_dot_product)"
+                     : "the config (pure_dynamic_config.dimensionality)",
+                 SearcherPureDynamicDimensionality(config)));
 
   if (opts.serialized_partitioner != nullptr)
     SCANN_RETURN_IF_ERROR(ValidatePartitioner(
@@ -749,6 +914,17 @@ StatusOr<std::unique_ptr<SingleMachineSearcherBase<float>>>
 ScannInterface::CreateSearcher(ScannArtifacts artifacts) {
   auto [config, dataset, opts] = std::move(artifacts);
 
+  // scann-core: the searcher for an l2_as_dot_product config is an
+  // inner-product index over vectors with an extra coordinate, which only
+  // ScannInterface applies to queries and results.
+  if (config.has_l2_as_dot_product() ||
+      config.distance_measure().distance_measure() ==
+          kL2AsDotProductSavedDistance)
+    return FailedPreconditionError(
+        "This index uses l2_as_dot_product (squared L2 search through an "
+        "inner-product index): load it with ScannInterface::Initialize, "
+        "which applies the reduction to queries and results.");
+
   if (dataset && config.has_partitioning() &&
       config.partitioning().partitioning_type() ==
           PartitioningConfig::SPHERICAL)
@@ -808,9 +984,9 @@ Status ScannInterface::Initialize(
     opts.pre_quantized_fixed_point = int8_data;
   }
 
-  DimensionIndex n_dim = kInvalidDimension;
-  if (config.input_output().pure_dynamic_config().has_dimensionality())
-    n_dim = config.input_output().pure_dynamic_config().dimensionality();
+  // scann-core: with l2_as_dot_product, `dataset` is the stored one (with
+  // the extra coordinate), like the other artifacts.
+  const DimensionIndex n_dim = SearcherPureDynamicDimensionality(config);
   return Initialize(std::make_tuple(
       config_, InitDataset(dataset, n_points, n_dim), std::move(opts)));
 }
@@ -833,7 +1009,16 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
   DimensionIndex n_dim = kInvalidDimension;
   if (config_.input_output().pure_dynamic_config().has_dimensionality())
     n_dim = config_.input_output().pure_dynamic_config().dimensionality();
-  shared_ptr<DenseDataset<float>> ds = InitDataset(dataset, n_points, n_dim);
+  shared_ptr<DenseDataset<float>> ds;
+  // scann-core: l2_as_dot_product stores each datapoint with its extra
+  // coordinate, and fills in the unset scale and center (saved in the
+  // config) from the dataset.
+  if (config_.has_l2_as_dot_product()) {
+    SCANN_ASSIGN_OR_RETURN(
+        ds, L2AsDotProductDataset(dataset, n_points, n_dim, &config_));
+  } else {
+    ds = InitDataset(dataset, n_points, n_dim);
+  }
   // scann-core: spherical partitioning needs a dataset tagged unit-L2-norm
   // (CreateSearcher sets the tag), but upstream never normalized it. Points
   // upserted later were then normalized in some configurations (where the
@@ -850,6 +1035,9 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
 
 Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
   auto [config, dataset, opts] = std::move(artifacts);
+  // scann-core: with l2_as_dot_product, the searcher runs the inner-product
+  // config (config_ is the config as given again once it's built).
+  SCANN_ASSIGN_OR_RETURN(l2_as_dot_product_, ToSearcherConfig(&config));
   config_ = config;
   // scann-core: with max_spill_centers = 0 (e.g. the Python builder's
   // tree(num_leaves_to_search=0)), the searcher built fine and then every
@@ -869,6 +1057,14 @@ Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
         CheckAllFinite(dataset->data(), dataset->dimensionality(), "dataset"));
   SCANN_ASSIGN_OR_RETURN(dimensionality_, opts.ComputeConsistentDimensionality(
                                               config_, dataset.get()));
+  if (l2_as_dot_product_) {
+    if (dimensionality_ < 2)
+      return InvalidArgumentError(absl::StrCat(
+          "An l2_as_dot_product index stores vectors with an extra "
+          "coordinate, but this one's have ", dimensionality_,
+          " dimensions."));
+    --dimensionality_;
+  }
   SCANN_ASSIGN_OR_RETURN(scann_,
                          CreateSearcher(std::tie(config_, dataset, opts)));
   AdviseHugePagesForSearcher(*scann_);
@@ -880,6 +1076,12 @@ Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
       "LimitedInnerProductDistance"};
   result_multiplier_ =
       negated_distances.find(distance) == negated_distances.end() ? 1 : -1;
+  // scann-core: l2_as_dot_product searches convert the distances to squared
+  // L2 themselves (ToSquaredL2).
+  if (l2_as_dot_product_) {
+    result_multiplier_ = 1;
+    ToGivenConfig(*l2_as_dot_product_, &config_);
+  }
 
   if (config_.has_partitioning()) {
     min_batch_size_ = 1;
@@ -982,11 +1184,74 @@ vector<SearchParameters> ScannInterface::GetSearchParametersBatched(
   return params;
 }
 
+void ScannInterface::RefreshConfig() {
+  if (!scann_->config().has_value()) return;
+  config_ = *scann_->config();
+  if (l2_as_dot_product_) ToGivenConfig(*l2_as_dot_product_, &config_);
+}
+
+void ScannInterface::ToSquaredL2(const float* query,
+                                 NNResultsVector* res) const {
+  // DotProductDistance is -q'.x', and q'.x' = q.x - |x|^2 / 2 + center / 2,
+  // so |q - x|^2 = |q|^2 + center + 2 * distance. Clamped at 0: rounding can
+  // take an exact match slightly below.
+  double base = l2_as_dot_product_->center;
+  for (size_t j = 0; j < dimensionality_; ++j)
+    base += static_cast<double>(query[j]) * query[j];
+  for (auto& [index, distance] : *res) {
+    const double d = base + 2.0 * static_cast<double>(distance);
+    distance = std::isnan(d) ? static_cast<float>(d)
+                             : static_cast<float>(std::max(d, 0.0));
+  }
+}
+
+void ScannInterface::ToStoredDatapoints(ConstSpan<float> rows,
+                                        std::vector<float>* out) const {
+  const size_t dim = dimensionality_;
+  if (!l2_as_dot_product_) {
+    out->assign(rows.begin(), rows.end());
+    NormalizeDatapoints(MakeMutableSpan(*out));
+    return;
+  }
+  const size_t n = dim == 0 ? 0 : rows.size() / dim;
+  out->resize(n * (dim + 1));
+  for (size_t i = 0; i < n; ++i) {
+    const float* x = rows.data() + i * dim;
+    float* o = out->data() + i * (dim + 1);
+    std::copy(x, x + dim, o);
+    o[dim] = L2AsDotProductCoordinate(x, dim, *l2_as_dot_product_);
+  }
+}
+
 StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   absl::Mutex mu;
   ScannConfig new_config = config_;
   if (!config.empty())
     SCANN_RETURN_IF_ERROR(ParseTextProto(&new_config, config));
+  // scann-core: the stored vectors carry l2_as_dot_product's extra
+  // coordinate, computed with the index's scale and center, so a new config
+  // must keep them (unset ones are taken from the index).
+  if (l2_as_dot_product_) {
+    if (!new_config.has_l2_as_dot_product())
+      return InvalidArgumentError(
+          "This index uses l2_as_dot_product (its stored vectors have an "
+          "extra coordinate); a config to retrain it with must have "
+          "l2_as_dot_product too.");
+    L2AsDotProductConfig* p = new_config.mutable_l2_as_dot_product();
+    if ((p->has_scale() && p->scale() != l2_as_dot_product_->scale) ||
+        (p->has_center() && p->center() != l2_as_dot_product_->center))
+      return InvalidArgumentError(absl::StrCat(
+          "l2_as_dot_product's scale and center can't change when "
+          "retraining: the index's are ", l2_as_dot_product_->scale, " and ",
+          l2_as_dot_product_->center, "."));
+    p->set_scale(l2_as_dot_product_->scale);
+    p->set_center(l2_as_dot_product_->center);
+  } else if (new_config.has_l2_as_dot_product()) {
+    return InvalidArgumentError(
+        "l2_as_dot_product can't be added to an existing index by "
+        "retraining it; build a new index with it.");
+  }
+  SCANN_RETURN_IF_ERROR(ToSearcherConfig(&new_config).status());
 
   // scann-core: retrain with the index's training_threads (upstream used the
   // query pool whatever training_threads was); for an index built with the
@@ -1007,7 +1272,7 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   scann_.reset(static_cast<SingleMachineSearcherBase<float>*>(
       std::move(status_or.value().release())));
   mu.WriterUnlock();
-  if (scann_->config().has_value()) config_ = scann_->config().value();
+  RefreshConfig();
   // scann-core: health stats first, while the searcher still has its float
   // dataset, as CreateSearcher() does. Upstream released the dataset first,
   // so for trees that don't keep it (no float reordering) the quantization
@@ -1039,7 +1304,19 @@ Status ScannInterface::Search(const DatapointPtr<float> query,
   SearchParameters params =
       GetSearchParameters(final_nn, pre_reorder_nn, leaves);
   scann_->SetUnspecifiedParametersToDefaults(&params);
-  return scann_->FindNeighbors(query, params, res);
+  if (!l2_as_dot_product_) return scann_->FindNeighbors(query, params, res);
+  // scann-core: l2_as_dot_product searches [q, scale].
+  if (!query.IsDense())
+    return InvalidArgumentError("Queries must be dense.");
+  thread_local std::vector<float> augmented;
+  augmented.assign(query.values(), query.values() + dimensionality_);
+  augmented.push_back(static_cast<float>(l2_as_dot_product_->scale));
+  SCANN_RETURN_IF_ERROR(scann_->FindNeighbors(
+      DatapointPtr<float>(nullptr, augmented.data(), dimensionality_ + 1,
+                          dimensionality_ + 1),
+      params, res));
+  ToSquaredL2(query.values(), res);
+  return OkStatus();
 }
 
 Status ScannInterface::SearchBatched(const DenseDataset<float>& queries,
@@ -1067,7 +1344,22 @@ Status ScannInterface::SearchBatchedView(
     return InvalidArgumentError("Batch querying isn't supported with epsilon");
   auto params = GetSearchParametersBatched(queries.size(), final_nn,
                                            pre_reorder_nn, leaves, true);
-  return scann_->FindNeighborsBatched(queries, params, MakeMutableSpan(res));
+  if (!l2_as_dot_product_)
+    return scann_->FindNeighborsBatched(queries, params, MakeMutableSpan(res));
+  // scann-core: l2_as_dot_product searches [q, scale] for each query q.
+  const size_t n = queries.size(), dim = dimensionality_;
+  std::vector<float> augmented(n * (dim + 1));
+  const float scale = static_cast<float>(l2_as_dot_product_->scale);
+  for (size_t i = 0; i < n; ++i) {
+    const float* q = queries.GetPtr(i);
+    std::copy(q, q + dim, augmented.data() + i * (dim + 1));
+    augmented[i * (dim + 1) + dim] = scale;
+  }
+  SCANN_RETURN_IF_ERROR(scann_->FindNeighborsBatched(
+      DefaultDenseDatasetView<float>(MakeConstSpan(augmented), dim + 1),
+      params, MakeMutableSpan(res)));
+  for (size_t i = 0; i < n; ++i) ToSquaredL2(queries.GetPtr(i), &res[i]);
+  return OkStatus();
 }
 
 Status ScannInterface::SearchBatchedParallel(const DenseDataset<float>& queries,
@@ -1210,8 +1502,15 @@ StatusOr<ScannAssets> ScannInterface::Serialize(std::string path,
     return std::pair(relative_path ? fpath : absolute_path, absolute_path);
   };
 
+  // scann-core: with l2_as_dot_product, the saved distance_measure is one
+  // that loaders unaware of the reduction reject (see
+  // kL2AsDotProductSavedDistance).
+  ScannConfig saved_config = config_;
+  if (l2_as_dot_product_)
+    saved_config.mutable_distance_measure()->set_distance_measure(
+        std::string(kL2AsDotProductSavedDistance));
   SCANN_RETURN_IF_ERROR(
-      WriteProtobufToFile(path + "/scann_config.pb", config_));
+      WriteProtobufToFile(path + "/scann_config.pb", saved_config));
   if (opts.ah_codebook != nullptr) {
     auto [rpath, fpath] = convert_path("ah_codebook.pb");
     add_asset(rpath, ScannAsset::AH_CENTERS);

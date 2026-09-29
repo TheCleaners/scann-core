@@ -20,6 +20,7 @@
 """Builder to create ScaNN searchers of various configurations."""
 
 import enum
+import math
 from typing import Optional
 
 
@@ -65,6 +66,21 @@ class ScannBuilder(object):
     self.num_neighbors = num_neighbors
     self.distance_measure = distance_measure
 
+  # scann-core: helpers for l2_as_dot_product(), which makes a squared_l2
+  # index an inner-product index over one more dimension.
+  def _uses_l2_as_dot_product(self):
+    return "l2_as_dot_product" in self.params
+
+  def _scoring_distance(self):
+    """The distance the searcher scores with: dot product through the reduction."""
+    if self._uses_l2_as_dot_product():
+      return "dot_product"
+    return self.distance_measure
+
+  def _index_dims(self):
+    """The dimensionality of the vectors the index stores."""
+    return self.db.shape[1] + (1 if self._uses_l2_as_dot_product() else 0)
+
   def set_n_training_threads(self, threads):
     self.training_threads = threads
     return self
@@ -91,7 +107,7 @@ class ScannBuilder(object):
       pca_truncation_threshold = 0.6,
   ):
     """Configure PCA, when dimensionality reduction is possible."""
-    dim = self.db.shape[1]
+    dim = self._index_dims()
     pca_stanza = ""
     if reduction_dim is not None and pca_significance_threshold is None:
       pca_stanza = f"""num_dims_per_block: {reduction_dim}"""
@@ -113,6 +129,9 @@ class ScannBuilder(object):
   @_factory_decorator("truncate")
   def truncate(self, reduction_dim):
     """Configure truncation of the input dimension, useful in MRL embeddings."""
+    if self._uses_l2_as_dot_product():
+      # scann-core: it would drop the extra coordinate, which is last.
+      raise ValueError("truncate() can't be combined with l2_as_dot_product().")
     dim = self.db.shape[1]
     if reduction_dim >= dim:
       raise ValueError(f"reduction_dim must be less than {dim}")
@@ -185,13 +204,15 @@ class ScannBuilder(object):
       )
 
     avq_stanza = f"avq: {avq}" if avq is not None else ""
-    if avq is not None and self.distance_measure != "dot_product":
-      raise ValueError("AVQ only applies to dot product distance.")
+    if avq is not None and self._scoring_distance() != "dot_product":
+      raise ValueError("AVQ only applies to dot product distance (or "
+                       "squared_l2 with l2_as_dot_product()).")
 
     soar_stanza = ""
     if soar_lambda is not None:
-      if self.distance_measure != "dot_product":
-        raise ValueError("SOAR requires dot product distance.")
+      if self._scoring_distance() != "dot_product":
+        raise ValueError("SOAR requires dot product distance (or squared_l2 "
+                         "with l2_as_dot_product()).")
       overretrieve_factor_stanza = (
           f"overretrieve_factor: {overretrieve_factor}"
           if overretrieve_factor is not None else "")
@@ -348,6 +369,48 @@ class ScannBuilder(object):
       }}
     """
 
+  @_factory_decorator("l2_as_dot_product")
+  def l2_as_dot_product(self, scale=None, center=None):
+    """scann-core: squared L2 search through an inner-product index.
+
+    The exact L2 -> inner-product (MIPS) reduction, for squared_l2 builders:
+    each datapoint x is stored as [x, (center - |x|^2) / (2 * scale)] and
+    each query q is searched as [q, scale], whose inner product is
+    q.x - |x|^2 / 2 + center / 2, largest exactly where |q - x|^2 is
+    smallest. Everything else (tree, score_ah, reorder, ...) is then
+    configured as for dot_product over one more dimension, so tree(avq=...,
+    soar_lambda=...) and score_ah(anisotropic_quantization_threshold=...)
+    apply, and the AH blocks cover dimensionality + 1 dimensions. The
+    searcher applies the reduction to the dataset, queries and upserts, and
+    returns squared L2 distances; serialized indexes keep scale and center.
+
+    Args:
+      scale: the query's extra coordinate (> 0). It sets how much the norm
+        term weighs in partitioning and quantization (not exactness).
+        Default: 0.4 times the dataset's RMS norm, 0.4 * sqrt(mean |x|^2);
+        see docs/tuning.md.
+      center: any constant; it centres the datapoints' extra coordinate.
+        Default: the dataset's mean |x|^2.
+
+    Not combinable with tree(spherical=True), truncate() or autopilot().
+    """
+    stanza = ""
+    if scale is not None:
+      scale = float(scale)
+      if not (math.isfinite(scale) and scale > 0):
+        raise ValueError(
+            f"l2_as_dot_product: scale must be positive and finite, not {scale}")
+      stanza += f" scale: {scale!r}"
+    if center is not None:
+      center = float(center)
+      if not math.isfinite(center):
+        raise ValueError(
+            f"l2_as_dot_product: center must be finite, not {center}")
+      stanza += f" center: {center!r}"
+    return f"""
+      l2_as_dot_product {{{stanza} }}
+    """
+
   @_factory_decorator("autopilot")
   def autopilot(self, mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32):
     """Configure autopilot."""
@@ -384,6 +447,28 @@ class ScannBuilder(object):
       num_neighbors: {self.num_neighbors}
       distance_measure {distance_measure}
     """
+
+    # scann-core: l2_as_dot_product() (squared L2 through an inner-product
+    # index; the rest of the config is a dot-product one).
+    l2_as_dot_product_params = self.params.get("l2_as_dot_product")
+    if l2_as_dot_product_params is not None:
+      if self.distance_measure != "squared_l2":
+        raise ValueError("l2_as_dot_product() requires the squared_l2 "
+                         "distance measure.")
+      if "autopilot" in self.params:
+        raise ValueError(
+            "l2_as_dot_product() can't be combined with autopilot().")
+      if "truncate" in self.params:
+        raise ValueError(
+            "truncate() can't be combined with l2_as_dot_product().")
+      if (self.params.get("tree") or {}).get("spherical"):
+        raise ValueError("tree(spherical=True) can't be combined with "
+                         "l2_as_dot_product(): it would normalize the "
+                         "stored vectors, extra coordinate included.")
+      config += self.l2_as_dot_product.proto_maker(
+          self, **l2_as_dot_product_params)
+      # The partitioning and AH stanzas below are a dot-product index's.
+      distance_measure = allowed_measures["dot_product"]
 
     autopilot_params = self.params.get("autopilot")
     if autopilot_params is not None:
@@ -423,8 +508,9 @@ class ScannBuilder(object):
     if ah is not None and bf is None:
       if "residual_quantization" not in ah:
         ah["residual_quantization"] = (
-            tree_params is not None and self.distance_measure == "dot_product")
-      ah["n_dims"] = self.db.shape[1]
+            tree_params is not None and
+            self._scoring_distance() == "dot_product")
+      ah["n_dims"] = self._index_dims()
       config += self.score_ah.proto_maker(self, **ah, projection=projection)
     elif bf is not None and ah is None:
       config += self.score_brute_force.proto_maker(self, **bf)

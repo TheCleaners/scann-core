@@ -130,6 +130,11 @@ ConfigBuilder& ConfigBuilder::Truncate(int32_t reduction_dim) {
   truncate_ = reduction_dim;
   return *this;
 }
+ConfigBuilder& ConfigBuilder::L2AsDotProduct(const L2AsDotProductOptions& o) {
+  Set("l2_as_dot_product", l2_as_dot_product_set_);
+  l2_as_dot_product_ = o;
+  return *this;
+}
 ConfigBuilder& ConfigBuilder::Autopilot(IncrementalMode mode, Quantization q) {
   Set("autopilot", autopilot_set_);
   autopilot_ = {mode, q};
@@ -143,12 +148,46 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     return absl::InvalidArgumentError("dimensionality must be positive");
   if (num_neighbors_ < 1)
     return absl::InvalidArgumentError("num_neighbors must be positive");
-  const bool dot = distance_ == DistanceMeasure::kDotProduct;
-  const std::string distance_msg =
-      absl::StrCat("{distance_measure: \"", DistanceName(distance_), "\"}");
+  // With L2AsDotProduct(), the index is a dot-product one over one more
+  // dimension: `dot` and `dimensionality` below describe it, while the
+  // top-level distance_measure stays SquaredL2Distance.
+  const bool mips = l2_as_dot_product_.has_value();
+  const bool dot = distance_ == DistanceMeasure::kDotProduct || mips;
+  const uint32_t dimensionality = dimensionality_ + (mips ? 1 : 0);
+  const std::string distance_msg = absl::StrCat(
+      "{distance_measure: \"",
+      DistanceName(mips ? DistanceMeasure::kDotProduct : distance_), "\"}");
 
-  std::string config = absl::StrCat("num_neighbors: ", num_neighbors_, "\n",
-                                    "distance_measure ", distance_msg, "\n");
+  std::string config = absl::StrCat(
+      "num_neighbors: ", num_neighbors_, "\n", "distance_measure {distance_measure: \"",
+      DistanceName(distance_), "\"}\n");
+  if (mips) {
+    const L2AsDotProductOptions& m = *l2_as_dot_product_;
+    if (distance_ != DistanceMeasure::kSquaredL2)
+      return absl::InvalidArgumentError(
+          "L2AsDotProduct() requires the squared L2 distance measure");
+    if (autopilot_)
+      return absl::InvalidArgumentError(
+          "L2AsDotProduct() can't be combined with Autopilot()");
+    if (truncate_)
+      return absl::InvalidArgumentError(
+          "Truncate() can't be combined with L2AsDotProduct() (it would drop "
+          "the extra coordinate)");
+    if (tree_ && tree_->spherical)
+      return absl::InvalidArgumentError(
+          "a spherical Tree() can't be combined with L2AsDotProduct(): it "
+          "would normalize the stored vectors, extra coordinate included");
+    if (m.scale && !(std::isfinite(*m.scale) && *m.scale > 0))
+      return absl::InvalidArgumentError(absl::StrCat(
+          "l2_as_dot_product: scale must be positive and finite, not ", Num(*m.scale)));
+    if (m.center && !std::isfinite(*m.center))
+      return absl::InvalidArgumentError(absl::StrCat(
+          "l2_as_dot_product: center must be finite, not ", Num(*m.center)));
+    absl::StrAppend(&config, "l2_as_dot_product {");
+    if (m.scale) absl::StrAppend(&config, " scale: ", Num(*m.scale));
+    if (m.center) absl::StrAppend(&config, " center: ", Num(*m.center));
+    absl::StrAppend(&config, " }\n");
+  }
 
   if (autopilot_) {
     if (tree_ || upper_tree_ || ah_ || brute_force_ || reorder_ || pca_ || truncate_)
@@ -181,11 +220,11 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
       return absl::InvalidArgumentError(
           "pca: set either reduction_dim or pca_significance_threshold, not both");
     if (by_dim && (*pca_->reduction_dim < 1 ||
-                   *pca_->reduction_dim > static_cast<int64_t>(dimensionality_)))
+                   *pca_->reduction_dim > static_cast<int64_t>(dimensionality)))
       return absl::InvalidArgumentError(absl::StrCat(
-          "pca: reduction_dim must be between 1 and ", dimensionality_));
+          "pca: reduction_dim must be between 1 and ", dimensionality));
     projection = absl::StrCat("projection { projection_type: PCA input_dim: ",
-                              dimensionality_, " ");
+                              dimensionality, " ");
     if (by_dim) {
       absl::StrAppend(&projection, "num_dims_per_block: ", *pca_->reduction_dim);
     } else {
@@ -215,9 +254,13 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
   if (tree_) {
     const TreeOptions& t = *tree_;
     if (t.avq && !dot)
-      return absl::InvalidArgumentError("AVQ only applies to dot product distance.");
+      return absl::InvalidArgumentError(
+          "AVQ only applies to dot product distance (or squared L2 with "
+          "L2AsDotProduct()).");
     if (t.soar_lambda && !dot)
-      return absl::InvalidArgumentError("SOAR requires dot product distance.");
+      return absl::InvalidArgumentError(
+          "SOAR requires dot product distance (or squared L2 with "
+          "L2AsDotProduct()).");
     if (t.incremental_threshold_points && t.incremental_threshold_fraction)
       return absl::InvalidArgumentError(
           "set at most one of incremental_threshold_points / _fraction");
@@ -295,16 +338,16 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
     // Python builds these, but a single block wider than the data isn't
     // product quantization any more (recall collapses), and residuals need
     // partition centers to be residuals of.
-    if (a.dimensions_per_block > static_cast<int64_t>(dimensionality_))
+    if (a.dimensions_per_block > static_cast<int64_t>(dimensionality))
       return absl::InvalidArgumentError(absl::StrCat(
           "dimensions_per_block (", a.dimensions_per_block,
-          ") exceeds the dimensionality (", dimensionality_, ")"));
+          ") exceeds the dimensionality (", dimensionality, ")"));
     if (a.residual_quantization.value_or(false) && !tree_)
       return absl::InvalidArgumentError("residual_quantization requires Tree()");
     const bool lut16 = a.hash_type == HashType::kLut16;
     const bool residual = a.residual_quantization.value_or(tree_.has_value() && dot);
-    const uint32_t full_blocks = dimensionality_ / a.dimensions_per_block;
-    const uint32_t partial_dims = dimensionality_ % a.dimensions_per_block;
+    const uint32_t full_blocks = dimensionality / a.dimensions_per_block;
+    const uint32_t partial_dims = dimensionality % a.dimensions_per_block;
     // "global top-N requires (1) LUT16, (2) int16 accumulators, and
     // (3) residual quantization" (scann_builder.py).
     const bool global_topn =
@@ -315,11 +358,11 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
       proj = absl::StrCat("projection_type: CHUNK num_dims_per_block: ",
                           a.dimensions_per_block);
     } else if (partial_dims == 0) {
-      proj = absl::StrCat("input_dim: ", dimensionality_,
+      proj = absl::StrCat("input_dim: ", dimensionality,
                           " projection_type: CHUNK num_blocks: ", full_blocks,
                           " num_dims_per_block: ", a.dimensions_per_block);
     } else {
-      proj = absl::StrCat("input_dim: ", dimensionality_,
+      proj = absl::StrCat("input_dim: ", dimensionality,
                           " projection_type: VARIABLE_CHUNK"
                           " variable_blocks { num_blocks: ", full_blocks,
                           " num_dims_per_block: ", a.dimensions_per_block, " }"

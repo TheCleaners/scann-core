@@ -81,6 +81,8 @@ void config_builder_pca(ConfigBuilder& b, const FfiPcaOptions& o);
 void config_builder_truncate(ConfigBuilder& b, int32_t reduction_dim);
 void config_builder_autopilot(ConfigBuilder& b, IncrementalMode mode,
                               Quantization quantize);
+void config_builder_l2_as_dot_product(ConfigBuilder& b, double scale,
+                                      double center);
 rust::String config_builder_build(const ConfigBuilder& b, uint64_t num_points);
 
 }  // namespace scann_core_ffi

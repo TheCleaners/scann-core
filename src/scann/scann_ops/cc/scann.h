@@ -100,6 +100,35 @@ class ScannInterface {
   bool NormalizesDatapoints() const;
   void NormalizeDatapoints(MutableSpan<float> rows) const;
 
+  // scann-core: the exact L2 -> inner-product reduction (the config's
+  // l2_as_dot_product; see L2AsDotProductConfig in scann.proto). With it,
+  // the searcher is an inner-product index over dimensionality() + 1
+  // dimensions: Initialize() appends (center - |x|^2) / (2 scale) to each
+  // datapoint, the searches append `scale` to each query and return squared
+  // L2 distances, and config() and Serialize() keep the parameters.
+  struct L2AsDotProduct {
+    double scale;
+    double center;
+  };
+  const std::optional<L2AsDotProduct>& l2_as_dot_product() const {
+    return l2_as_dot_product_;
+  }
+  // The dimensionality of the vectors the searcher stores (and that
+  // GetMutator() takes): dimensionality(), plus 1 with l2_as_dot_product.
+  DimensionIndex stored_dimensionality() const {
+    return dimensionality_ + (l2_as_dot_product_ ? 1 : 0);
+  }
+  // Whether vectors must be converted with ToStoredDatapoints() before they
+  // go to GetMutator() (spherical partitioning or l2_as_dot_product).
+  // ScannNumpy::Upsert and the Rust bindings do this; C++ callers that
+  // mutate through GetMutator() must too.
+  bool TransformsDatapoints() const {
+    return l2_as_dot_product_.has_value() || NormalizesDatapoints();
+  }
+  // `rows`, row-major with dimensionality() values each, as the index
+  // stores them: `out` gets stored_dimensionality() values per row.
+  void ToStoredDatapoints(ConstSpan<float> rows, std::vector<float>* out) const;
+
   Status Search(const DatapointPtr<float> query, NNResultsVector* res,
                 int final_nn, int pre_reorder_nn, int leaves) const;
   Status SearchBatched(const DenseDataset<float>& queries,
@@ -162,7 +191,8 @@ class ScannInterface {
   size_t n_points() const { return scann_->DatasetSize().value(); }
   DimensionIndex dimensionality() const { return dimensionality_; }
   // scann-core: the factor ReshapeNNResult applies to distances (-1 for the
-  // similarities that ScaNN negates into distances, e.g. dot product).
+  // similarities that ScaNN negates into distances, e.g. dot product; 1 with
+  // l2_as_dot_product, whose searches already return squared L2 distances).
   float result_multiplier() const { return result_multiplier_; }
   // scann-core: how many neighbors a search with final_nn = -1 returns per
   // query (fewer if the index has fewer points).
@@ -171,8 +201,11 @@ class ScannInterface {
                ? scann_->default_post_reordering_num_neighbors()
                : scann_->default_pre_reordering_num_neighbors();
   }
+  // With l2_as_dot_product, the config as given (SquaredL2Distance and
+  // l2_as_dot_product, with its scale and center), not the inner-product
+  // config the searcher runs.
   const ScannConfig* config() {
-    if (scann_->config().has_value()) config_ = *scann_->config();
+    RefreshConfig();
     return &config_;
   }
 
@@ -207,7 +240,16 @@ class ScannInterface {
   Status SearchBatchedView(const DefaultDenseDatasetView<float>& queries,
                            MutableSpan<NNResultsVector> res, int final_nn,
                            int pre_reorder_nn, int leaves) const;
+  // scann-core: config_ from the searcher's config (with l2_as_dot_product,
+  // turned back into the config as given).
+  void RefreshConfig();
+  // scann-core: with l2_as_dot_product, turns the searcher's distances for
+  // `query` (-q'.x') into squared L2 distances.
+  void ToSquaredL2(const float* query, NNResultsVector* res) const;
+  // The user-facing dimensionality (without l2_as_dot_product's extra
+  // coordinate).
   DimensionIndex dimensionality_;
+  std::optional<L2AsDotProduct> l2_as_dot_product_;
   std::unique_ptr<SingleMachineSearcherBase<float>> scann_;
   ScannConfig config_;
 

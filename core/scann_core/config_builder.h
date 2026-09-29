@@ -122,6 +122,22 @@ struct PcaOptions {
   double pca_truncation_threshold = 0.6;
 };
 
+// scann-core (the Python builder has it too): ScannBuilder.l2_as_dot_product().
+// The exact L2 -> inner-product reduction for a kSquaredL2 builder: the
+// index stores [x, (center - |x|^2) / (2 scale)] and searches [q, scale] by
+// dot product, and ScannInterface returns squared L2 distances. The rest of
+// the config is built as for kDotProduct over dimensionality + 1 dimensions
+// (avq, soar_lambda and residual quantization apply). Not combinable with
+// spherical trees, Truncate() or Autopilot(). See L2AsDotProductConfig in
+// scann/proto/scann.proto.
+struct L2AsDotProductOptions {
+  // The query's extra coordinate (> 0). Unset: 0.4 sqrt(mean |x|^2) of the
+  // dataset the index is built on (0.4 times its RMS norm).
+  std::optional<double> scale;
+  // Any constant. Unset: the dataset's mean |x|^2.
+  std::optional<double> center;
+};
+
 class ConfigBuilder {
  public:
   ConfigBuilder(int32_t num_neighbors, DistanceMeasure distance,
@@ -136,6 +152,7 @@ class ConfigBuilder {
   ConfigBuilder& Truncate(int32_t reduction_dim);
   ConfigBuilder& Autopilot(IncrementalMode mode = IncrementalMode::kNone,
                            Quantization quantize = Quantization::kFloat32);
+  ConfigBuilder& L2AsDotProduct(const L2AsDotProductOptions& options = {});
 
   // The config as ScaNN text format. num_points is only needed with
   // Autopilot(), which sizes the config to the dataset.
@@ -156,9 +173,11 @@ class ConfigBuilder {
   std::optional<PcaOptions> pca_;
   std::optional<int32_t> truncate_;
   std::optional<std::pair<IncrementalMode, Quantization>> autopilot_;
+  std::optional<L2AsDotProductOptions> l2_as_dot_product_;
   bool tree_set_ = false, upper_tree_set_ = false, ah_set_ = false,
        bf_set_ = false, reorder_set_ = false, pca_set_ = false,
-       truncate_set_ = false, autopilot_set_ = false;
+       truncate_set_ = false, autopilot_set_ = false,
+       l2_as_dot_product_set_ = false;
   std::vector<std::string> errors_;
 };
 

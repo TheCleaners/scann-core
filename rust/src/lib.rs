@@ -41,7 +41,8 @@
 //! ```
 //!
 //! Distances are reported the way the Python API reports them: dot product
-//! as the (positive) inner product, squared L2 as the squared distance.
+//! as the (positive) inner product, squared L2 as the squared distance (also
+//! through [`ConfigBuilder::l2_as_dot_product`]).
 
 mod bridge;
 
@@ -750,6 +751,37 @@ impl ReorderOptions {
     }
 }
 
+/// Python: `ScannBuilder.l2_as_dot_product()`: squared L2 search through an
+/// inner-product index (the exact L2 -> MIPS reduction). The index stores
+/// each datapoint `x` as `[x, (center - |x|²) / (2 scale)]` and searches
+/// `[q, scale]` by dot product; results are squared L2 distances, and
+/// upserts, rebalancing and saved indexes keep `scale` and `center`. See
+/// [`ConfigBuilder::l2_as_dot_product`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[must_use = "options do nothing until passed to ConfigBuilder"]
+pub struct L2AsDotProductOptions {
+    /// The query's extra coordinate (> 0). `None`: 0.4 times the dataset's
+    /// RMS norm, `0.4 sqrt(mean |x|²)`.
+    pub scale: Option<f64>,
+    /// Any constant; it centres the datapoints' extra coordinate. `None`:
+    /// the dataset's mean `|x|²`.
+    pub center: Option<f64>,
+}
+
+impl L2AsDotProductOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn scale(mut self, s: f64) -> Self {
+        self.scale = Some(s);
+        self
+    }
+    pub fn center(mut self, c: f64) -> Self {
+        self.center = Some(c);
+        self
+    }
+}
+
 /// Python: `ScannBuilder.pca()`. Set at most one of `reduction_dim` and
 /// `pca_significance_threshold`; with neither, the threshold is 0.8.
 #[derive(Debug, Clone, PartialEq)]
@@ -893,6 +925,26 @@ impl ConfigBuilder {
             IncrementalMode::OnlineIncremental => ffi::IncrementalMode::OnlineIncremental,
         };
         self.apply(Ok((m, q(quantize))), |b, &(m, qq)| ffi::config_builder_autopilot(b, m, qq))
+    }
+
+    /// Squared L2 search through an inner-product index (the exact L2 ->
+    /// MIPS reduction; requires [`DistanceMeasure::SquaredL2`]). The other
+    /// options then describe a dot-product index over `dimensionality + 1`
+    /// dimensions: [`TreeOptions::avq`], [`TreeOptions::soar_lambda`],
+    /// anisotropic AH and residual quantization apply, and AH blocks cover
+    /// the extra coordinate. Not combinable with a spherical tree,
+    /// [`truncate`](Self::truncate) or [`autopilot`](Self::autopilot).
+    pub fn l2_as_dot_product(self, o: L2AsDotProductOptions) -> Self {
+        let v = match (o.scale, o.center) {
+            (Some(s), _) if !(s.is_finite() && s > 0.0) => {
+                invalid(format!("l2_as_dot_product: scale must be positive and finite, not {s}"))
+            }
+            (_, Some(c)) if !c.is_finite() => {
+                invalid(format!("l2_as_dot_product: center must be finite, not {c}"))
+            }
+            (s, c) => Ok((nan_if_none(s), nan_if_none(c))),
+        };
+        self.apply(v, |b, &(s, c)| ffi::config_builder_l2_as_dot_product(b, s, c))
     }
 
     /// Training threads for [`build_index`](Self::build_index) (0: default).
