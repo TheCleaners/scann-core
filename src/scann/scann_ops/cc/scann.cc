@@ -960,10 +960,18 @@ Status ScannInterface::SearchBatched(const DenseDataset<float>& queries,
     return InvalidArgumentError(
         absl::StrCat("Queries have dimensionality ", queries.dimensionality(),
                      ", but the dataset has ", dimensionality_));
+  return SearchBatchedView(DefaultDenseDatasetView<float>(queries), res,
+                           final_nn, pre_reorder_nn, leaves);
+}
+
+Status ScannInterface::SearchBatchedView(
+    const DefaultDenseDatasetView<float>& queries,
+    MutableSpan<NNResultsVector> res, int final_nn, int pre_reorder_nn,
+    int leaves) const {
   // scann-core: single-query FindNeighbors rejects NaN/infinity queries, but
   // upstream's batched path never checked, returning garbage neighbors.
   SCANN_RETURN_IF_ERROR(
-      CheckAllFinite(queries.data(), queries.dimensionality(), "query"));
+      CheckAllFinite(queries.data(), dimensionality_, "query"));
   if (!std::isinf(scann_->default_pre_reordering_epsilon()) ||
       !std::isinf(scann_->default_post_reordering_epsilon()))
     return InvalidArgumentError("Batch querying isn't supported with epsilon");
@@ -982,53 +990,117 @@ Status ScannInterface::SearchBatchedParallel(const DenseDataset<float>& queries,
     return InvalidArgumentError(
         absl::StrCat("Queries have dimensionality ", queries.dimensionality(),
                      ", but the dataset has ", dimensionality_));
+  return SearchBatchedRows(queries.data(), queries.dimensionality(), res,
+                           final_nn, pre_reorder_nn, leaves, /*parallel=*/true,
+                           batch_size);
+}
+
+Status ScannInterface::SearchBatchedRows(ConstSpan<float> queries,
+                                         size_t query_dim,
+                                         MutableSpan<NNResultsVector> res,
+                                         int final_nn, int pre_reorder_nn,
+                                         int leaves, bool parallel,
+                                         int batch_size,
+                                         const ChunkCallback& on_chunk) const {
+  if (query_dim != dimensionality_)
+    return InvalidArgumentError(
+        absl::StrCat("Queries have dimensionality ", query_dim,
+                     ", but the dataset has ", dimensionality_));
+  if (query_dim == 0 || queries.size() % query_dim != 0)
+    return InvalidArgumentError(absl::StrCat(
+        "Queries have ", queries.size(), " values, not a multiple of ",
+        query_dim));
+  const size_t num_queries = queries.size() / query_dim;
+  if (res.size() != num_queries)
+    return InvalidArgumentError(absl::StrCat(
+        "Result span has ", res.size(), " entries for ", num_queries,
+        " queries"));
   if (batch_size < 1)
     return InvalidArgumentError(
         absl::StrCat("batch_size must be >= 1, got ", batch_size));
-  // scann-core: check every query up front (SearchBatched checks each chunk
-  // too) so a bad query fails the whole call before any chunk is searched.
-  SCANN_RETURN_IF_ERROR(
-      CheckAllFinite(queries.data(), queries.dimensionality(), "query"));
-  const size_t numQueries = queries.size();
-  // No pool with fewer than 2 workers (SetNumThreads(0 or 1), or the default
-  // on a single CPU); ParallelFor then runs inline.
+  if (num_queries == 0) return OkStatus();
+
+  // Chunks [begin, begin + size) are views of `queries`: no copy.
+  auto search_chunk = [&](size_t begin, size_t size) -> Status {
+    Status status;
+    if (size == 1) {
+      // scann-core: a single query is searched with Search():
+      // FindNeighborsBatched's fixed cost (batched tokenization, lookup
+      // table and top-N setup) made a batch of one about 13 % slower on
+      // GloVe-100. (Its distances can differ from Search()'s in the last
+      // bits; a one-query chunk now returns exactly what search() does.)
+      DatapointPtr<float> q(nullptr, queries.data() + begin * dimensionality_,
+                            dimensionality_, dimensionality_);
+      status = Search(q, &res[begin], final_nn, pre_reorder_nn, leaves);
+    } else {
+      status = SearchBatchedView(
+          DefaultDenseDatasetView<float>(
+              queries.subspan(begin * dimensionality_, size * dimensionality_),
+              dimensionality_),
+          res.subspan(begin, size), final_nn, pre_reorder_nn, leaves);
+    }
+    if (status.ok() && on_chunk) on_chunk(begin, res.subspan(begin, size));
+    return status;
+  };
+
+  // On failure, a NaN/infinity query is reported first, by its row in
+  // `queries` (the first such row, as a serial check would).
+  auto report = [&](Status status) {
+    if (status.ok()) return status;
+    Status finite = CheckAllFinite(queries, dimensionality_, "query");
+    return finite.ok() ? status : finite;
+  };
+  if (!parallel) return report(search_chunk(0, num_queries));
+
   std::shared_ptr<ThreadPool> pool = parallel_query_pool();
   // scann-core: the calling thread works too (ParallelFor runs chunks on
   // it), so there are NumThreads() + 1 workers. Upstream made NumThreads()
   // chunks, leaving one worker idle.
-  const size_t numCPUs = pool ? pool->NumThreads() + 1 : 1;
+  const size_t workers = pool ? pool->NumThreads() + 1 : 1;
+  // Chunks as upstream: one per worker (at most batch_size queries), or
+  // min_batch_size_ for indexes without a tree. scann-core: except that
+  // tree indexes search chunks of up to kMaxSingleQueryChunk queries as
+  // single queries (chunks of one), which spreads small batches over more
+  // workers for about the same work (a batch of 8 costs 0.96x the time of 8
+  // Search() calls on GloVe-100). Batches of 16-128 queries: 1.1-1.35x the
+  // throughput with 8 and 16 workers; larger ones are unchanged. (More
+  // chunks per worker, tried too, cost 2-12 % for 128-4096 queries on one
+  // CCD: smaller chunks make the batched kernels less efficient.)
+  constexpr size_t kMaxSingleQueryChunk = 8;
+  const size_t cap = static_cast<size_t>(batch_size);
+  size_t chunk = std::min(
+      std::max(min_batch_size_, DivRoundUp(num_queries, workers)), cap);
+  if (min_batch_size_ == 1 && chunk <= kMaxSingleQueryChunk) chunk = 1;
 
-  const size_t kBatchSize =
-      std::min(std::max(min_batch_size_, DivRoundUp(numQueries, numCPUs)),
-               static_cast<size_t>(batch_size));
-  // scann-core: ParallelFor<1>, one chunk per worker fetch. Upstream's
+  // scann-core: one chunk per worker fetch (ParallelFor<1>). Upstream's
   // ParallelForWithStatus<1> drops its template argument and batches
   // dynamically, handing each worker chunks / 4 / pool threads chunks at a
   // time: harmless with a pool of NumCPUs() - 1 threads, but with 4 workers
-  // and 40 chunks one worker was left with 3 chunks while the others idled
-  // (about 17 % of the call's wall time).
+  // and 40 chunks one worker was left with 3 chunks while the others idled.
+  // Finiteness is checked per chunk, inside the parallel region (upstream
+  // checked every query serially first, then again per chunk).
   Status status = OkStatus();
+  size_t failed_chunk = std::numeric_limits<size_t>::max();
   std::atomic<bool> failed{false};
   absl::Mutex status_mu;
-  ParallelFor<1>(
-      Seq(DivRoundUp(numQueries, kBatchSize)), pool.get(), [&](size_t i) {
-        if (failed.load(std::memory_order_relaxed)) return;
-        size_t begin = kBatchSize * i;
-        size_t curSize = std::min(numQueries - begin, kBatchSize);
-        vector<float> queryCopy(
-            queries.data().begin() + begin * dimensionality_,
-            queries.data().begin() + (begin + curSize) * dimensionality_);
-        DenseDataset<float> curQueryDataset(std::move(queryCopy), curSize);
-        Status chunk_status =
-            SearchBatched(curQueryDataset, res.subspan(begin, curSize),
-                          final_nn, pre_reorder_nn, leaves);
-        if (!chunk_status.ok()) {
-          absl::MutexLock lock(&status_mu);
-          status = chunk_status;
-          failed.store(true, std::memory_order_relaxed);
-        }
-      });
-  return status;
+  ParallelFor<1>(Seq(DivRoundUp(num_queries, chunk)), pool.get(),
+                 [&](size_t i) {
+                   if (failed.load(std::memory_order_relaxed)) return;
+                   const size_t begin = chunk * i;
+                   Status chunk_status = search_chunk(
+                       begin, std::min(num_queries - begin, chunk));
+                   if (!chunk_status.ok()) {
+                     absl::MutexLock lock(&status_mu);
+                     // The first failing chunk's error, as a serial search
+                     // would report (among those that ran).
+                     if (i < failed_chunk) {
+                       failed_chunk = i;
+                       status = chunk_status;
+                     }
+                     failed.store(true, std::memory_order_relaxed);
+                   }
+                 });
+  return report(status);
 }
 
 StatusOr<ScannAssets> ScannInterface::Serialize(std::string path,

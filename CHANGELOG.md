@@ -18,6 +18,21 @@ All notable changes to scann-core. Versions follow
   also counts the calling thread as a worker and hands out one chunk at a
   time: with a small pool, one worker could be left with three chunks
   while the others idled (4 threads: 52k → 61k QPS).
+- Batched search does less serial work around its parallel part: the
+  queries are searched in place (they were copied with the GIL held, then
+  each chunk copied its share again), NaN/infinity is checked per chunk in
+  the parallel region (it was checked serially over all queries first, then
+  again per chunk), and each chunk writes its results straight into the
+  returned arrays (they were reshaped serially, then copied by pybind11
+  with the GIL held). The Rust `search_batched*` no longer copy the queries
+  either.
+- `search_batched_parallel` on tree indexes searches chunks of 8 queries or
+  fewer as single queries (with `search()`'s code), which is cheaper for
+  one query and spreads small batches over more threads: batch of 1
+  −15 % latency (now the same as `search()`), batches of 8 and 64 +16 % and
+  +11 % throughput with 8 threads (GloVe-100, tutorial config); batches of
+  512 and more are unchanged. Distances of queries searched this way are
+  `search()`'s, which can differ from a batched search's in the last bits.
 
 ### Changed
 - `set_num_threads(n)` (Python, `ScannInterface::SetNumThreads`, Rust
@@ -31,6 +46,9 @@ All notable changes to scann-core. Versions follow
   query pool's threads when it was built with the default, or loaded),
   not always the query pool. See
   [docs/api_reference.md](docs/api_reference.md#thread-configuration).
+- Tutorial part 5: the reason a batch of one was slower than `search()`
+  was wrong (it never reached the thread pool; the batched code path has a
+  fixed cost per call), and it is no longer slower.
 - `scann.tf` and `scann_tf_ops` are one API with two backends. `import
   scann.tf` uses scann-core's TensorFlow op when `scann_tf_ops` is
   importable (built from source with `-DSCANN_BUILD_TF_OP=ON`), so its

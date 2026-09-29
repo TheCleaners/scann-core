@@ -420,8 +420,13 @@ including PyTorch tensors on the CPU or a GPU; see
   `final_num_neighbors` or the build-time default), or an empty list with
   docids; upstream failed with a misleading dimensionality error.
 - **`search_batched_parallel(queries, ..., batch_size=256)`** — same as
-  `search_batched` but parallelized in chunks of `batch_size`; the batch size
-  is a chunking hint, not a hard constraint.
+  `search_batched` but parallelized: the queries are split into one chunk
+  per thread (see `set_num_threads`), of at most `batch_size` queries. On a
+  tree index, chunks that would hold 8 queries or fewer are searched one
+  query at a time, as `search()` does (for small batches that is faster:
+  more threads get work, for about the same total cost), so their
+  distances are `search()`'s, which can differ from a batched search's in
+  the last bits.
 
 ### Persistence: `serialize` / `load_searcher`
 

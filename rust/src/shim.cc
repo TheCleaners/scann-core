@@ -162,15 +162,13 @@ rust::Vec<Neighbors> scann_search_batched(const ScannIndex& idx,
                                           int32_t batch_size) {
   rust::Vec<Neighbors> out;
   if (n_queries == 0) return out;
-  DenseDataset<float> qs(std::vector<float>(queries.begin(), queries.end()),
-                         static_cast<size_t>(n_queries));
+  // The queries are read in place (no copy).
   std::vector<NNResultsVector> res(n_queries);
   ThrowIfNotOk(
-      parallel ? idx.SearchBatchedParallel(qs, research_scann::MakeMutableSpan(res),
-                                           final_nn, pre_reorder_nn, leaves,
-                                           batch_size)
-               : idx.SearchBatched(qs, research_scann::MakeMutableSpan(res),
-                                   final_nn, pre_reorder_nn, leaves),
+      idx.SearchBatchedRows(
+          research_scann::ConstSpan<float>(queries.data(), queries.size()),
+          queries.size() / n_queries, research_scann::MakeMutableSpan(res),
+          final_nn, pre_reorder_nn, leaves, parallel, parallel ? batch_size : 256),
       "Error during search");
   out.reserve(res.size());
   for (const auto& r : res) out.push_back(ToNeighbors(idx, r));

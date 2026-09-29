@@ -20,6 +20,7 @@
 #define SCANN_SCANN_OPS_CC_SCANN_H_
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -108,6 +109,19 @@ class ScannInterface {
                                MutableSpan<NNResultsVector> res, int final_nn,
                                int pre_reorder_nn, int leaves,
                                int batch_size = 256) const;
+  // scann-core: SearchBatched (parallel = false) or SearchBatchedParallel
+  // over `queries`, row-major with `query_dim` (= dimensionality()) values
+  // per row, which are read in place (not copied). When `on_chunk` is set, it is called
+  // with (first query, that chunk's results) as soon as each chunk is done,
+  // on the thread that searched it (concurrently from several threads when
+  // `parallel`), e.g. to write the results out; not after a failed chunk.
+  using ChunkCallback =
+      std::function<void(size_t, ConstSpan<NNResultsVector>)>;
+  Status SearchBatchedRows(ConstSpan<float> queries, size_t query_dim,
+                           MutableSpan<NNResultsVector> res, int final_nn,
+                           int pre_reorder_nn, int leaves, bool parallel,
+                           int batch_size = 256,
+                           const ChunkCallback& on_chunk = nullptr) const;
   StatusOr<ScannAssets> Serialize(std::string path, bool relative_path = false);
   // scann-core: writes the whole index into the existing directory `dir`,
   // including scann_assets.pbtxt, so that an interrupted write never leaves
@@ -186,6 +200,10 @@ class ScannInterface {
   vector<SearchParameters> GetSearchParametersBatched(
       int batch_size, int final_nn, int pre_reorder_nn, int leaves,
       bool set_unspecified) const;
+  // scann-core: SearchBatched on a view.
+  Status SearchBatchedView(const DefaultDenseDatasetView<float>& queries,
+                           MutableSpan<NNResultsVector> res, int final_nn,
+                           int pre_reorder_nn, int leaves) const;
   DimensionIndex dimensionality_;
   std::unique_ptr<SingleMachineSearcherBase<float>> scann_;
   ScannConfig config_;

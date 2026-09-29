@@ -26,7 +26,8 @@ here, each in a fresh process with a restricted affinity:
 - SCANN_NUM_THREADS overrides the count;
 - set_num_threads(n) means n workers in all (the caller plus n - 1 pool
   threads): 1 starts no thread;
-- results don't depend on the thread count.
+- results don't depend on the thread count, and a batch of one query
+  returns exactly what search() does.
 
 Run with scann-core's build/python on PYTHONPATH:
   PYTHONPATH=build/python python tests/python/test_threads.py
@@ -68,8 +69,15 @@ if set_threads > 0:
 idx, dist = s.search_batched_parallel(queries, batch_size=8)
 out["after_search"] = threads() - base
 ref, ref_dist = s.search_batched(queries)
+# Chunks of 8 or fewer queries are searched as single queries, whose
+# distances can differ from a batched search's in the last bits.
 out["same_results"] = bool(np.array_equal(np.asarray(idx), np.asarray(ref)) and
-                           np.array_equal(dist, ref_dist))
+                           np.allclose(dist, ref_dist, rtol=1e-5, atol=1e-6))
+# A batch of one is searched exactly as search() does.
+one_idx, one_dist = s.search_batched_parallel(queries[3:4])
+single_idx, single_dist = s.search(queries[3])
+out["one_is_search"] = bool(list(one_idx[0]) == list(single_idx) and
+                            np.array_equal(one_dist[0], single_dist))
 s.upsert(["new0", "new1"], rng.standard_normal((2, 16)).astype(np.float32),
          batch_size=2)
 out["after_upsert"] = threads() - base
@@ -112,6 +120,7 @@ def main():
   assert r["after_search"] == 1, r
   assert r["after_upsert"] == 1, r
   assert r["same_results"], r
+  assert r["one_is_search"], r
 
   # SCANN_NUM_THREADS wins over the affinity.
   r = run(two, env_threads=5)

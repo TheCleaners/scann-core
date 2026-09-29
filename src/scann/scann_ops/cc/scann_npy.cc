@@ -19,6 +19,7 @@
 #include "scann/scann_ops/cc/scann_npy.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -329,37 +330,74 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
             pybind11::array_t<float>(shape)};
   }
 
-  vector<float> queries_vec(queries.data(), queries.data() + queries.size());
-  auto query_dataset =
-      DenseDataset<float>(std::move(queries_vec), queries.shape()[0]);
+  // scann-core: the queries are searched in place, with the GIL released
+  // (upstream copied them first, with the GIL held, and every parallel
+  // chunk copied its share again), and each chunk writes its results
+  // straight into the output arrays, allocated up front (upstream reshaped
+  // them serially into vectors that pybind11 then copied, with the GIL).
+  const size_t n = queries.shape()[0];
+  ConstSpan<float> rows(queries.data(), queries.size());
+  // The arrays' width is final_nn, or with final_nn = -1 the widest result,
+  // which is at most the index's default (fewer only for an index with
+  // fewer points): searched into arrays that wide, and copied into narrower
+  // ones in the rare case that every result is shorter.
+  size_t width = 0;
+  if (final_nn > 0) {
+    width = final_nn;
+  } else if (final_nn < 0) {
+    pybind11::gil_scoped_release gil_release;
+    absl::ReaderMutexLock lock(&mu_);
+    width = std::max(scann_.default_num_neighbors(), 0);
+  }
+  std::vector<long> shape = {static_cast<long>(n), static_cast<long>(width)};
+  pybind11::array_t<DatapointIndex> idx_arr(shape);
+  pybind11::array_t<float> dis_arr(shape);
+  DatapointIndex* idx_out = idx_arr.mutable_data();
+  float* dis_out = dis_arr.mutable_data();
 
-  std::vector<NNResultsVector> res(query_dataset.size());
-  vector<DatapointIndex> idx;
-  vector<float> dis;
+  std::vector<NNResultsVector> res(n);
+  std::atomic<size_t> widest{0};
+  std::atomic<bool> too_wide{false};
   {
     pybind11::gil_scoped_release gil_release;
     absl::ReaderMutexLock lock(&mu_);
-    Status status;
-    if (parallel)
-      status = scann_.SearchBatchedParallel(query_dataset, MakeMutableSpan(res),
-                                            final_nn, pre_reorder_nn, leaves,
-                                            batch_size);
-    else
-      status = scann_.SearchBatched(query_dataset, MakeMutableSpan(res),
-                                    final_nn, pre_reorder_nn, leaves);
+    auto write = [&](size_t begin, ConstSpan<NNResultsVector> chunk) {
+      size_t chunk_widest = 0;
+      for (const auto& r : chunk) chunk_widest = std::max(chunk_widest, r.size());
+      size_t prev = widest.load(std::memory_order_relaxed);
+      while (prev < chunk_widest &&
+             !widest.compare_exchange_weak(prev, chunk_widest)) {
+      }
+      if (chunk_widest > width) {
+        too_wide.store(true);
+        return;
+      }
+      scann_.ReshapeBatchedNNResult(chunk, idx_out + begin * width,
+                                    dis_out + begin * width, width);
+    };
+    Status status =
+        scann_.SearchBatchedRows(rows, queries.shape()[1],
+                                 MakeMutableSpan(res), final_nn,
+                                 pre_reorder_nn, leaves, parallel,
+                                 parallel ? batch_size : 256, write);
     RuntimeErrorIfNotOk("Error during search: ", status);
-
-    for (const auto& nn_res : res)
-      final_nn = std::max<int>(final_nn, nn_res.size());
-    idx.resize(query_dataset.size() * std::max(final_nn, 0));
-    dis.resize(idx.size());
-    scann_.ReshapeBatchedNNResult(MakeConstSpan(res), idx.data(), dis.data(),
-                                  final_nn);
   }
-  std::vector<long> shape = {static_cast<long>(query_dataset.size()),
-                             static_cast<long>(final_nn)};
-  return {pybind11::array_t<DatapointIndex>(shape, idx.data()),
-          pybind11::array_t<float>(shape, dis.data())};
+  if (!too_wide.load() && (final_nn > 0 || widest.load() == width))
+    return {idx_arr, dis_arr};
+
+  // Upstream's shape: (n, max(final_nn, widest result)).
+  shape[1] = std::max<long>(final_nn, static_cast<long>(widest.load()));
+  pybind11::array_t<DatapointIndex> idx2(shape);
+  pybind11::array_t<float> dis2(shape);
+  DatapointIndex* idx2_out = idx2.mutable_data();
+  float* dis2_out = dis2.mutable_data();
+  {
+    pybind11::gil_scoped_release gil_release;
+    absl::ReaderMutexLock lock(&mu_);
+    scann_.ReshapeBatchedNNResult(MakeConstSpan(res), idx2_out, dis2_out,
+                                  static_cast<int>(shape[1]));
+  }
+  return {idx2, dis2};
 }
 
 void ScannNumpy::Serialize(std::string path, bool relative_path,

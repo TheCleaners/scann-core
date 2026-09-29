@@ -115,6 +115,15 @@ def check_non_finite_upsert_and_query():
                     lambda: s.search_batched_parallel(queries, batch_size=1),
                     "query row 1 contains NaN or infinity")
       expect_raises(RuntimeError, lambda: s.search(bad), "NaN")
+      # Checked per chunk, in parallel: still the first bad row, by its row
+      # in the whole batch, whichever chunk sees it.
+      many = rng.standard_normal((600, DIM)).astype(np.float32)
+      many[437] = bad
+      many[512] = bad
+      for bs in (1, 7, 64, 256):
+        expect_raises(RuntimeError,
+                      lambda: s.search_batched_parallel(many, batch_size=bs),
+                      "query row 437 contains NaN or infinity")
 
     # The searcher still works and good upserts land where docids say.
     target = rng.standard_normal(DIM).astype(np.float32) * 10

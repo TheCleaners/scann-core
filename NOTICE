@@ -302,6 +302,20 @@ isn't a one-line change:
       SearchBatchedParallel() counts the calling thread as a worker and
       hands out one chunk per fetch (upstream's ParallelForWithStatus<1>
       batched chunks dynamically, leaving workers idle with small pools).
+      SearchBatchedRows() (new; SearchBatchedParallel() and ScannNumpy use
+      it) searches row-major queries in place, as views, instead of copying
+      them per call and again per chunk, checks NaN/infinity per chunk
+      inside the parallel region (upstream: serially over all queries
+      first), hands each finished chunk to a callback (ScannNumpy writes
+      the results into its output arrays there), and searches chunks of
+      one query, and on tree indexes chunks of at most 8, with Search()
+      (results then match Search(), not a batched search, in the last
+      bits).
+  src/scann/scann_ops/cc/scann_npy.cc
+      SearchBatched() releases the GIL before touching the queries (no
+      copy) and returns arrays allocated before the search and filled by
+      the search's chunks (upstream copied the results twice, the second
+      time with the GIL held).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 python/scann/tf.py is adapted from upstream's

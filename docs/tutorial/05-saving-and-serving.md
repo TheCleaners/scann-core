@@ -113,8 +113,15 @@ every query in the batch waits for the whole batch. With batches of 64, the
 machine does 177k QPS and a query waits at most about a third of a millisecond,
 plus however long it waited for the batch to fill.
 
-For a single query, plain `search()` is slightly faster than a batch of one
-(0.075 vs 0.089 ms), because it doesn't hand off to the thread pool.
+For a single query, plain `search()` was slightly faster than a batch of one
+(0.075 vs 0.089 ms, measured with 0.2.0). Not because of the thread pool: a
+batch of one is a single chunk, which runs on the calling thread without
+waking the pool. The difference was the batched code path's fixed cost per
+call (batched tokenization, lookup-table and top-N setup, which pay off only
+across several queries). Since 0.2.1 a chunk of one query, and on tree
+indexes any chunk of 8 or fewer, is searched with `search()`'s code, so a
+batch of one costs what `search()` does, and small batches (8-64 queries)
+spread over more threads.
 
 Then concurrent `search()` calls from Python threads, first through a
 `ThreadPoolExecutor`, then with plain threads that each search their own
