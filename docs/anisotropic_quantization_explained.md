@@ -175,4 +175,6 @@ the ones that aren't. Leave it at the default (disabled) and you get
 ordinary, direction-agnostic compression; sweep it starting around `0.2` (as
 in [docs/api_reference.md](api_reference.md) and
 [docs/algorithms.md](algorithms.md)) and you're using the actual idea this
-paper introduced.
+paper introduced. `0.2` is a good start for unit vectors of about 100
+dimensions; for other dimensions and norms, see
+[how to scale it](tuning.md#the-anisotropic-threshold).

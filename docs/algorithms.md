@@ -31,6 +31,9 @@ gotchas you'll hit in practice, see
 *   When scoring with AH, `dimensions_per_block` should be set to 2.
 *   When partitioning, `num_leaves` should be roughly the square root of the
     number of datapoints.
+*   These are starting points. The [tuning guide](tuning.md) has measured
+    recommendations, including where they differ (for example, larger
+    blocks and a smaller anisotropic threshold for 768-dimensional data).
 
 ## Partitioning
 

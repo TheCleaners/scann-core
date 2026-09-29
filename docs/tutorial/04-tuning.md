@@ -10,6 +10,11 @@ Part 3 used one set of parameters. There are two kinds of dial:
 
 Start with the first kind. It's free to explore.
 
+This part tunes by hand on one dataset. [tuning.md](../tuning.md) is the
+reference that goes with it: per-parameter recommendations measured on
+GloVe, SIFT and 768-dimensional embeddings, a cost model, and starting
+configurations with their measured recall and speed.
+
 ## Query time: `leaves_to_search` and `pre_reorder_num_neighbors`
 
 Both can be passed to every search method. They override the values the index
@@ -57,7 +62,10 @@ Reading it:
   leaves you search, the more candidates it takes to reach the ceiling. At
   400 leaves, 50 candidates leave nearly 5 points on the table.
 * **A good rule of thumb:** keep `pre_reorder_num_neighbors` around 10–20×
-  *k*, and use `leaves_to_search` to pick the recall you need.
+  *k*, and use `leaves_to_search` to pick the recall you need. Higher
+  recall targets need more candidates: the fastest settings in
+  [tuning.md](../tuning.md#how-many-candidates) used 7–50× *k* at k=10 and
+  2–10× *k* at k=100.
 
 For a target like "95% recall", read the fastest row that meets it:
 here, 400 leaves with 100 candidates, at about 177,000 QPS. For 90%, it's
@@ -112,8 +120,13 @@ More leaves cost somewhat more training time. With many thousands of leaves,
 comparing the query against every centre starts to matter too; ScaNN's
 `.upper_tree()` adds a partitioning level above the leaves for that case.
 The rule of thumb in [algorithms.md](../algorithms.md) is `num_leaves` ≈
-√n, here 1,088, with anything in that neighbourhood fine. Don't agonize over
-it.
+√n, here 1,088, with anything in that neighbourhood fine.
+
+That holds for this sweep, which measures batched throughput on 64 threads.
+Measured one query at a time on one thread, fewer leaves won: on this
+dataset 1000–1500 leaves beat 2000–4000 at every recall, and 3000 was worse
+everywhere ([tuning.md](../tuning.md#num_leaves)). Tune in the mode you'll
+serve in.
 
 ### Anisotropic quantization: free, and big when reordering is short
 
@@ -137,11 +150,14 @@ When AH does most of the ranking, AQ is worth 3.3–6.1 points of recall at
 the same speed. That's the effect the
 [explainer](../anisotropic_quantization_explained.md) describes: the
 scores of the vectors that matter are distorted less. AQ costs nothing at
-query time, so use it for dot-product search. 0.2 is the usual threshold
-for normalized data; see the
-[explainer's section on the threshold](../anisotropic_quantization_explained.md#the-threshold-how-much-do-you-protect).
+query time, so use it for dot-product search. 0.2 suits normalized
+100-dimensional data like this. The right value shrinks as the
+dimension grows: at 768 dimensions 0.2 caps recall at 0.795 and 0.05 works
+(see [tuning.md](../tuning.md#the-anisotropic-threshold) for the formula,
+and the
+[explainer's section on the threshold](../anisotropic_quantization_explained.md#the-threshold-how-much-do-you-protect)).
 
-### `dimensions_per_block`: keep it at 2
+### `dimensions_per_block`: 2 for this data
 
 With 4 dimensions per block, the codes are half as long and scoring is
 faster, but recall plateaus around 0.82 however many leaves you search. The
@@ -149,6 +165,12 @@ approximate scores are so coarse that 200 candidates no longer contain the
 true neighbours. With 2 dimensions per block, the fast AH scoring still
 keeps the true neighbours among its top candidates, so reordering can
 recover them.
+
+That is for 100 dimensions with a threshold of 0.2. Higher-dimensional data
+can afford larger blocks: on 768-dimensional embeddings, 4 dimensions per
+block with a threshold of 0.05 was best, and 128-dimensional SIFT searched
+through an inner-product reduction did best with 3
+([tuning.md](../tuning.md#ah-dimensions_per_block-and-hash_type)).
 
 ### SOAR: better partitions, for dot product
 
@@ -176,16 +198,29 @@ At equal speed on GloVe, SOAR is level with plain partitioning at high recall
 and at larger scales, so treat SOAR as something to try on your own data,
 not a default. SOAR requires dot product.
 
+This sweep used lambda 1.5. Measured one query at a time on one thread,
+lambda 0.5 did better on GloVe (0.5 ≥ 1.0 > 1.5). SOAR was 3–10% slower
+than plain partitioning at recall 0.8–0.95 and slightly faster from 0.99; on
+768-dimensional embeddings at k=100 it paid from 0.95
+([tuning.md](../tuning.md#soar)).
+
 ## A tuning recipe
 
 1. Compute exact ground truth for a few thousand real queries (part 2).
-2. Build with the defaults from part 3: `num_leaves` ≈ √n (or 2000 around
-   a million points), `score_ah(2, anisotropic_quantization_threshold=0.2)`,
-   `reorder(100)` to `reorder(200)`.
+2. Build with part 3's pipeline: `num_leaves` ≈ √n (1000–1500 around a
+   million points), `score_ah(2, anisotropic_quantization_threshold=0.2)`
+   for normalized data of about 100 dimensions (smaller thresholds at
+   higher dimensions), and `reorder(100)` to `reorder(200)`. Store the
+   reordering data as bfloat16
+   (`reorder(..., quantize=scann.ReorderType.BFLOAT16)`): nearly the same
+   recall, half the memory (part 5), and a few percent faster in
+   single-query tests.
 3. Sweep `leaves_to_search`, and `pre_reorder_num_neighbors` at a few
    values, at query time. Pick the fastest setting that meets your recall
    target.
-4. Only if that isn't good enough, try build-time changes (SOAR for dot
-   product, a different `num_leaves`), and compare them at equal speed.
+4. Only if that isn't good enough, try build-time changes (`tree(avq=2.5)`
+   and SOAR for dot product, a different `num_leaves`), and compare them at
+   equal speed. [tuning.md](../tuning.md) has measured starting points and
+   what each change did on three datasets.
 
 **Next:** [Part 5: Saving and serving](05-saving-and-serving.md).

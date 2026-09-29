@@ -6,7 +6,8 @@ the gotchas you'll hit that aren't obvious from the one-line docstrings in
 `scann_builder.py` / `scann_ops_pybind.py`. For conceptual background on *why*
 partitioning/quantization/rescoring exist, see
 [docs/algorithms.md](algorithms.md); this page is the "what exactly do I pass"
-companion to that page's "why."
+companion to that page's "why." For measured recommendations on which
+values to choose, see the [tuning guide](tuning.md).
 
 Everything here reflects the code in this repository. scann-core's Python
 package exposes the same `scann.scann_ops_pybind` API as the upstream
@@ -157,7 +158,9 @@ between ~20k–100k, tree + AH + reorder above ~100k.
   thumb; ScaNN's own `autopilot()` uses a more elaborate cache-aware formula
   instead — see below). `num_leaves_to_search / num_leaves` is roughly the
   fraction of the dataset scanned per query, so it's your main recall/latency
-  knob; tune it against a recall target rather than a fixed formula.
+  knob; tune it against a recall target rather than a fixed formula. Around
+  a million points, 1000–1500 leaves did best in single-query tests; see
+  [tuning.md](tuning.md#partitioning-num_leaves-and-leaves_to_search).
 - **`training_sample_size` (default 100,000)** — how many datapoints are
   sampled to *train* the k-means centroids (every datapoint still gets
   assigned to a leaf afterward regardless of this number; it only affects
@@ -202,7 +205,9 @@ between ~20k–100k, tree + AH + reorder above ~100k.
   AH codes) instead of the plain mean, to better preserve dot-product ranking
   within a cluster. `soar_lambda` spills each point into a second, ideally
   orthogonal, nearby leaf so points near cluster boundaries aren't lost to
-  the wrong side.
+  the wrong side. Measured values: `avq=2.5` (best of 1, 2.5 and 5), and
+  SOAR only for high recall targets; see [tuning.md](tuning.md#tree-avq)
+  and [SOAR](tuning.md#soar).
 - **`incremental_threshold`** — an `int` becomes a datapoint-count threshold,
   a `float` becomes a fraction threshold, for when incremental
   re-partitioning should trigger as data is upserted (see `upsert` below).
@@ -251,8 +256,10 @@ k-means, controlled by `training_sample_size` (default 100,000, points
 sampled for training) and `training_iterations` (default 10).
 
 - `dimensions_per_block` — no default, required. `docs/algorithms.md`
-  recommends **2** as a starting point. If it doesn't evenly divide the
-  dataset's dimensionality, the last block is automatically a smaller
+  recommends **2** as a starting point; higher-dimensional data can use
+  more (4 did best on 768-d embeddings, see
+  [tuning.md](tuning.md#ah-dimensions_per_block-and-hash_type)). If it
+  doesn't evenly divide the dataset's dimensionality, the last block is automatically a smaller
   "remainder" block — this fallback is silent, no warning.
 - `hash_type` — `"lut16"` (default, 16 centroids/block, the modern
   SIMD-optimized `INT8_LUT16` lookup path) or `"lut256"` (256 centroids/block,
@@ -296,10 +303,14 @@ entirely — plain isotropic quantization. There's no single "correct" value
 asserted anywhere in this codebase's comments; the paper's own guidance (and
 common practice) is to tune empirically starting somewhere around 0.2, but
 treat that as a starting point to sweep, not a hardcoded recommendation from
-this repo. The same knob (same underlying idea) is also exposed on
-`.reorder(...)` and `.tree(..., avq=...)` — three different pipeline stages,
-same anisotropic-loss concept applied to AH codes, rescoring, and partition
-centroids respectively.
+this repo. Because the ratio depends on the dimension and the norm, the same
+value means different things on different data: 0.2 suits unit vectors of
+~100 dimensions, but caps recall at 0.795 on 768-dimensional ones, where
+0.05 works. [tuning.md](tuning.md#the-anisotropic-threshold) gives the
+formula and how to scale the threshold. The same knob (same underlying
+idea) is also exposed on `.reorder(...)` and `.tree(..., avq=...)` — three
+different pipeline stages, same anisotropic-loss concept applied to AH
+codes, rescoring, and partition centroids respectively.
 
 ### `.score_brute_force(quantize=ReorderType.FLOAT32)`
 
@@ -335,8 +346,16 @@ you use `.score_ah(...)`.**
 `num_neighbors`). There's no single hardcoded multiplier asserted for this
 specific parameter in the codebase; as a starting point for tuning, try
 something in the 2–10x range and adjust against your recall target — raising
-it trades speed for accuracy. Same `True`/`False` backward-compatibility shim
-on `quantize` as `.score_brute_force()`.
+it trades speed for accuracy (the fastest settings measured used 7–50× k at
+k=10 and 2–10× k at k=100, rising with the recall target). Same
+`True`/`False` backward-compatibility shim on `quantize` as
+`.score_brute_force()`.
+
+For `quantize`, `BFLOAT16` is the measured recommendation: recall within
+0.0001 of `FLOAT32` on the same index, half the memory, and faster single
+queries. `INT8`
+lost 0.006–0.009 recall on GloVe and 0.046 on SIFT (euclidean). See
+[tuning.md](tuning.md#reordering-how-many-candidates-and-at-what-precision).
 
 ## `.autopilot(mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32)`
 

@@ -552,6 +552,12 @@ pointing at the wrong vectors.
   (GloVe by default, or any ann-benchmarks dataset).
 * [`docs/api_reference.md`](docs/api_reference.md): the config options and
   search parameters, and what they mean.
+* [`docs/tuning.md`](docs/tuning.md): choosing the index and search
+  parameters, from measurements on GloVe-100, SIFT-128 and 768-dimensional
+  embeddings: leaves, block size, how to scale the anisotropic threshold,
+  reordering precision, SOAR, euclidean data through an exact
+  inner-product reduction, a per-query cost model, how to measure, and
+  starting configurations with their recall and QPS.
 * [`docs/tensorflow.md`](docs/tensorflow.md): using scann-core from
   TensorFlow code (`scann.tf`) and its two backends, the Python one in the
   wheel and the optional source-built TensorFlow op (for SavedModels) and

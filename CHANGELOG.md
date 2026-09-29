@@ -109,6 +109,19 @@ All notable changes to scann-core. Versions follow
   per-call overheads against plain `scann_ops_pybind`, and when to use
   which. Scripts: `docs/tutorial/code/part8_torch.py` and
   `part8_tensorflow.py`.
+- Docs: [docs/tuning.md](docs/tuning.md), a tuning guide from single-query
+  measurements on GloVe-100, SIFT-128 (k=10) and 768-dimensional
+  embeddings (k=100). It covers `num_leaves` and `leaves_to_search`,
+  `dimensions_per_block`, how the anisotropic threshold scales with
+  dimension and norm, tree AVQ, reorder count and precision (bfloat16),
+  SOAR, an exact L2 → inner-product reduction for euclidean data (as a
+  manual recipe), k=10 against k=100, a per-query cost model, how to
+  measure (single queries, batches, concurrency), and starting
+  configurations with their measured recall and QPS. Tutorial part 4, the
+  API reference and algorithms.md link to it; part 4 no longer suggests
+  2000 leaves around a million points, and it and the API reference say
+  that a threshold of 0.2 and 2 dimensions per block suit ~100-dimensional
+  data, not every dimension.
 
 ### Fixed
 - The wheels no longer contain Eigen's headers: 0.2.0's installed 681
