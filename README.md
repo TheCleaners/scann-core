@@ -63,7 +63,9 @@ All three build the C++ library from source, which needs:
   * The C++ tests also run under QEMU on six emulated Arm CPUs, from Neon-only
     Cortex-A57 to SVE2 (see [Cross-compiling for aarch64](#cross-compiling-for-aarch64)).
   * The SIMD kernels (AVX2/AVX-512 on x86-64, Neon/SVE on aarch64) are
-    chosen at run time from the CPU's features.
+    chosen at run time from the CPU's features; that includes the AH
+    (`lut16`) scan's AVX-512 kernel, which upstream never ran (see the
+    [API reference](docs/api_reference.md)).
   * The macOS code paths exist, inherited from upstream, but are untested.
 * **clang ≥ 19 or GCC ≥ 13.** Tested with clang 19–24 and GCC 13–16. CI
   runs the oldest and newest that Ubuntu 26.04 packages: clang 19 and 22,

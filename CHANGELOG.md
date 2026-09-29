@@ -3,6 +3,32 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
+## Unreleased
+
+### Performance
+- The AH (`lut16`) scan uses ScaNN's AVX-512 kernel on CPUs with AVX-512
+  (F, BW, DQ). Upstream compiled it but never ran it: nothing produced the
+  code layout it reads. Searchers now keep their LUT16 codes in that layout
+  in memory, converted in place when an index is built or loaded (no second
+  copy), and adds, updates and deletes keep it.
+  - Results are bit-identical to the AVX2 kernel's (ids and distances;
+    checked over 30 index kinds, mutated indexes, single, batched and
+    parallel search).
+  - Saved indexes are unchanged: 0.2.x indexes load and give the same
+    results, and indexes saved now load in 0.2.1.
+  - Single-query latency on Zen 4 (Threadripper PRO 7975WX), in-process
+    A/B against the AVX2 kernel: GloVe-100 tuned −3 to −5 % at recall 0.80,
+    −7 to −9 % at 0.90 and 0.95; SIFT-128 (`l2_as_dot_product` tuned) −4 to
+    −6 %. The scan alone (microbenchmark): +15–20 % with the codes in L1/L2,
+    0 to +11 % from L3. Zen 4 splits 512-bit operations in two; CPUs with
+    full-width AVX-512 units may gain more (not measured yet).
+  - The kernel is picked when an index is built or loaded; `ignore_avx512`
+    (or `SCANN_TEST_FORCE_AVX2` in the tests) set before that keeps AVX2.
+  - Upstream kernel fixes on the way: it read up to 48 bytes past the
+    codes and the lookup table, required 64-byte-aligned codes, and its
+    top-N functions could return different neighbors from the AVX2 ones
+    (threshold clamping, int16 accumulators beyond 256 blocks).
+
 ## 0.2.1 (2026-09-29)
 
 ### Performance
