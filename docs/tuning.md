@@ -29,6 +29,7 @@ meaning and default, see [api_reference.md](api_reference.md).
 * [Knobs that made no measurable difference](#knobs-that-made-no-measurable-difference)
 * [How to measure](#how-to-measure)
 * [Starting points](#starting-points)
+* [Defaults and autopilot](#defaults-and-autopilot)
 
 ## Recommendations at a glance
 
@@ -42,11 +43,12 @@ exceptions.
 | `dimensions_per_block` | 2 at d=100; 3 for SIFT through the L2 → MIPS reduction; 4 at d=768 | 3 on SIFT: +7–17% QPS up to recall 0.995 |
 | `anisotropic_quantization_threshold` | scale it with dimension and norm: 0.2 at d=100 and 0.05 at d=768 for unit vectors | 0.2 at d=768 caps recall at 0.795 |
 | `tree(avq=...)` | 2.5, dot product only | GloVe +7–8% at recall 0.8–0.9; SIFT (via MIPS) +9–21% |
-| `reorder(quantize=...)` | `BFLOAT16` | recall within 0.0001 of float32, half the memory, +1–7% QPS at k=10, +12–26% at k=100 on 768-d |
+| `reorder(quantize=...)` | `BFLOAT16` if the recall holds on your data | half the memory, +1–7% QPS at k=10, +12–26% at k=100 on 768-d; recall within 0.0001 of float32 on the three study datasets, but 0.001–0.004 lower on four of the five others of the [autopilot validation](#defaults-and-autopilot) |
 | `reorder(n)` | 70–500 at k=10, 200–1000 at k=100 (recall 0.8–0.995) | more candidates only fill up to the ceiling `leaves_to_search` sets |
 | `tree(soar_lambda=...)` | only for high recall: 0.5 on GloVe (recall ≥ 0.99), 1.0 on 768-d (≥ 0.95) | 3–10% slower than without on GloVe at 0.8–0.95 |
 | euclidean data | `.l2_as_dot_product()`, the [L2 → MIPS reduction](#euclidean-data-the-exact-l2--inner-product-reduction) | SIFT: +12–55% QPS over the untuned plain `squared_l2` grid at recall 0.8–0.995 |
 | `hash_type` | `"lut16"` | `"lut256"` was 2.5–3× slower |
+| no time to tune | `autopilot()` | its rules come from this study: on eight datasets, the same or higher recall at its default settings than upstream's rules, and 1.15–1.9× the QPS at equal recall on SIFT and at 512–768 dimensions ([defaults and autopilot](#defaults-and-autopilot)) |
 
 Together these gave 9–65% more single-query QPS than the parameter grid
 ann-benchmarks used for ScaNN on GloVe, 12–55% on SIFT, and 13–51% on the
@@ -327,7 +329,15 @@ GloVe, 2000 leaves:
 | 400 / 300 (0.991) | 3,844 | 4,024 | +4.7% | 4,114 | −0.0094 |
 | 800 / 1000 (0.998) | 1,811 | 1,930 | +6.6% | – | – |
 
-* **bf16:** recall changed by at most 0.0001 on every setting swept. QPS
+* **bf16:** recall changed by at most 0.0001 on every setting swept on
+  these three datasets. It isn't always so: in the
+  [autopilot validation](#defaults-and-autopilot) (the same index with
+  float32 and bfloat16 reordering, at autopilot's default settings) it
+  cost 0.0019 recall@100 on imagenet-clip-512 (CLIP embeddings, whose
+  energy sits in a few large coordinates) and, under exact-id recall
+  (without ann-benchmarks' 0.001 distance tolerance), 0.0044 on a 100k
+  subsample of GloVe, 0.0037 and 0.0009 on two synthetic sets; SIFT's
+  integer coordinates are exact in bfloat16. QPS
   +1.0 to +4.0% on SIFT (600 leaves, plain `squared_l2`), and on the 768-d
   set (k=100, 3 KB float32 rows) +12% at recall 0.8, +18% at 0.9, +17% at
   0.95 and +26% at 0.99. It halves the reordering data: the GloVe index went
@@ -414,8 +424,10 @@ Rust: `ConfigBuilder::new(10, DistanceMeasure::SquaredL2, d)....l2_as_dot_produc
   override them (an empty dataset needs an explicit `scale`).
 * **Not with** `tree(spherical=True)` (it would normalize the stored
   vectors, extra coordinate included), `truncate()` (it would drop the
-  extra coordinate) or `autopilot()`. The threshold applies to the stored
-  vectors x' (|x'|² = |x|² plus the extra coordinate squared; on SIFT, whose
+  extra coordinate) or `autopilot()`, whose tuned rules use it by
+  themselves where the norms are nearly constant
+  ([defaults and autopilot](#defaults-and-autopilot)). The threshold
+  applies to the stored vectors x' (|x'|² = |x|² plus the extra coordinate squared; on SIFT, whose
   norms vary little, |x'| ≈ |x|): set it from their norms
   ([above](#the-anisotropic-threshold)).
 
@@ -735,3 +747,148 @@ the best of 7 of the VIBE grid's 30 builds (float32 reordering).
 | 768-d | tuned | 10,164 | 7,853 | 6,124 | 3,141 | 2,655 | 0.9999 |
 | | untuned | 8,989 | 6,124 | 4,057 | 2,217 | 2,065 | 0.9999 |
 | | ratio | 1.13× | 1.28× | 1.51× | 1.42× | 1.29× | |
+
+## Defaults and autopilot
+
+`builder(db, k, distance).autopilot()` chooses the whole configuration from
+the data: brute force below a size that depends on the dimensionality,
+otherwise a tree with AH and reordering, plus the default search settings
+(`leaves_to_search`, `pre_reorder_num_neighbors`, both overridable per
+search). Since scann-core 0.2.1 it uses rules derived from this study,
+`autopilot(rules="tuned")`, the default. `autopilot(rules="upstream")` uses
+upstream ScaNN's rules, as scann-core 0.2.0 did (the same configs, value for
+value). An index keeps the rules it was built with: indexes built with
+autopilot by upstream ScaNN or scann-core 0.2.0 reload, retrain and update
+with upstream's.
+
+### What the tuned rules change
+
+| | upstream's rules | tuned rules | why |
+|---|---|---|---|
+| brute force below | 42 leaves of 4 × 32 KiB / d points (55,020 at d=100, 8,400 from d=656) | the same | exact results for small data |
+| leaves | n / (4 × 32 KiB / d), capped for L3 and training time: 903 for GloVe, 5,000 at 512–768 dimensions | upstream's, at most round(√n): 1,160 for the 768-d set | 1024 leaves beat 2048 on the 768-d set up to recall 0.99; upstream's 5,000 took 5× longer to build |
+| `leaves_to_search` | 42 × 2^log₁₀(leaves / 42): 106 of 903, 178 of 5,000 | upstream's × √(leaves / upstream's) with fewer leaves: 86 of 1,160 | coarser leaves need a larger share for the same recall: on the 768-d set, searching upstream's share of 1,160 leaves (42) gave recall 0.990 where upstream's config gave 0.998; twice as many gave 0.998 |
+| candidates (`pre_reorder_num_neighbors`) | max(2k, 100√k): 317 at k=10, 1000 at k=100 | the same | |
+| reordering precision | `quantize` (float32 by default) | the same | [bfloat16](#precision-bfloat16) lost recall on four of the eight datasets below |
+| dims per AH block | 2 | dot product: 2 up to 384 dimensions, then ⌈d / 192⌉ (3 at 512, 4 at 768: at most 192 blocks) | [block size](#ah-dimensions_per_block-and-hash_type); at 512 dimensions 3 balanced speed and recall best (2 was slower, 4 lost 0.035 recall at 300 candidates) |
+| anisotropic threshold | 0.2 (dot product) | dot product: 0.2 × the norms' 5th percentile up to 128 dimensions, × (128 / d)^0.75 above (0.071 at 512, 0.052 at 768 on unit vectors) | [the threshold](#the-anisotropic-threshold): 0.2 caps recall at 768 dimensions; it scales with the norm |
+| tree AVQ | none | 2.5 for dot product | [tree AVQ](#tree-avq) |
+| AH lookup tables | truncated to int8 | rounded (as `score_ah()` builds them) | at 512 dimensions (171 blocks), truncation cost 0.001 recall at the default settings |
+| squared L2 | plain | through [`l2_as_dot_product`](#euclidean-data-the-exact-l2--inner-product-reduction) when the squared norms vary by at most 5% (coefficient of variation) and the data isn't far from the origin; `autopilot(allow_l2_as_dot_product=False)` turns it off | SIFT (0.3%): 1.15–1.28× QPS; synthetic clusters whose squared norms vary by 20%: recall at the defaults 0.924 → 0.881 through it |
+
+The threshold, and the choice of `l2_as_dot_product`, come from the data,
+so only the built index shows them: `searcher.config()` records the
+threshold (`autopilot { tree_ah { noise_shaping_threshold: ... } }`), which
+reloading, retraining and incremental maintenance then reuse.
+`create_config()` (and C++/Rust `ConfigBuilder` with a point count) shows
+the configuration without the data: unit norms for the threshold, and a
+squared L2 index without `l2_as_dot_product`.
+
+### Validation
+
+The tuned rules were fitted on the three study datasets and on
+imagenet-clip-512. A first validation run on all eight datasets below then
+added the limit on `l2_as_dot_product` (the synthetic clusters lost recall
+through it) and the rounded lookup tables (imagenet-clip-512); GloVe 100k,
+SIFT 100k and the synthetic MIPS set were never used to choose a rule. The
+final rules against upstream's:
+
+| dataset | points × dims | distance | k | queries | recall |
+|---|---|---|---:|---:|---|
+| glove-100-angular | 1,183,514 × 100 | dot product, unit rows | 10 | 10,000 | ann-benchmarks' |
+| sift-128-euclidean | 1,000,000 × 128 | squared L2 | 10 | 10,000 | ann-benchmarks' |
+| arxiv-nomic-768-normalized | 1,344,643 × 768 | dot product, unit rows | 100 | 1,000 | ann-benchmarks' |
+| imagenet-clip-512-normalized (VIBE) | 1,281,167 × 512 | dot product, unit rows | 100 | 1,000 | ann-benchmarks' |
+| GloVe 100k: 100,000 random rows of GloVe | 100,000 × 100 | dot product, unit rows | 10 | 2,000 | exact ids |
+| SIFT 100k: 100,000 random rows of SIFT | 100,000 × 128 | squared L2 | 10 | 2,000 | exact ids |
+| synthetic clusters: 4,096 Gaussian clusters | 5,000,000 × 64 | squared L2 | 10 | 1,000 | exact ids |
+| synthetic MIPS: 2,048 clusters, lognormal norms (σ = 0.5) | 1,000,000 × 96 | dot product | 10 | 1,000 | exact ids |
+
+"ann-benchmarks'" recall counts a result whose true distance is within
+0.001 of the k-th true distance; "exact ids" counts only the true k
+nearest.
+
+**Protocol.** A `-march=native` build of scann-core with the tuned rules.
+Every index was built with `autopilot()` (float32 reordering, the default)
+and 8 training threads, serialized and reloaded. Single queries, one call
+to `searcher.search(q, k, candidates, leaves)` timed at a time, in one
+process pinned to one core, one process per dataset timing all its indexes'
+settings in turns of 50 queries (the order rotating), 3 rounds; QPS is 1 /
+the mean latency. The settings: each index's defaults, and
+`leaves_to_search` at 1/32 to 4 times its default with its default
+candidate count and with 100 (k=10) or 300 (k=100). QPS at a recall target
+is interpolated along each index's front. An ann-benchmarks run shared the
+cores' L3 cache and other builds ran on the machine throughout, so the
+absolute QPS are about half of those in the sections above: read the
+ratios, which are the tuned rules' QPS over upstream's.
+
+| dataset | leaves (searched by default), upstream's → tuned | recall at the defaults | QPS at the defaults | QPS at recall 0.9 / 0.95 / 0.99 | build (8 threads) | index |
+|---|---|---|---:|---|---|---|
+| GloVe-100 | 903 (106) → 903 (106) | 0.9612 → 0.9713 | 0.96× | 1.16× / 1.11× / 1.87× | 3.0 → 3.1 s | 538 → 538 MB |
+| SIFT-128 | 976 (109) → 984 (109), through `l2_as_dot_product` | 0.9990 → 0.9991 | 1.18× | 1.15× / 1.16× / 1.22× | 3.6 → 3.7 s | 581 → 586 MB |
+| arxiv-768 (k=100) | 5,000 (178) → 1,160 (86) | 0.9977 → 0.9983 | 1.39× | 1.73× / 1.21× / 1.45× | 116 → 24 s | 4,683 → 4,402 MB |
+| imagenet-512 (k=100) | 5,004 (178) → 1,132 (85) | 0.9996 → 0.9998 | 1.18× | 1.85× / 1.73× / 1.59× | 72 → 16 s | 2,978 → 2,853 MB |
+| GloVe 100k | 76 (51) → 76 (51) | 0.9961 → 0.9971 | 0.96× | 1.15× / 1.10× / 1.02× | 0.4 → 0.4 s | 46 → 46 MB |
+| SIFT 100k | 97 (55) → 98 (55), through `l2_as_dot_product` | 0.9998 → 0.9998 | 1.21× | 1.21× / 1.24× / 1.28× | 0.4 → 0.5 s | 58 → 59 MB |
+| synthetic clusters 5M × 64 | 2,441 (143) → 2,236 (137), plain L2 | 0.9237 → 0.9237 | 0.98× | 1.00× / – / – | 10.0 → 10.0 s | 1,461 → 1,461 MB |
+| synthetic MIPS 1M × 96 | 732 (100) → 732 (100) | 0.9916 → 0.9925 | 0.89× | 1.01× / 1.50× / 1.20× | 2.3 → 2.3 s | 437 → 437 MB |
+
+* **Recall at the default settings** is the same or higher everywhere
+  (GloVe-100 +0.010).
+* **At equal recall** the tuned rules are faster everywhere but on the
+  synthetic clusters, where both configs are nearly the same: 1.2–1.9× at
+  512–768 dimensions, with builds 4.6–4.9× faster, and 1.15–1.28× on SIFT.
+  (Near the top of the recall range the fronts have few points; SIFT at
+  0.995 interpolates to 0.86×.)
+* **At the default settings** QPS is 0.89–1.39×: the defaults stay at
+  upstream's high recall. On the synthetic MIPS set, tree AVQ makes the
+  default 100 leaves cost 11% more, for +0.0009 recall; about 80 leaves
+  there would match upstream's recall.
+* Two earlier runs timed each setting as a block of 3 passes (best of 3)
+  instead of in turns. They gave the same recall, but their QPS ratios
+  scattered with the load between blocks (imagenet-512 at the defaults:
+  1.26× in one, 0.80× in the other), hence the turns.
+
+**Against hand-tuned configurations.** The study's tuned configurations
+(the [starting points](#starting-points) above) were built and measured in
+the same processes. QPS as a share of theirs:
+
+| dataset | recall | upstream's rules | tuned rules | tuned rules, bfloat16 |
+|---|---:|---:|---:|---:|
+| GloVe-100 | 0.8 / 0.9 / 0.95 | 54% / 63% / 78% | 85% / 72% / 87% | 75% / 74% / 87% |
+| SIFT-128 | 0.8 / 0.9 / 0.95 | 74% / 72% / 70% | 83% / 83% / 81% | 90% / 83% / 84% |
+| arxiv-768 | 0.8 / 0.9 | 41% / 50% | 81% / 86% | 98% / 99% |
+
+The rest of the gap is what the rules leave out, below: bfloat16, and on
+GloVe 1500 leaves, training on every point and quantized centroids; on
+SIFT 3 dimensions per block.
+
+### What the tuned rules leave out
+
+* **bfloat16 reordering** by default: half the memory and −1% to +13% QPS
+  at the defaults here (+9–13% at 512–768 dimensions), but at the default
+  settings (the same index, float32 against bfloat16):
+
+  | | GloVe-100 | SIFT-128 | arxiv-768 | imagenet-512 | GloVe 100k | SIFT 100k | clusters 5M | MIPS 1M |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  | recall change | 0.0000 | −0.0001 | 0.0000 | −0.0019 | −0.0044 | 0.0000 | −0.0037 | −0.0009 |
+
+  Ask for it with `autopilot(quantize=scann.ReorderType.BFLOAT16)` after
+  checking recall on your data.
+* **SOAR**: it pays only at recall ≥ 0.99 on GloVe and ≥ 0.95 on the 768-d
+  set, and costs index size and build time ([SOAR](#soar)).
+* **`l2_as_dot_product` with varying norms**: on the synthetic clusters
+  (squared norms varying by 20%) it lost recall at the defaults (0.924 →
+  0.881; the anisotropic threshold recovered part of it, tree AVQ none).
+* **3 dimensions per block below 384 dimensions**: better on SIFT through
+  MIPS, but GloVe's recall capped at 0.981 with it.
+* **Quantized centroids, training on every point, spherical
+  partitioning**: on GloVe, training k-means on every point instead of 200
+  per leaf raised recall by 0.005–0.01 at the same speed, for a 1.7×
+  longer build; spherical partitioning and rounding changed nothing.
+  Quantized centroids were 2–8% faster at 768 dimensions in one A/B, with
+  the same recall; not checked further.
+* Nothing for **incremental training** (`mode=ONLINE`): the same rules
+  apply. (Upstream failed on the first upsert into a tree with both AVQ
+  and incremental training, through a dangling pointer; scann-core 0.2.1
+  fixes that.)
