@@ -3,7 +3,7 @@
 All notable changes to scann-core. Versions follow
 [semantic versioning](https://semver.org); the version is in `VERSION`.
 
-## Unreleased
+## 0.2.1 (2026-09-29)
 
 ### Performance
 - Thread pools follow the CPUs the process may use: the CPU affinity mask
