@@ -314,6 +314,13 @@ class ScannSearcher(object):
     return self.searcher.size()
 
   def set_num_threads(self, num_threads):
+    """Threads for search_batched_parallel and mutations, the caller included.
+
+    scann-core: num_threads - 1 pool threads are started on first use; 0 or
+    1 means everything runs on the calling thread. (Upstream started
+    num_threads pool threads.) The default is the number of CPUs the process
+    may use (affinity mask and cgroup CPU quota), or SCANN_NUM_THREADS.
+    """
     self.searcher.set_num_threads(num_threads)
 
   def config(self):

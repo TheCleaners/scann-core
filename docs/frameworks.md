@@ -124,20 +124,24 @@ Dask worker with 2 threads each). `embedding_matrix` is explained under
 
 ### Threads: the index's pool vs the framework's
 
-Each searcher has its own thread pool for `search_batched_parallel`. Its
-default size is **one less than the number of CPUs of the machine**, not
-of the process: under `taskset -c 0-3` on a 64-thread machine, a new
-searcher still started 63 threads. The count comes from
-`std::thread::hardware_concurrency()` (via abseil), the CPUs online, so
-neither CPU affinity nor a container's CPU limit changes it, and neither
-do the frameworks' own settings (Ray's `num_cpus`, Spark's task CPUs,
-Dask's `threads_per_worker`), which only schedule work. With several
-worker processes per machine, each running a parallel search on 63
-threads, the machine is oversubscribed many times over.
+Each searcher has its own thread pool for `search_batched_parallel` (and
+mutations). By default it uses **as many threads as the process has CPUs**:
+the CPUs in its affinity mask (`taskset`, cpusets, the container's cpuset),
+capped by a cgroup CPU quota (`docker --cpus`, Kubernetes limits), counted
+when the index is built or loaded, and started on the first parallel call.
+(Before 0.2.1 it was every CPU of the machine: under `taskset -c 0-3` on a
+64-thread machine, a new searcher started 63 threads.) The frameworks' own
+settings (Ray's `num_cpus`, Spark's task CPUs, Dask's
+`threads_per_worker`) only schedule work; they set no affinity, so a
+worker still sees every CPU. With several worker processes per machine,
+each running a parallel search on every CPU, the machine is oversubscribed
+many times over.
 
 So set it: `searcher.set_num_threads(n)`, with n the cores that worker
-may use, so that workers × n ≈ the machine's cores. (`search()` and
-`search_batched()` don't use the pool at all; they run on the calling
+may use (n threads in all, the calling one included), so that workers × n
+≈ the machine's cores; or set `SCANN_NUM_THREADS=n` in the workers'
+environment, which also sets the default training threads. (`search()`
+and `search_batched()` don't use the pool at all; they run on the calling
 thread.) The two ends of the range:
 
 * **Many single-threaded workers** (n = 1, one worker per core): simple,

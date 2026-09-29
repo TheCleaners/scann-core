@@ -94,6 +94,13 @@ target_link_libraries(scann_core_config_regressions PRIVATE scann::core)
 add_test(NAME config_regressions COMMAND scann_core_config_regressions)
 set_tests_properties(config_regressions PROPERTIES TIMEOUT 900)
 
+# The default thread count (scann_core::AvailableCPUs): cgroup quota parsing,
+# the SCANN_NUM_THREADS override, the affinity mask.
+add_executable(scann_core_available_cpus_test cpp/available_cpus_test.cc)
+target_link_libraries(scann_core_available_cpus_test PRIVATE scann::core)
+add_test(NAME available_cpus COMMAND scann_core_available_cpus_test)
+set_tests_properties(available_cpus PROPERTIES TIMEOUT 60)
+
 # A Python test run with this build's package on PYTHONPATH.
 function(scann_add_python_test name script)
   add_test(NAME ${name}
@@ -154,6 +161,10 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_serialization python/test_serialization.py)
   # Raw config values that crashed the process; builder checks.
   scann_add_python_test(python_config_validation python/test_config_validation.py)
+  # Thread pools sized from the CPU affinity (and SCANN_NUM_THREADS), started
+  # lazily; set_num_threads(n) = n workers. Linux only (77 elsewhere).
+  scann_add_python_test(python_threads python/test_threads.py)
+  set_tests_properties(python_threads PROPERTIES SKIP_RETURN_CODE 77)
   # scann.tf against the pybind searcher, eagerly, in tf.function and
   # tf.data, with each of its backends (the op one only when scann_tf_ops
   # is built); backend selection; SavedModel with the op backend. Skipped

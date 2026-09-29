@@ -159,13 +159,22 @@ class ScannInterface {
     return &config_;
   }
 
-  std::shared_ptr<ThreadPool> parallel_query_pool() const {
-    return parallel_query_pool_;
-  }
+  // scann-core: the query pool (search_batched_parallel, mutations), created
+  // on first use rather than by Initialize: a process holding several
+  // indexes, or one that never searches in parallel, doesn't keep idle
+  // threads. Null when the pool has fewer than 2 workers (everything then
+  // runs on the calling thread). Thread-safe.
+  std::shared_ptr<ThreadPool> parallel_query_pool() const;
 
-  void SetNumThreads(int num_threads) {
-    parallel_query_pool_ = StartThreadPool("ScannQueryingPool", num_threads);
-  }
+  // scann-core: the number of workers (threads, including the calling one)
+  // that parallel searches and mutations use: `num_threads` - 1 pool threads
+  // plus the caller; 0 or 1 means no pool. Upstream started `num_threads`
+  // pool threads (so num_threads + 1 workers), while its default was
+  // NumCPUs() - 1 pool threads (NumCPUs() workers); the default is now
+  // scann_core::AvailableCPUs() workers (see available_cpus.h), evaluated
+  // by each Initialize.
+  void SetNumThreads(int num_threads);
+  int NumThreads() const { return num_threads_; }
 
   using ScannHealthStats = SingleMachineSearcherBase<float>::HealthStats;
   StatusOr<ScannHealthStats> GetHealthStats() const;
@@ -185,7 +194,15 @@ class ScannInterface {
 
   size_t min_batch_size_;
 
-  std::shared_ptr<ThreadPool> parallel_query_pool_;
+  // scann-core: see parallel_query_pool() and SetNumThreads().
+  int num_threads_ = 1;
+  // The training_threads the index was built with (0: the default), which
+  // RetrainAndReindex also uses; the query pool's size when 0.
+  int training_threads_ = 0;
+  mutable absl::Mutex pool_mu_;
+  mutable std::shared_ptr<ThreadPool> parallel_query_pool_
+      ABSL_GUARDED_BY(pool_mu_);
+  mutable bool pool_started_ ABSL_GUARDED_BY(pool_mu_) = false;
 };
 
 template <typename T_idx>

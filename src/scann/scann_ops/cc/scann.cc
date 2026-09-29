@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -36,7 +37,6 @@
 #include <utility>
 
 #include "absl/algorithm/container.h"
-#include "absl/base/internal/sysinfo.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/node_hash_set.h"
@@ -62,6 +62,7 @@
 #include "scann/utils/single_machine_retraining.h"
 #include "scann/utils/threads.h"
 #include "scann/utils/types.h"
+#include "scann_core/available_cpus.h"
 
 namespace research_scann {
 namespace {
@@ -73,7 +74,11 @@ bool HasSoar(const ScannConfig& config) {
          DatabaseSpillingConfig::TWO_CENTER_ORTHOGONALITY_AMPLIFIED;
 }
 
-int GetNumCPUs() { return std::max(absl::base_internal::NumCPUs(), 1); }
+// scann-core: upstream used absl::base_internal::NumCPUs(), the online CPU
+// count cached for the whole process, which ignores the CPU affinity (taskset,
+// cpusets) and container CPU quotas: a process pinned to 4 of 64 CPUs started
+// 63 query threads per index and trained with 64. See available_cpus.h.
+int GetNumCPUs() { return scann_core::AvailableCPUs(); }
 
 unique_ptr<DenseDataset<float>> InitDataset(
     ConstSpan<float> dataset, DatapointIndex n_points,
@@ -748,6 +753,7 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
   if (training_threads < 0)
     return InvalidArgumentError("training_threads must be non-negative");
   SCANN_RETURN_IF_ERROR(CheckDenseShape(dataset, n_points, "dataset"));
+  training_threads_ = training_threads;
   if (training_threads == 0) training_threads = GetNumCPUs();
   SingleMachineFactoryOptions opts;
 
@@ -812,8 +818,27 @@ Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
     else
       min_batch_size_ = 256;
   }
-  parallel_query_pool_ = StartThreadPool("ScannQueryingPool", GetNumCPUs() - 1);
+  // scann-core: the query pool is started on first use (see
+  // parallel_query_pool()), sized from the CPUs available now.
+  SetNumThreads(GetNumCPUs());
   return OkStatus();
+}
+
+void ScannInterface::SetNumThreads(int num_threads) {
+  absl::MutexLock lock(&pool_mu_);
+  num_threads_ = std::max(num_threads, 1);
+  parallel_query_pool_.reset();
+  pool_started_ = false;
+}
+
+std::shared_ptr<ThreadPool> ScannInterface::parallel_query_pool() const {
+  absl::MutexLock lock(&pool_mu_);
+  if (!pool_started_) {
+    parallel_query_pool_ =
+        StartThreadPool("ScannQueryingPool", num_threads_ - 1);
+    pool_started_ = true;
+  }
+  return parallel_query_pool_;
 }
 
 SearchParameters ScannInterface::GetSearchParameters(int final_nn,
@@ -874,8 +899,17 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   if (!config.empty())
     SCANN_RETURN_IF_ERROR(ParseTextProto(&new_config, config));
 
-  auto status_or = RetrainAndReindexSearcher(scann_.get(), &mu, new_config,
-                                             parallel_query_pool_);
+  // scann-core: retrain with the index's training_threads (upstream used the
+  // query pool whatever training_threads was); for an index built with the
+  // default (0) or loaded, with the query pool's workers, so
+  // SetNumThreads(1) also keeps a rebalance single-threaded.
+  std::shared_ptr<ThreadPool> pool =
+      training_threads_ > 0
+          ? std::shared_ptr<ThreadPool>(
+                StartThreadPool("scann_threadpool", training_threads_ - 1))
+          : parallel_query_pool();
+  auto status_or =
+      RetrainAndReindexSearcher(scann_.get(), &mu, new_config, pool);
   if (!status_or.ok()) return status_or.status();
   // scann-core: on success RetrainAndReindexSearcher returns with `mu`
   // write-locked so the caller can swap the searcher pointer under it.
@@ -956,26 +990,45 @@ Status ScannInterface::SearchBatchedParallel(const DenseDataset<float>& queries,
   SCANN_RETURN_IF_ERROR(
       CheckAllFinite(queries.data(), queries.dimensionality(), "query"));
   const size_t numQueries = queries.size();
-  // No pool when num_threads <= 0 (SetNumThreads(0), or the default of
-  // GetNumCPUs() - 1 on a single-CPU machine); ParallelFor then runs inline.
-  const size_t numCPUs =
-      parallel_query_pool_ ? parallel_query_pool_->NumThreads() : 1;
+  // No pool with fewer than 2 workers (SetNumThreads(0 or 1), or the default
+  // on a single CPU); ParallelFor then runs inline.
+  std::shared_ptr<ThreadPool> pool = parallel_query_pool();
+  // scann-core: the calling thread works too (ParallelFor runs chunks on
+  // it), so there are NumThreads() + 1 workers. Upstream made NumThreads()
+  // chunks, leaving one worker idle.
+  const size_t numCPUs = pool ? pool->NumThreads() + 1 : 1;
 
   const size_t kBatchSize =
       std::min(std::max(min_batch_size_, DivRoundUp(numQueries, numCPUs)),
                static_cast<size_t>(batch_size));
-  return ParallelForWithStatus<1>(
-      Seq(DivRoundUp(numQueries, kBatchSize)), parallel_query_pool_.get(),
-      [&](size_t i) {
+  // scann-core: ParallelFor<1>, one chunk per worker fetch. Upstream's
+  // ParallelForWithStatus<1> drops its template argument and batches
+  // dynamically, handing each worker chunks / 4 / pool threads chunks at a
+  // time: harmless with a pool of NumCPUs() - 1 threads, but with 4 workers
+  // and 40 chunks one worker was left with 3 chunks while the others idled
+  // (about 17 % of the call's wall time).
+  Status status = OkStatus();
+  std::atomic<bool> failed{false};
+  absl::Mutex status_mu;
+  ParallelFor<1>(
+      Seq(DivRoundUp(numQueries, kBatchSize)), pool.get(), [&](size_t i) {
+        if (failed.load(std::memory_order_relaxed)) return;
         size_t begin = kBatchSize * i;
         size_t curSize = std::min(numQueries - begin, kBatchSize);
         vector<float> queryCopy(
             queries.data().begin() + begin * dimensionality_,
             queries.data().begin() + (begin + curSize) * dimensionality_);
         DenseDataset<float> curQueryDataset(std::move(queryCopy), curSize);
-        return SearchBatched(curQueryDataset, res.subspan(begin, curSize),
-                             final_nn, pre_reorder_nn, leaves);
+        Status chunk_status =
+            SearchBatched(curQueryDataset, res.subspan(begin, curSize),
+                          final_nn, pre_reorder_nn, leaves);
+        if (!chunk_status.ok()) {
+          absl::MutexLock lock(&status_mu);
+          status = chunk_status;
+          failed.store(true, std::memory_order_relaxed);
+        }
       });
+  return status;
 }
 
 StatusOr<ScannAssets> ScannInterface::Serialize(std::string path,

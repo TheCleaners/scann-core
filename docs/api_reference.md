@@ -375,11 +375,25 @@ resulting config supports incremental updates (`NONE` / `ONLINE` /
 ## Thread configuration
 
 - **`.set_n_training_threads(threads)`** — threads used only during index
-  *training* (default 0 = implementation default, typically all cores).
-- **`searcher.set_num_threads(num_threads)`** — a separate, *runtime* setting
-  for search-time thread count. Don't confuse the two; they're configured at
-  different points in the lifecycle (build-time vs. on an already-built
-  searcher).
+  *training* (and by `rebalance()` on that searcher). Default 0: the CPUs
+  the process may use (see below).
+- **`searcher.set_num_threads(num_threads)`** — a separate, *runtime* setting:
+  how many threads `search_batched_parallel`, `upsert` (with `batch_size` >
+  1), `delete` and, for an index built with the default training threads
+  or loaded, `rebalance` use, **counting the calling thread**: the searcher
+  starts `num_threads - 1` pool threads, and 0 or 1 means everything runs
+  on the calling thread. (Before 0.2.1 it started `num_threads` pool
+  threads, so `set_num_threads(n)` used n + 1 threads.) `search()` and
+  `search_batched()` always run on the calling thread.
+- **Defaults: the CPUs the process may use**, counted when the searcher is
+  built or loaded: the CPUs in the process's affinity mask (`taskset`,
+  `numactl`, cpusets, a container's cpuset), capped by a cgroup CPU quota
+  (`docker --cpus`, Kubernetes CPU limits; rounded up). Before 0.2.1 it was
+  every CPU of the machine, whatever the affinity or quota. The **`SCANN_NUM_THREADS`**
+  environment variable (a positive integer) overrides that count for both
+  defaults. The pool is started on the first call that needs it, not when
+  the searcher is created, so a searcher that is only ever queried with
+  `search()` starts no threads.
 
 ## `ScannSearcher` runtime API
 

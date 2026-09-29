@@ -81,8 +81,9 @@ single = NUM_QUERIES / (time.perf_counter() - start)
 print(f"  {'search_batched, 1 thread':36}{single:9.0f} QPS")
 
 # --- 1. One batch, split across the searcher's thread pool ---------------
-# set_num_threads() sizes that pool (the default is one thread less than
-# the number of CPUs). batch_size is how many queries each task takes.
+# set_num_threads() sets how many threads search it, the calling one
+# included (the default: the CPUs this process may use). batch_size is the
+# most queries each task takes.
 searcher.set_num_threads(THREADS)
 start = time.perf_counter()
 found, _ = searcher.search_batched_parallel(queries, batch_size=64)

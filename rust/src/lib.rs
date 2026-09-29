@@ -200,7 +200,7 @@ impl ScannIndex {
     }
 
     /// Like [`new`](Self::new), training with `training_threads` threads
-    /// (0: scann-core's default).
+    /// (0: the CPUs the process may use, see [`set_num_threads`](Self::set_num_threads)).
     pub fn with_training_threads(
         dataset: &[f32],
         dimensionality: usize,
@@ -308,9 +308,14 @@ impl ScannIndex {
         ffi::scann_config(self.inner.pin_mut())
     }
 
-    /// Resizes the query thread pool used by
-    /// [`search_batched_parallel`](Self::search_batched_parallel) and by
-    /// mutation. 0 disables the pool (everything runs on the calling thread).
+    /// Sets how many threads
+    /// [`search_batched_parallel`](Self::search_batched_parallel) and
+    /// mutations use, the calling thread included: the index starts
+    /// `num_threads - 1` pool threads, on first use. 0 or 1: no pool
+    /// (everything runs on the calling thread). The default is the number of
+    /// CPUs the process may use (affinity mask and cgroup CPU quota), or
+    /// `SCANN_NUM_THREADS` if set. (Before 0.2.1, `num_threads` pool threads
+    /// were started, so n + 1 threads searched.)
     pub fn set_num_threads(&mut self, num_threads: usize) -> Result<()> {
         let n = to_i32(num_threads, "num_threads")?;
         ffi::scann_set_num_threads(self.inner.pin_mut(), n);

@@ -5,7 +5,32 @@ All notable changes to scann-core. Versions follow
 
 ## Unreleased
 
+### Performance
+- Thread pools follow the CPUs the process may use: the CPU affinity mask
+  (`taskset`, cpusets, containers), capped by a cgroup CPU quota
+  (`docker --cpus`, Kubernetes limits), counted at each build or load,
+  instead of every CPU of the machine. Under `taskset -c` with 4 of 64
+  CPUs, a searcher now runs 4 threads instead of 64 (63 were started per
+  index, even for single-query serving): build context switches −88 %,
+  `search_batched_parallel` +2.6 % (GloVe-100, 10k queries). The query
+  pool starts on the first call that needs it, so searchers that are only
+  queried with `search()` start no threads. `search_batched_parallel`
+  also counts the calling thread as a worker and hands out one chunk at a
+  time: with a small pool, one worker could be left with three chunks
+  while the others idled (4 threads: 52k → 61k QPS).
+
 ### Changed
+- `set_num_threads(n)` (Python, `ScannInterface::SetNumThreads`, Rust
+  `set_num_threads`) now means n threads in all, the calling one
+  included: n − 1 pool threads, and 0 or 1 runs everything on the calling
+  thread. It started n pool threads before (n + 1 threads searched),
+  while the default was one less than the CPU count. The defaults, for
+  the query pool and for `training_threads=0`, are the CPUs the process
+  may use; the new `SCANN_NUM_THREADS` environment variable overrides
+  them. `rebalance()` trains with the index's `training_threads` (the
+  query pool's threads when it was built with the default, or loaded),
+  not always the query pool. See
+  [docs/api_reference.md](docs/api_reference.md#thread-configuration).
 - `scann.tf` and `scann_tf_ops` are one API with two backends. `import
   scann.tf` uses scann-core's TensorFlow op when `scann_tf_ops` is
   importable (built from source with `-DSCANN_BUILD_TF_OP=ON`), so its

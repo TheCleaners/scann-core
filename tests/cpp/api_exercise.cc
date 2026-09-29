@@ -373,8 +373,8 @@ void ExerciseBadInput(const Fixture& f) {
     std::vector<NNResultsVector> out(f.nq);
     if (s.SearchBatchedParallel(qs, MakeMutableSpan(out), f.k, -1, -1, 0).ok())
       Fail("SearchBatchedParallel with batch_size 0 was accepted");
-    // No query pool (SetNumThreads(0), or a single-CPU machine, where the
-    // default is GetNumCPUs() - 1 threads): runs inline instead of crashing.
+    // No query pool (SetNumThreads(0 or 1), or the default on a single-CPU
+    // machine): runs inline instead of crashing.
     s.SetNumThreads(0);
     if (Ok(s.SearchBatchedParallel(qs, MakeMutableSpan(out), f.k, -1, -1, 16),
            "SearchBatchedParallel without a thread pool"))
