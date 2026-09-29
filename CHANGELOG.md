@@ -47,6 +47,26 @@ All notable changes to scann-core. Versions follow
   many; the default now grows to the number of neighbors asked for.
 
 ### Performance
+- Reordering prefetches the candidates' rows into L2 a few candidates
+  ahead of the distance kernels (float32 up to 512 dimensions, bfloat16 up
+  to 512, int8 up to 1024; single, batched and parallel search).
+  Reordering reads one row per candidate from random places in the
+  dataset and was waiting on memory.
+  - Results are bit-identical (ids and distances; the kernels and their
+    arithmetic are unchanged).
+  - Single-query latency on Zen 4 (Threadripper PRO 7975WX), interleaved
+    A/B against the previous build, 3 rounds (the spread between rounds
+    was 0.5-2 %):
+    - GloVe-100 tuned (k=10, bfloat16 reordering): −2 % at 80 candidates
+      and 55 leaves, −4 % at 300 candidates, −7.5 % at 1000;
+    - GloVe-100 with float32 reordering: −1.5 % at 100 candidates, −3.5 %
+      at 300, −8.5 % at 1000;
+    - 256-d float32 (k=100): −13 % at 300 candidates, −20 % at 1000;
+      512-d bfloat16: −2 % and −6 %.
+  - Not prefetched: longer rows (e.g. 768-d float32 and bfloat16), where
+    the kernels already run at the core's memory bandwidth and no
+    prefetch distance was faster (VIBE arxiv-768 with 300 and 1000
+    candidates: within ±1 %).
 - The AH (`lut16`) scan uses ScaNN's AVX-512 kernel on CPUs with AVX-512
   (F, BW, DQ). Upstream compiled it but never ran it: nothing produced the
   code layout it reads. Searchers now keep their LUT16 codes in that layout
