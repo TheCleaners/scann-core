@@ -103,6 +103,9 @@ class FastInt8Centers {
  public:
   static constexpr size_t kBlock = 16;
   static constexpr size_t kGroup = 4;
+  // Up to this many dimensions (the query then has at least 12 bits; the
+  // exact kernel runs above it).
+  static constexpr size_t kMaxDims = 4096;
   // Bound on |fast - exact| for one centroid's dot product, relative to
   // max_i |query_i| * sum_i |centroid_i| (query in ScaNN's rescaled units):
   // half a quantization step of the 16-bit query (scaled so that its
@@ -113,7 +116,8 @@ class FastInt8Centers {
 
   FastInt8Centers() = default;
 
-  // Row-major int8 centroids (n x dims). Builds nothing off x86-64.
+  // Row-major int8 centroids (n x dims). Builds nothing off x86-64 or
+  // above kMaxDims dimensions.
   void Build(const int8_t* rows, size_t n, size_t dims);
   void Clear();
 

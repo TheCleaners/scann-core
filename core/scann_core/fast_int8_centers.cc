@@ -102,7 +102,8 @@ void FastInt8Centers::Clear() {
 void FastInt8Centers::Build(const int8_t* rows, size_t n, size_t dims) {
   Clear();
 #ifdef __x86_64__
-  if (n == 0 || dims == 0) return;
+  // Above kMaxDims the query would get fewer than 12 bits.
+  if (n == 0 || dims == 0 || dims > kMaxDims) return;
   n_ = n;
   dims_ = dims;
   groups_ = (dims + kGroup - 1) / kGroup;

@@ -437,6 +437,12 @@ int main() {
       TestKernel(n, dims, seed++);
   for (size_t dims : {384, 512, 513, 768, 1024, 4096}) TestKernel(1000, dims, seed++);
   TestKernel(2000, 100, seed++);
+  {
+    std::vector<int8_t> rows(3 * 4097, 1);
+    FastInt8Centers too_wide;
+    too_wide.Build(rows.data(), 3, 4097);
+    if (!too_wide.empty()) Fail("built above kMaxDims dimensions");
+  }
   TestSelectTopK();
 
   constexpr size_t kDim = 32;
