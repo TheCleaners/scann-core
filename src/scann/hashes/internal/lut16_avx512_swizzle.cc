@@ -11,10 +11,156 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
+
+#include "scann/hashes/internal/lut16_avx512_swizzle.h"
 
 #include <cstdint>
+#include <cstring>
+#include <vector>
+
+#include "absl/log/check.h"
+
+namespace research_scann {
+namespace asymmetric_hashing_internal {
+
+// scann-core: portable layout helpers (see the header).
+namespace {
+
+// Groups in the super-group starting at group `start`.
+size_t SuperGroupSize(size_t n32, size_t start) {
+  const size_t full = 8 * (n32 / 8);  // groups in 8-group super-groups
+  if (start < full) return 8;
+  if (n32 % 8 >= 4 && start == full) return 4;  // the one 4-group one
+  return 1;
+}
+
+inline uint8_t Nibble(uint8_t byte, bool high) {
+  return high ? (byte >> 4) : (byte & 0x0F);
+}
+
+// A super-group of s = 4 or 8 groups, canonical src -> AVX-512 dst.
+// Block-major: per block, 64 bytes for each 4 groups (128 datapoints),
+// byte 2e + h holding datapoints 32h + e (low nibble) and 32(h + 2) + e.
+void SwizzleWide(const uint8_t* src, uint8_t* dst, size_t s, size_t nb) {
+  for (size_t blk = 0; blk < nb; ++blk) {
+    for (size_t hh = 0; hh < s / 4; ++hh) {
+      uint8_t* out = dst + 16 * s * blk + 64 * hh;  // 64 bytes: 4 groups
+      const uint8_t* c[4];  // canonical groups 4hh..4hh+3, this block
+      for (size_t q = 0; q < 4; ++q) {
+        c[q] = src + (4 * hh + q) * 16 * nb + 16 * blk;
+      }
+      for (size_t e = 0; e < 32; ++e) {
+        const bool high = e >= 16;  // datapoint e of a group: byte e % 16
+        const size_t m = e % 16;
+        out[2 * e] = Nibble(c[0][m], high) | (Nibble(c[2][m], high) << 4);
+        out[2 * e + 1] = Nibble(c[1][m], high) | (Nibble(c[3][m], high) << 4);
+      }
+    }
+  }
+}
+
+// The inverse: AVX-512 src -> canonical dst.
+void UnswizzleWide(const uint8_t* src, uint8_t* dst, size_t s, size_t nb) {
+  for (size_t blk = 0; blk < nb; ++blk) {
+    for (size_t hh = 0; hh < s / 4; ++hh) {
+      const uint8_t* in = src + 16 * s * blk + 64 * hh;
+      for (size_t q = 0; q < 4; ++q) {
+        uint8_t* c = dst + (4 * hh + q) * 16 * nb + 16 * blk;
+        const size_t odd = q & 1;  // groups 1, 3: odd bytes
+        const bool high = q >= 2;  // groups 2, 3: high nibbles
+        for (size_t m = 0; m < 16; ++m) {
+          c[m] = Nibble(in[2 * m + odd], high) |              // dp m
+                 (Nibble(in[2 * m + 32 + odd], high) << 4);  // dp m + 16
+        }
+      }
+    }
+  }
+}
+
+// A single group, in place, block by block (as Avx512Swizzle32).
+void SwizzleSingle(uint8_t* p, size_t nb) {
+  for (size_t blk = 0; blk < nb; ++blk, p += 16) {
+    uint8_t c[16];
+    std::memcpy(c, p, 16);
+    for (size_t m = 0; m < 8; ++m) {
+      p[2 * m] = (c[m] & 0x0F) | ((c[m + 8] & 0x0F) << 4);  // dps m, m + 8
+      p[2 * m + 1] = (c[m] >> 4) | (c[m + 8] & 0xF0);  // m + 16, m + 24
+    }
+  }
+}
+
+void UnswizzleSingle(uint8_t* p, size_t nb) {
+  for (size_t blk = 0; blk < nb; ++blk, p += 16) {
+    uint8_t s[16];
+    std::memcpy(s, p, 16);
+    for (size_t m = 0; m < 8; ++m) {
+      p[m] = (s[2 * m] & 0x0F) | ((s[2 * m + 1] & 0x0F) << 4);  // m, m + 16
+      p[m + 8] = (s[2 * m] >> 4) | (s[2 * m + 1] & 0xF0);  // m + 8, m + 24
+    }
+  }
+}
+
+template <bool kToAvx512>
+void Convert(uint8_t* packed, size_t n32, size_t nb, size_t first_group) {
+  DCHECK_EQ(Lut16Avx512SuperGroupStart(n32, first_group), first_group);
+  if (nb == 0 || first_group >= n32) return;
+  std::vector<uint8_t> tmp;  // one super-group (wide ones aren't in place)
+  for (size_t g = first_group; g < n32;) {
+    const size_t s = SuperGroupSize(n32, g);
+    uint8_t* p = packed + g * 16 * nb;  // the super-group's bytes
+    if (s == 1) {
+      kToAvx512 ? SwizzleSingle(p, nb) : UnswizzleSingle(p, nb);
+    } else {
+      tmp.assign(p, p + s * 16 * nb);
+      kToAvx512 ? SwizzleWide(tmp.data(), p, s, nb)
+                : UnswizzleWide(tmp.data(), p, s, nb);
+    }
+    g += s;
+  }
+}
+
+}  // namespace
+
+size_t Lut16Avx512SuperGroupStart(size_t n32, size_t g) {
+  const size_t full = 8 * (n32 / 8);
+  if (g < full) return g - g % 8;
+  if (n32 % 8 >= 4 && g < full + 4) return full;
+  return g;
+}
+
+Lut16NibbleAddress Lut16Avx512NibbleAddress(size_t n32, size_t num_blocks,
+                                            size_t dp, size_t block) {
+  const size_t start = Lut16Avx512SuperGroupStart(n32, dp / 32);
+  const size_t s = SuperGroupSize(n32, start);
+  const size_t base = start * 16 * num_blocks;  // super-group's first byte
+  const size_t d = dp - 32 * start;             // datapoint within it
+  if (s == 1) {  // see SwizzleSingle
+    return {base + 16 * block + 2 * (d % 8) + ((d >> 4) & 1),
+            ((d >> 3) & 1) != 0};
+  }
+  const size_t hh = d / 128, dd = d % 128;  // see SwizzleWide
+  return {base + 16 * s * block + 64 * hh + 2 * (dd % 32) + ((dd >> 5) & 1),
+          dd >= 64};
+}
+
+void Lut16Avx512Swizzle(uint8_t* packed, size_t n32, size_t num_blocks,
+                        size_t first_group) {
+  Convert<true>(packed, n32, num_blocks, first_group);
+}
+
+void Lut16Avx512Unswizzle(uint8_t* packed, size_t n32, size_t num_blocks,
+                          size_t first_group) {
+  Convert<false>(packed, n32, num_blocks, first_group);
+}
+
+}  // namespace asymmetric_hashing_internal
+}  // namespace research_scann
+
 #ifdef __x86_64__
-#include "scann/hashes/internal/lut16_avx512_swizzle.h"
 #include "scann/utils/common.h"
 #include "scann/utils/intrinsics/avx512.h"
 
