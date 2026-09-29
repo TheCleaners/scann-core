@@ -414,7 +414,8 @@ class ScannBuilder(object):
   @_factory_decorator("autopilot")
   def autopilot(self, mode=IncrementalMode.NONE,
                 quantize=ReorderType.FLOAT32, rules="tuned",
-                allow_l2_as_dot_product=True):
+                allow_l2_as_dot_product=True, target_recall=None,
+                calibration_queries=None, calibration_sample_size=None):
     """Configure autopilot: the config is chosen from the data.
 
     scann-core: `rules="tuned"` (the default) chooses the config with rules
@@ -431,6 +432,19 @@ class ScannBuilder(object):
       allow_l2_as_dot_product: with the tuned rules and squared_l2, whether
         the index may be built as l2_as_dot_product(), which they choose
         when the data suits it.
+      target_recall: scann-core: a recall@num_neighbors in (0, 1] for the
+        default search settings. build() then calibrates the default
+        leaves_to_search and pre_reorder_num_neighbors to the cheapest
+        setting that reaches it on sample queries (against brute force), and
+        records them in the config, so they survive serialize() and loading.
+        None: the rules' defaults.
+      calibration_queries: with target_recall, sample queries to calibrate
+        on (a 2-D array, e.g. a few hundred to a few thousand real queries).
+        None: datapoints are used as queries (each one's own datapoint left
+        out of its neighbors).
+      calibration_sample_size: with target_recall and no
+        calibration_queries, how many datapoints to use as queries (default
+        1000).
     """
     mode_string = {
         IncrementalMode.NONE: "NONE",
@@ -448,6 +462,21 @@ class ScannBuilder(object):
     if rules == "upstream" and not allow_l2_as_dot_product:
       raise ValueError("autopilot: allow_l2_as_dot_product applies to "
                        'rules="tuned" only')
+    # scann-core: the recall target and its calibration.
+    del calibration_queries  # build() passes them to the searcher.
+    target_stanza = ""
+    if target_recall is not None:
+      target_recall = float(target_recall)
+      if not 0 < target_recall <= 1:
+        raise ValueError("autopilot: target_recall must be in (0, 1], not "
+                         f"{target_recall}")
+      target_stanza = f"target_recall: {target_recall!r}"
+    if calibration_sample_size is not None:
+      if isinstance(calibration_sample_size, bool) or not isinstance(
+          calibration_sample_size, int) or calibration_sample_size < 1:
+        raise ValueError("autopilot: calibration_sample_size must be a "
+                         f"positive int, not {calibration_sample_size!r}")
+      target_stanza += f" calibration_sample_size: {calibration_sample_size}"
     if rules == "upstream":
       # scann-core 0.2.0's stanza (upstream's), without the rules field.
       return f"""
@@ -455,6 +484,7 @@ class ScannBuilder(object):
       tree_ah {{
         incremental_mode: {mode_string[mode]}
         reordering_dtype: {reorder_string[quantize]}
+        {target_stanza}
       }}
     }}
   """
@@ -467,9 +497,27 @@ class ScannBuilder(object):
         reordering_dtype: {reorder_string[quantize]}
         rules: TUNED_V1
         {l2_stanza}
+        {target_stanza}
       }}
     }}
   """
+
+  def _calibration_queries(self):
+    """scann-core: autopilot()'s calibration_queries, checked (or None)."""
+    params = self.params.get("autopilot") or {}
+    queries = params.get("calibration_queries")
+    if queries is None:
+      if (params.get("calibration_sample_size") is not None and
+          params.get("target_recall") is None):
+        raise ValueError(
+            "autopilot: calibration_sample_size needs target_recall")
+      return None
+    if params.get("target_recall") is None:
+      raise ValueError("autopilot: calibration_queries needs target_recall")
+    if params.get("calibration_sample_size") is not None:
+      raise ValueError("autopilot: give calibration_queries or "
+                       "calibration_sample_size, not both")
+    return queries
 
   def create_config(self):
     """Returns a text ScaNN config matching the specification in self.params."""
@@ -584,5 +632,9 @@ class ScannBuilder(object):
       raise Exception("build() called but no builder lambda was set.")
 
     config = self.create_config()
+    # scann-core: autopilot(calibration_queries=...) go to the searcher.
+    queries = self._calibration_queries()
+    if queries is not None:
+      kwargs["calibration_queries"] = queries
     return self.builder_lambda(
         self.db, config, self.training_threads, docids=docids, **kwargs)
