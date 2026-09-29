@@ -19,6 +19,7 @@
 #include "scann/scann_ops/cc/scann.h"
 
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -54,6 +55,7 @@
 #include "scann/proto/scann.pb.h"
 #include "scann/scann_ops/scann_assets.pb.h"
 #include "scann/trees/kmeans_tree/kmeans_tree.pb.h"
+#include "scann/tree_x_hybrid/tree_ah_hybrid_residual.h"
 #include "scann/tree_x_hybrid/tree_x_params.h"
 #include "scann/utils/common.h"
 #include "scann/utils/io_npy.h"
@@ -124,6 +126,74 @@ Status CheckAllFinite(ConstSpan<float> data, DimensionIndex dim,
           " contains NaN or infinity; ScaNN only supports finite values."));
   }
   return OkStatus();
+}
+
+// scann-core: asks the kernel to back the searcher's large, hot buffers with
+// 2 MiB pages: the reordering data (float, bfloat16 or int8 rows, read at
+// random, one TLB miss per row with 4 KiB pages) and the tree leaves' AH codes
+// (streamed by every search). MADV_HUGEPAGE makes them eligible for
+// transparent huge pages when the host's THP mode is "madvise" (Ubuntu's and
+// Debian's default); MADV_COLLAPSE (Linux >= 6.1) converts the pages already
+// populated now instead of whenever khugepaged gets to them. Best effort:
+// errors (older kernels, THP "never") are ignored. SCANN_HUGEPAGES=0 turns
+// it off.
+#if defined(__linux__) && !defined(MADV_COLLAPSE)
+#define MADV_COLLAPSE 25
+#endif
+
+bool HugePagesEnabled() {
+  const char* v = std::getenv("SCANN_HUGEPAGES");
+  return v == nullptr || std::string_view(v) != "0";
+}
+
+void AdviseHugePages(uintptr_t begin, uintptr_t end) {
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+  constexpr uintptr_t kHuge = uintptr_t{2} << 20;
+  begin = (begin + kHuge - 1) & ~(kHuge - 1);
+  end &= ~(kHuge - 1);
+  if (end <= begin) return;
+  void* p = reinterpret_cast<void*>(begin);
+  madvise(p, end - begin, MADV_HUGEPAGE);
+  madvise(p, end - begin, MADV_COLLAPSE);
+#endif
+}
+
+template <typename T>
+bool AdviseDenseDataset(const Dataset* ds) {
+  auto* dense = dynamic_cast<const DenseDataset<T>*>(ds);
+  if (dense == nullptr || dense->data().empty()) return false;
+  const auto begin = reinterpret_cast<uintptr_t>(dense->data().data());
+  AdviseHugePages(begin, begin + dense->data().size() * sizeof(T));
+  return true;
+}
+
+void AdviseDataset(const Dataset* ds) {
+  if (ds == nullptr) return;
+  AdviseDenseDataset<float>(ds) || AdviseDenseDataset<int16_t>(ds) ||
+      AdviseDenseDataset<int8_t>(ds) || AdviseDenseDataset<uint8_t>(ds);
+}
+
+void AdviseHugePagesForSearcher(const SingleMachineSearcherBase<float>& s) {
+  if (!HugePagesEnabled()) return;
+  AdviseDataset(s.dataset());
+  if (s.reordering_enabled()) {
+    auto reordering = s.reordering_helper().dataset();
+    if (reordering.get() != s.dataset()) AdviseDataset(reordering.get());
+  }
+  // The leaves' codes are separate heap buffers, allocated one after the
+  // other when the tree is built or loaded: advise the range they span.
+  if (auto* tree = dynamic_cast<const TreeAHHybridResidual*>(&s)) {
+    uintptr_t lo = std::numeric_limits<uintptr_t>::max(), hi = 0;
+    size_t total = 0;
+    tree->ForEachLeafPackedCodes([&](const uint8_t* data, size_t bytes) {
+      const auto b = reinterpret_cast<uintptr_t>(data);
+      lo = std::min(lo, b);
+      hi = std::max(hi, b + bytes);
+      total += bytes;
+    });
+    // Only when the codes fill most of the span: it may hold other data.
+    if (hi > lo && total >= (hi - lo) / 2) AdviseHugePages(lo, hi);
+  }
 }
 
 Status AddTokenizationToOptions(SingleMachineFactoryOptions& opts,
@@ -801,6 +871,7 @@ Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
                                               config_, dataset.get()));
   SCANN_ASSIGN_OR_RETURN(scann_,
                          CreateSearcher(std::tie(config_, dataset, opts)));
+  AdviseHugePagesForSearcher(*scann_);
   if (scann_->config().has_value()) config_ = scann_->config().value();
 
   absl::string_view distance = config_.distance_measure().distance_measure();
@@ -943,6 +1014,7 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   // error after a rebalance was 0.
   SCANN_RETURN_IF_ERROR(scann_->InitializeHealthStats());
   scann_->MaybeReleaseDataset();
+  AdviseHugePagesForSearcher(*scann_);
   return config_;
 }
 

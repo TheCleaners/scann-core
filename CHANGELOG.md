@@ -56,8 +56,26 @@ All notable changes to scann-core. Versions follow
   With the new default `batch_size=256` (see Changed), 10,000 rows into a
   200k-point GloVe tree: 128 → 32 ms; at an equal `batch_size`, −6 to
   −7 %. The Rust `upsert` also maintains once per call.
+- Huge pages: after a build, load or rebalance, the reordering data and a
+  tree's AH codes are `madvise`d `MADV_HUGEPAGE` (and collapsed with
+  `MADV_COLLAPSE` on Linux ≥ 6.1). Single-query latency −4.0 % on GloVe-100
+  (1500 leaves, bfloat16 reordering) and −2.6 % on SIFT-128, page-table
+  walks 224 → 2 per query, on a host with THP `always`, where the heap-
+  allocated codes weren't on huge pages; unchanged with 8 processes on
+  one CCD (bound by memory bandwidth). About +25 ms of load time.
+  `SCANN_HUGEPAGES=0` turns it off. See
+  [docs/api_reference.md](docs/api_reference.md#memory-huge-pages).
 
 ### Changed
+- The x86 builds use `-mpopcnt` by default (`SCANN_ARCH_FLAGS`), and the
+  AVX2/AVX-512 kernels' target attributes include POPCNT (every AVX CPU has
+  it; GCC compiled `popcount` to a bit-twiddling sequence without it; with
+  clang, ScaNN's hot code already used the instruction: same instruction
+  count on GloVe-100).
+- ScaNN's x86 `ignore_avx2`, `ignore_avx512`, `ignore_avx512_vnni` and
+  `ignore_amx` flags are honored (upstream read none of them). With
+  `ignore_amx`'s default (true), the experimental AMX kernels are no longer
+  used on Sapphire Rapids and later, as upstream documents.
 - `upsert(docids, database, batch_size=256)`: the default `batch_size`
   was 1 (upstream's), which prepared and inserted the rows one at a
   time; 256 matches the C++ and Rust APIs. Rows prepared in one batch are

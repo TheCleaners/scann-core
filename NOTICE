@@ -299,6 +299,9 @@ isn't a one-line change:
       workers (n - 1 pool threads plus the caller; upstream: n pool
       threads, while its default was NumCPUs() - 1); RetrainAndReindex()
       trains with the index's training_threads (upstream: the query pool).
+      After a build, load or rebalance, the reordering data and the tree
+      leaves' AH codes are madvise()d MADV_HUGEPAGE and MADV_COLLAPSE
+      (SCANN_HUGEPAGES=0 turns it off).
       SearchBatchedParallel() counts the calling thread as a worker and
       hands out one chunk per fetch (upstream's ParallelForWithStatus<1>
       batched chunks dynamically, leaving workers idle with small pools).
@@ -329,6 +332,15 @@ isn't a one-line change:
       upsert() takes a C-contiguous float32 2-D array without conversion,
       and anything else through the list-of-rows overload; named arguments,
       batch_size defaults to 256.
+  src/scann/utils/intrinsics/attributes.h
+      The AVX2 / AVX-512 / VNNI / AMX target attributes include popcnt.
+  src/scann/utils/intrinsics/flags.cc
+      The x86 ignore_avx2 / ignore_avx512 / ignore_avx512_vnni / ignore_amx
+      flags are honored (upstream read none of them; with ignore_amx's
+      default, the AMX kernels are now off unless the flag is changed).
+  src/scann/tree_x_hybrid/tree_ah_hybrid_residual.h
+      ForEachLeafPackedCodes(), used by scann.cc to advise huge pages for
+      the leaves' codes.
   src/scann/base/health_stats_collector.h
       Initialize() computes the per-partition quantization error in
       parallel (a pool sized by scann_core::AvailableCPUs(), for 65,536

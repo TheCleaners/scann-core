@@ -395,6 +395,24 @@ resulting config supports incremental updates (`NONE` / `ONLINE` /
   the searcher is created, so a searcher that is only ever queried with
   `search()` starts no threads.
 
+## Memory: huge pages
+
+After an index is built, loaded or rebalanced, scann-core asks Linux to back
+its large, hot buffers with 2 MiB pages (`madvise(MADV_HUGEPAGE)` and, on
+Linux ≥ 6.1, `MADV_COLLAPSE`): the reordering data (float32, bfloat16 or
+int8 rows) and a tree's AH codes. With 4 KiB pages nearly every reordering
+row and every searched leaf costs a TLB miss and a page-table walk. On a
+GloVe-100 index (1500 leaves, bfloat16 reordering) this cut page walks from
+224 to 2 per query and single-query latency by 4 % (SIFT-128: 2.6 %), on a
+host whose THP mode is `always` (the codes, on the malloc heap, weren't
+backed by huge pages even then). On hosts in `madvise` mode (Ubuntu's and
+Debian's default) the reordering data benefits too. It costs about 25 ms of
+load time for GloVe-100. Set **`SCANN_HUGEPAGES=0`** to turn it off. Without
+it, `GLIBC_TUNABLES=glibc.malloc.hugetlb=1` makes glibc's malloc request
+huge pages for everything (the reordering data included, not the heap-
+allocated codes). On multi-socket (or NPS2/NPS4) machines, `numactl
+--interleave=all` spreads an index over the memory nodes.
+
 ## `ScannSearcher` runtime API
 
 Vectors (queries here, the dataset for `builder`/`create_searcher`, new

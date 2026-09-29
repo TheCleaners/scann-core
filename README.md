@@ -74,7 +74,8 @@ All three build the C++ library from source, which needs:
   pipeline by about 5%, and batched brute-force search at about half of
   clang's throughput. Use clang for speed. When no compiler is chosen, clang
   is picked if it's on PATH. The AMX kernels (Sapphire Rapids and later)
-  need clang ≥ 20.
+  need clang ≥ 20, and are off by default (ScaNN's `ignore_amx` flag,
+  default true; before 0.2.1 the flag was ignored and they were on).
 * **CMake ≥ 3.27**, and network access to download the C++ dependencies
   (or local copies; see [Dependencies](#dependencies)).
 * For Python: Python ≥ 3.10 with numpy and protobuf ≥ 7.36.2 (pip installs
@@ -129,7 +130,7 @@ cmake --build build
 | `SCANN_BUILD_EXAMPLES` | ON\* | C++ examples |
 | `SCANN_BUILD_TF_OP` | OFF | the TensorFlow op and its `scann_tf_ops` package in `build/python/`, against the TensorFlow in `Python_EXECUTABLE`; `scann.tf` then uses it (SavedModels). Linux; source-only, see [docs/tensorflow.md](docs/tensorflow.md#the-op-backend-scann_tf_ops-build-from-source) |
 | `SCANN_BUILD_TORCH_OP` | OFF | the native PyTorch op and its `scann_torch_ops` package in `build/python/` (what the scann-core-torch wheel holds), against the headers of the torch in `SCANN_TORCH_PYTHON` (default `Python_EXECUTABLE`; torch >= 2.10); runs on any torch >= 2.10 (Linux; see [docs/integrations.md](docs/integrations.md#the-native-backend-scann-core-torch)) |
-| `SCANN_ARCH_FLAGS` | `-mavx;-mfma` (x86-64), `-march=armv8-a+simd` (arm64) | ISA flags for scann-core **and** all dependencies |
+| `SCANN_ARCH_FLAGS` | `-mavx;-mfma;-mpopcnt` (x86-64), `-march=armv8-a+simd` (arm64) | ISA flags for scann-core **and** all dependencies |
 | `SCANN_SANITIZE` | empty | e.g. `address,undefined` or `thread`; instruments dependencies too |
 | `SCANN_USE_SYSTEM_DEPS` | OFF | try `find_package` first (versions must match the pins exactly) |
 | `SCANN_ENABLE_LTO` | OFF | IPO for scann-core's own objects |

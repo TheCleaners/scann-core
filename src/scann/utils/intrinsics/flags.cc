@@ -58,13 +58,23 @@ ABSL_FLAG(bool, ignore_sve2, false, "Ignore SVE2.");
 namespace research_scann {
 namespace flags_internal {
 
-bool should_use_avx2 = port::TestCPUFeature(port::AVX2);
-bool should_use_avx512 = port::TestCPUFeature(port::AVX512F) &&
+// scann-core: the ignore_* flags are honored, as for Arm below. Upstream read
+// none of the x86 ones, so ignore_amx (documented default: true) didn't keep
+// the experimental AMX kernels off on Sapphire Rapids and later. Flags are
+// read at static initialization, so only their defaults (or a build that
+// changes them) take effect; ScopedPlatformOverride changes these later.
+bool should_use_avx2 = port::TestCPUFeature(port::AVX2) &&
+                       !absl::GetFlag(FLAGS_ignore_avx2);
+bool should_use_avx512 = should_use_avx2 &&
+                         port::TestCPUFeature(port::AVX512F) &&
                          port::TestCPUFeature(port::AVX512DQ) &&
-                         port::TestCPUFeature(port::AVX512BW);
-bool should_use_avx512_vnni =
-    should_use_avx512 && port::TestCPUFeature(port::AVX512_VNNI);
-bool should_use_amx = should_use_avx512_vnni &&
+                         port::TestCPUFeature(port::AVX512BW) &&
+                         !absl::GetFlag(FLAGS_ignore_avx512);
+bool should_use_avx512_vnni = should_use_avx512 &&
+                              port::TestCPUFeature(port::AVX512_VNNI) &&
+                              !absl::GetFlag(FLAGS_ignore_avx512_vnni);
+bool should_use_amx = !absl::GetFlag(FLAGS_ignore_amx) &&
+                      should_use_avx512_vnni &&
                       port::TestCPUFeature(port::AVX512_BF16) &&
                       port::TestCPUFeature(port::AVX512IFMA) &&
                       port::TestCPUFeature(port::AVX512VBMI) &&

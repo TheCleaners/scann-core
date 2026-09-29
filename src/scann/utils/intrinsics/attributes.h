@@ -24,17 +24,21 @@
 #include <x86intrin.h>
 
 #define SCANN_SSE4
+// scann-core: popcnt added (every AVX2 CPU has it; absl::popcount in the
+// AVX2/AVX-512 top-N selection otherwise compiled to a bit-twiddling
+// sequence with GCC).
 #define SCANN_AVX1 __attribute((target("avx")))
-#define SCANN_AVX2 __attribute((target("avx,avx2,fma")))
+#define SCANN_AVX2 __attribute((target("avx,avx2,fma,popcnt")))
 #define SCANN_AVX512 \
-  __attribute((target("avx,avx2,fma,avx512f,avx512dq,avx512bw")))
-#define SCANN_AVX512_VNNI \
-  __attribute((target("avx,avx2,fma,avx512f,avx512dq,avx512bw,avx512vnni")))
+  __attribute((target("avx,avx2,fma,popcnt,avx512f,avx512dq,avx512bw")))
+#define SCANN_AVX512_VNNI                                             \
+  __attribute((target("avx,avx2,fma,popcnt,avx512f,avx512dq,avx512bw," \
+                      "avx512vnni")))
 
 #define SCANN_AMX                                                  \
   ABSL_ATTRIBUTE_NO_SANITIZE_UNDEFINED                             \
   __attribute(                                                     \
-      (target("avx,avx2,fma,avx512f,avx512dq,avx512bw,avx512vnni," \
+      (target("avx,avx2,fma,popcnt,avx512f,avx512dq,avx512bw,avx512vnni," \
               "avx512bf16,avx512ifma,avx512vbmi,"                  \
               "amx-tile,amx-bf16,amx-int8")))
 

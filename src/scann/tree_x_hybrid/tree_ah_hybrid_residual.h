@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -155,6 +159,19 @@ class TreeAHHybridResidual final : public SingleMachineSearcherBase<float> {
   void set_fixed_point_lut_conversion_options(
       AsymmetricHasherConfig::FixedPointLUTConversionOptions opts) {
     fixed_point_lut_conversion_options_ = std::move(opts);
+  }
+
+  // scann-core: calls f(data, bytes) for each leaf's packed (LUT16) codes,
+  // the buffers every search streams through (ScannInterface asks for huge
+  // pages for them).
+  template <typename F>
+  void ForEachLeafPackedCodes(F f) const {
+    for (const auto& leaf : leaf_searchers_) {
+      if (leaf == nullptr) continue;
+      const auto& packed = leaf->packed_dataset();
+      if (!packed.bit_packed_data.empty())
+        f(packed.bit_packed_data.data(), packed.bit_packed_data.size());
+    }
   }
 
  protected:

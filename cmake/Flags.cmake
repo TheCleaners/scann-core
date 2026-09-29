@@ -28,8 +28,13 @@
 # compiled in (and FMA availability changes floating-point contraction), so
 # bit-for-bit comparisons (tests/equivalence against the upstream wheel) are
 # only meaningful between builds with the same value: the default.
+#
+# -mpopcnt: every CPU with AVX has POPCNT, but -mavx doesn't enable it, so
+# std::popcount / __builtin_popcount outside functions with a target
+# attribute compiled to a bit-twiddling sequence (with GCC; clang already
+# emitted popcnt in ScaNN's hot code). No effect on floating point.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-  set(_scann_default_arch "-mavx;-mfma")
+  set(_scann_default_arch "-mavx;-mfma;-mpopcnt")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
   set(_scann_default_arch "-march=armv8-a+simd")
 else()
