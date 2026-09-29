@@ -190,6 +190,12 @@ neighbour lists and distances. See
     differently too, so this is the normal spread between trained
     partitioners, not a loss of quality.
   * On GloVe (above) recall differs in the fourth decimal place.
+  * Indexes with int8 centroids (`quantize_centroids=True`, not among the
+    harness's configs) also pick their leaves with scann-core's
+    fixed-point kernel since 0.3: 99.6–100 % of queries search the same
+    leaves as with ScaNN's kernel, recall@10 within ±0.0001 on GloVe-100,
+    SIFT-128 and 768-d embeddings. `SCANN_EXACT_TOKENIZATION=1` restores
+    ScaNN's kernel (see the [changelog](../CHANGELOG.md)).
 
 ## Upstream's aarch64 wheels need Python 3.9
 

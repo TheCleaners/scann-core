@@ -576,7 +576,10 @@ On these datasets (**screens**):
 * SOAR's `overretrieve_factor` 1.5 against 2.0 (GloVe).
 
 The tuned builds all used `tree(training_sample_size=len(X))`,
-`quantize_centroids=True` and the default random initialization.
+`quantize_centroids=True` and the default random initialization. (These
+screens predate 0.3, whose faster kernel for int8 centroids on x86-64
+makes `quantize_centroids=True` 4–5 µs per query cheaper on GloVe-100 with
+1500 leaves, at the same recall; see the changelog.)
 
 ## How to measure
 

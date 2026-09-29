@@ -473,6 +473,21 @@ isn't a one-line change:
       what the AVX2 kernel pushes (its thresholds and their clamping, int32
       accumulators from 256 blocks, datapoint-translation and batch-filter
       predicates), for bit-identical results.
+  src/scann/trees/kmeans_tree/kmeans_tree.h,
+  src/scann/trees/kmeans_tree/kmeans_tree_node.h,
+  src/scann/trees/kmeans_tree/kmeans_tree_node.cc,
+  src/scann/partitioning/kmeans_tree_partitioner.cc
+      On x86-64, query tokenization with int8 centroids (FIXED_POINT_INT8)
+      scores the centroids with scann-core's fixed-point kernel
+      (core/scann_core/fast_int8_centers.h: the query rounded to 16 bits,
+      integer dot products with AVX-512 VNNI or AVX2 over a blocked copy of
+      the int8 centroids that CreateFixedPointCenters() builds and ApplyAvq()
+      clears) and picks the leaves with scann_core::SelectTopK instead of
+      FastTopNeighbors (PostprocessDistancesForSpillingFast). Not
+      bit-identical to upstream. KMeansTree::TokenizationOptions::
+      allow_fast_int8, threaded through the tokenization functions, is set
+      by the partitioner in query mode only. SCANN_EXACT_TOKENIZATION=1 /
+      --exact_int8_tokenization keep upstream's code.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
       directly (no docid lock, no context manager). upsert() passes the rows

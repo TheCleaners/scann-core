@@ -216,7 +216,16 @@ dimensionality, 55,020 points at d=100, and a tree above it.)
   a `float` becomes a fraction threshold, for when incremental
   re-partitioning should trigger as data is upserted (see `upsert` below).
 - **`quantize_centroids`** — if `True`, stores centroids as int8 instead of
-  float32 for cheaper query-to-leaf routing, at a small accuracy cost.
+  float32 for cheaper query-to-leaf routing, at a small accuracy cost. On
+  x86-64 with AVX2, scann-core scores queries against the int8 centroids
+  with a fixed-point kernel (the query rounded to 16 bits; AVX-512 VNNI
+  where available) about 4× faster than ScaNN's float one, with the same
+  leaves for 99.6–100 % of queries (GloVe-100, SIFT-128, 768-d
+  embeddings). Its results are deterministic but not bit-identical to
+  upstream's: **`SCANN_EXACT_TOKENIZATION=1`** in the environment (read
+  when scann-core is loaded; `--exact_int8_tokenization` for C++ programs
+  that parse absl flags) selects ScaNN's kernel. Datapoints are assigned
+  to leaves (build, upserts) with ScaNN's kernel either way.
 
 ### `.upper_tree(...)`
 
