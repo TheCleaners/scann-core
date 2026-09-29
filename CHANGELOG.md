@@ -143,7 +143,7 @@ All notable changes to scann-core. Versions follow
   C++ callers that mutate through `GetMutator()` convert vectors with the
   new `ScannInterface::ToStoredDatapoints()`.
 - A mutation fuzzer (`tests/fuzz/mutfuzz.cc`): random adds, updates,
-  deletes, retrains and save/reload on 43 index configs, checked against a
+  deletes, retrains and save/reload on 46 index configs, checked against a
   shadow copy with exhaustive searches that must repeat bit for bit, with
   optional injected leaf failures. Every config runs as a ctest (label
   `mutfuzz`, about 1 s in all; also in the CI sanitizer job), and
@@ -236,6 +236,12 @@ All notable changes to scann-core. Versions follow
   data, not every dimension.
 
 ### Fixed
+- A tree with AVQ (`tree(avq=...)`) and incremental training
+  (`incremental_threshold`, or autopilot's `ONLINE` modes) failed on the
+  first upsert with "Dimensionality mismatch (d vs. <garbage>)": upstream's
+  `KMeansTreeNode::ApplyAvq` left the tree's centres with a cached mutator
+  of a destroyed dataset, which incremental training then wrote through
+  (undefined behavior). The centres now get a mutator of their own.
 - The wheels no longer contain Eigen's headers: 0.2.0's installed 681
   files under `include/eigen3` into site-packages (from Eigen's install
   rules). The wheel now installs only the `scann` package.

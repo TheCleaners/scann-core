@@ -24,6 +24,8 @@
   recall against brute force at the default settings; serialize() /
   load_searcher() and rebalance() keep the config; upsert and delete with
   an ONLINE autopilot index.
+- A tree with AVQ and incremental training takes upserts and deletes
+  (upstream's ApplyAvq left it with a dangling mutator).
 
 Run with scann-core's build/python on PYTHONPATH:
   PYTHONPATH=build/python python tests/python/test_autopilot.py
@@ -221,12 +223,13 @@ def test_built():
   check("rules" not in cfg and field(cfg, "noise_shaping_threshold") == "0.2" and
         field(cfg, "num_children") == str(n // 655), "upstream rules built")
 
-  # ONLINE (no AVQ with incremental training): upserts and deletes.
+  # ONLINE (incremental training, with AVQ): upserts and deletes.
   s = scann.scann_ops_pybind.builder(x, k, "squared_l2").autopilot(
       mode=IM.ONLINE).build(docids=[str(i) for i in range(n)])
   cfg = s.config()
-  check(re.search(r"\bl2_as_dot_product \{", cfg) and field(cfg, "avq") is None,
-        "ONLINE: l2_as_dot_product without AVQ")
+  check(re.search(r"\bl2_as_dot_product \{", cfg) and field(cfg, "avq") == "2.5"
+        and "incremental_training_config" in cfg,
+        "ONLINE: l2_as_dot_product, AVQ, incremental training")
   s.upsert(docids=["new0", "new1"], database=q[:2])
   ids, _ = s.search(q[0])
   check("new0" in list(ids), "ONLINE upsert found")
@@ -235,7 +238,32 @@ def test_built():
   check("new0" not in list(ids), "ONLINE delete")
 
 
+def test_avq_incremental():
+  # Upstream's KMeansTreeNode::ApplyAvq left the tree's centres with a
+  # cached mutator of a destroyed dataset: an upsert into a tree with AVQ and
+  # incremental training failed ("Dimensionality mismatch (200 vs. <garbage>)").
+  d, n = 64, 20000
+  rng = np.random.default_rng(4)
+  c = rng.standard_normal((50, d)).astype(np.float32)
+  x = (c[rng.integers(0, 50, n)] + 0.3 * rng.standard_normal((n, d))).astype(np.float32)
+  x /= np.linalg.norm(x, axis=1, keepdims=True)  # a unit vector finds itself
+  s = (scann.scann_ops_pybind.builder(x, 10, "dot_product")
+       .tree(num_leaves=40, num_leaves_to_search=10, avq=2.5,
+             incremental_threshold=0.2)
+       .score_ah(2, anisotropic_quantization_threshold=0.2).reorder(100)
+       .build(docids=[str(i) for i in range(n)]))
+  new = x[:300] + 0.01
+  new /= np.linalg.norm(new, axis=1, keepdims=True)
+  s.upsert(docids=[f"n{i}" for i in range(300)], database=new)
+  ids, _ = s.search(new[7])
+  check("n7" in list(ids), "AVQ tree with incremental training: upserts")
+  s.delete([f"n{i}" for i in range(0, 300, 2)])
+  ids, _ = s.search(new[9])
+  check("n9" in list(ids), "AVQ tree with incremental training: deletes")
+
+
 def main():
+  test_avq_incremental()
   test_stanza()
   test_previews()
   test_built()

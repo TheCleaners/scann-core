@@ -219,12 +219,11 @@ StatusOr<ScannConfig> AutopilotTreeAh(const ScannConfig& config,
 //     there are fewer leaves (coarser leaves find fewer neighbours per
 //     scanned point at high recall: a quarter of the leaves needed half as
 //     many searched for the same recall at the default settings);
-//   * dot product: tree AVQ 2.5 (not with incremental training); 2
-//     dimensions per AH block up to 384 dimensions, then about 192 blocks
-//     (3 at 512, 4 at 768); an anisotropic threshold that scales with the
-//     norms and falls with the dimension above 128 (upstream: 0.2 whatever
-//     both, which caps recall at 768 dimensions with 4 dimensions per
-//     block);
+//   * dot product: tree AVQ 2.5; 2 dimensions per AH block up to 384
+//     dimensions, then about 192 blocks (3 at 512, 4 at 768); an anisotropic
+//     threshold that scales with the norms and falls with the dimension
+//     above 128 (upstream: 0.2 whatever both, which caps recall at 768
+//     dimensions with 4 dimensions per block);
 //   * rounded (not truncated) AH lookup tables;
 //   * squared L2 through l2_as_dot_product where the norms are nearly
 //     constant (decided in AutopilotChoosesL2AsDotProduct, before the index
@@ -463,11 +462,7 @@ StatusOr<ScannConfig> AutopilotTreeAhTuned(const ScannConfig& config,
       dist);
   part->set_partitioning_type(part->GENERIC);
   part->set_query_tokenization_type(part->FLOAT);
-  // Not with incremental training: upserting into a tree built with AVQ and
-  // incremental training fails (a garbage dimensionality in the dataset
-  // mutator; upstream's, manual configs hit it too).
-  if (dot && opts.incremental_mode() == AutopilotTreeAH::NONE)
-    part->set_avq(kTunedTreeAvq);
+  if (dot) part->set_avq(kTunedTreeAvq);
 
   switch (opts.incremental_mode()) {
     case (AutopilotTreeAH::ONLINE_INCREMENTAL):

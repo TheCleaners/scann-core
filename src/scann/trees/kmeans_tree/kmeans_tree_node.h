@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_TREES_KMEANS_TREE_KMEANS_TREE_NODE_H_
 #define SCANN_TREES_KMEANS_TREE_KMEANS_TREE_NODE_H_
@@ -312,7 +316,14 @@ Status KMeansTreeNode::ApplyAvq(
 
   double rescale_numerator = 0, rescale_denominator = 0;
   absl::Mutex rescaling_mutex;
-  SCANN_ASSIGN_OR_RETURN(auto mutator, new_centers.GetMutator());
+  // scann-core: a mutator of its own, not the one new_centers caches.
+  // Upstream's (GetMutator()) moved into float_centers_ with it below, still
+  // pointing at this function's new_centers: incremental training's
+  // centroid updates then wrote through it after the function returned
+  // (upserts into an AVQ tree with incremental training failed with a
+  // garbage dimensionality, or corrupted memory).
+  SCANN_ASSIGN_OR_RETURN(auto mutator,
+                         DenseDataset<float>::Mutator::Create(&new_centers));
   Status status = ParallelForWithStatus<1>(
       Seq(children_.size()), pool_or_null, [&](size_t child_idx) -> Status {
         auto& child = children_[child_idx];

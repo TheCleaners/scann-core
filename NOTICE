@@ -175,6 +175,12 @@ isn't a one-line change:
       No longer dereferences empty std::optionals.
   src/scann/data_format/docid_collection.h
       MemoryUsage() counts sizeof(*this), not sizeof(this).
+  src/scann/trees/kmeans_tree/kmeans_tree_node.h
+      ApplyAvq() fills the new centres through a mutator of its own
+      (upstream cached one in them with GetMutator(), then moved them into
+      the node with the mutator still pointing at the moved-from local:
+      incremental training later wrote through it, and upserts into an AVQ
+      tree with incremental training failed or corrupted memory).
   src/scann/tree_x_hybrid/mutator.h
       UpdateDatapoint() and RemoveDatapoint() skip unused (kInvalidToken)
       assignment slots. With spilling (SOAR) upstream passed them to the

@@ -62,7 +62,8 @@ set(SCANN_MUTFUZZ_CONFIGS
   tree_incr_bf_l2 tree_soar_ah_dot tree_soar_ah_rint8_dot tree_soar_bf_dot
   tree_soar_bf16_dot tree_soar_int8_dot tree_incr_soar_ah_dot
   l2mips_bf tree_l2mips_ah tree_l2mips_ah_dpb3 tree_soar_l2mips_ah
-  tree_l2mips_ah_rbf16 tree_incr_l2mips_ah)
+  tree_l2mips_ah_rbf16 tree_incr_l2mips_ah tree_avq_ah_dot tree_incr_avq_ah_dot
+  tree_incr_avq_l2mips_ah)
 foreach(cfg IN LISTS SCANN_MUTFUZZ_CONFIGS)
   add_test(NAME mutfuzz_${cfg} COMMAND scann_core_mutfuzz ${cfg} 1 600 4)
   set_tests_properties(mutfuzz_${cfg} PROPERTIES TIMEOUT 900 LABELS mutfuzz)
