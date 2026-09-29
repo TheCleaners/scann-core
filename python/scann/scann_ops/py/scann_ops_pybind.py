@@ -157,6 +157,12 @@ class ScannSearcher(object):
       leaves_to_search=-1,
   ):
     """Single-query search; -1 for a param uses the searcher's default value."""
+    if self.docids is None:
+      # scann-core: without docids there is no bookkeeping to lock or map:
+      # straight to the C++ searcher, which does its own locking.
+      return self.searcher.search(
+          q if type(q) is np.ndarray else _host_array(q), final_num_neighbors,
+          pre_reorder_num_neighbors, leaves_to_search)
     q = _host_array(q)
     with self._reading_docids():
       idx, dist = self.searcher.search(q, final_num_neighbors,

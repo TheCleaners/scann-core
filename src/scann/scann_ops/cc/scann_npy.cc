@@ -285,20 +285,26 @@ ScannNumpy::Search(const np_row_major_arr<float>& query, int final_nn,
     throw std::invalid_argument("Query must be one-dimensional");
 
   DatapointPtr<float> ptr(nullptr, query.data(), query.size(), query.size());
-  vector<DatapointIndex> idx;
-  vector<float> dis;
+  // scann-core: the results go straight into the returned arrays (upstream
+  // copied them into two vectors, which pybind11 copied again).
+  NNResultsVector res;
+  float multiplier;
   {
     pybind11::gil_scoped_release gil_release;
     absl::ReaderMutexLock lock(&mu_);
-    NNResultsVector res;
     auto status = scann_.Search(ptr, &res, final_nn, pre_reorder_nn, leaves);
     RuntimeErrorIfNotOk("Error during search: ", status);
-    idx.resize(res.size());
-    dis.resize(res.size());
-    scann_.ReshapeNNResult(res, idx.data(), dis.data());
+    multiplier = scann_.result_multiplier();
   }
-  return {pybind11::array_t<DatapointIndex>(idx.size(), idx.data()),
-          pybind11::array_t<float>(dis.size(), dis.data())};
+  pybind11::array_t<DatapointIndex> idx(res.size());
+  pybind11::array_t<float> dis(res.size());
+  DatapointIndex* idx_out = idx.mutable_data();
+  float* dis_out = dis.mutable_data();
+  for (const auto& [i, d] : res) {
+    *idx_out++ = i;
+    *dis_out++ = multiplier * d;
+  }
+  return {std::move(idx), std::move(dis)};
 }
 
 std::pair<pybind11::array_t<DatapointIndex>, pybind11::array_t<float>>

@@ -141,15 +141,22 @@ vector<uint32_t> SizeByPartition(
 // datapoint's position): the same search on an unchanged index could return
 // slightly different distances. Now the output order, and the search, are
 // deterministic.
+//
+// scann-core: std::sort by (index, distance) rather than std::stable_sort by
+// index, which allocated a temporary buffer on every query: the same output.
+// A datapoint appears at most twice (SOAR spills it to two partitions), and
+// the average of its two distances doesn't depend on their order (0.5 * a +
+// 0.5 * b is exact in the halving and commutative in the sum).
 void DeduplicateDatabaseSpilledResults(NNResultsVector* results,
                                        size_t final_size) {
   DCHECK_GT(final_size, 0);
   DCHECK_LE(results->size() / 2, final_size);
-  std::stable_sort(results->begin(), results->end(),
-                   [](const pair<DatapointIndex, float>& a,
-                      const pair<DatapointIndex, float>& b) {
-                     return a.first < b.first;
-                   });
+  std::sort(results->begin(), results->end(),
+            [](const pair<DatapointIndex, float>& a,
+               const pair<DatapointIndex, float>& b) {
+              return a.first < b.first ||
+                     (a.first == b.first && a.second < b.second);
+            });
   size_t out = 0;
   for (size_t i = 0; i < results->size(); ++i) {
     const auto& neighbor = (*results)[i];

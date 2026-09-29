@@ -311,11 +311,28 @@ isn't a one-line change:
       one query, and on tree indexes chunks of at most 8, with Search()
       (results then match Search(), not a batched search, in the last
       bits).
+      GetSearchParameters() reuses one TreeXOptionalParameters per thread and
+      leaves_to_search value (upstream: a make_shared and a vector per
+      query); result_multiplier() accessor.
   src/scann/scann_ops/cc/scann_npy.cc
       SearchBatched() releases the GIL before touching the queries (no
       copy) and returns arrays allocated before the search and filled by
       the search's chunks (upstream copied the results twice, the second
-      time with the GIL held).
+      time with the GIL held). Search() writes the results into the
+      returned arrays directly (upstream: into two vectors, then copied).
+  src/scann/utils/reordering_helper_interface.h,
+  src/scann/utils/reordering_helper.h, src/scann/base/single_machine_base.cc
+      NonEmptyDatasetDimensionality(): the query dimensionality check in
+      FindNeighbors() no longer copies the reordering helper's dataset
+      shared_ptr on every search (a reference count all searching threads
+      shared).
+  src/scann/tree_x_hybrid/internal/utils.cc
+      DeduplicateDatabaseSpilledResults() sorts with std::sort by (index,
+      distance) instead of std::stable_sort by index (a temporary buffer
+      per query); same results.
+  python/scann/scann_ops/py/scann_ops_pybind.py
+      search() on a searcher without docids calls the pybind searcher
+      directly (no docid lock, no context manager).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 python/scann/tf.py is adapted from upstream's

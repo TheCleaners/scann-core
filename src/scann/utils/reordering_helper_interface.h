@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 #ifndef SCANN_UTILS_REORDERING_HELPER_INTERFACE_H_
@@ -18,6 +22,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -68,6 +73,25 @@ class ReorderingInterface {
                              MutableSpan<float> output) const = 0;
 
   virtual shared_ptr<const Dataset> dataset() const { return nullptr; }
+
+  // scann-core: dataset()'s dimensionality if it is non-null and not empty.
+  // Searchers check each query against it; dataset() returns a shared_ptr by
+  // value, so every search updated its reference count, a cache line that
+  // all searching threads share. The helpers override this without the
+  // copy.
+  virtual std::optional<DimensionIndex> NonEmptyDatasetDimensionality()
+      const {
+    return DimensionalityIfNonEmpty(dataset().get());
+  }
+
+ protected:
+  static std::optional<DimensionIndex> DimensionalityIfNonEmpty(
+      const Dataset* dataset) {
+    if (dataset == nullptr || dataset->empty()) return std::nullopt;
+    return dataset->dimensionality();
+  }
+
+ public:
 
   virtual StatusOr<shared_ptr<const DenseDataset<float>>>
   ReconstructFloatDataset() const {

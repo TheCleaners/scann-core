@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -83,6 +87,9 @@ class ExactReorderingHelper : public ReorderingHelper<T> {
   shared_ptr<const Dataset> dataset() const final {
     return exact_reordering_dataset_;
   }
+  std::optional<DimensionIndex> NonEmptyDatasetDimensionality() const final {
+    return this->DimensionalityIfNonEmpty(exact_reordering_dataset_.get());
+  }
 
  private:
   shared_ptr<const DistanceMeasure> exact_reordering_distance_ = nullptr;
@@ -134,6 +141,9 @@ class FixedPointFloatDenseDotProductReorderingHelper
 
   shared_ptr<const Dataset> dataset() const final {
     return fixed_point_dataset_;
+  }
+  std::optional<DimensionIndex> NonEmptyDatasetDimensionality() const final {
+    return DimensionalityIfNonEmpty(fixed_point_dataset_.get());
   }
 
   class Mutator;
@@ -197,6 +207,9 @@ class FixedPointFloatDenseCosineReorderingHelper
   shared_ptr<const Dataset> dataset() const final {
     return dot_product_helper_.dataset();
   }
+  std::optional<DimensionIndex> NonEmptyDatasetDimensionality() const final {
+    return dot_product_helper_.NonEmptyDatasetDimensionality();
+  }
 
   void AppendDataToSingleMachineFactoryOptions(
       SingleMachineFactoryOptions* opts) const override {
@@ -249,6 +262,9 @@ class FixedPointFloatDenseSquaredL2ReorderingHelper
   shared_ptr<const Dataset> dataset() const final {
     return dot_product_helper_.dataset();
   }
+  std::optional<DimensionIndex> NonEmptyDatasetDimensionality() const final {
+    return dot_product_helper_.NonEmptyDatasetDimensionality();
+  }
 
   void AppendDataToSingleMachineFactoryOptions(
       SingleMachineFactoryOptions* opts) const override {
@@ -283,6 +299,9 @@ class FixedPointFloatDenseLimitedInnerReorderingHelper
 
   shared_ptr<const Dataset> dataset() const final {
     return dot_product_helper_.dataset();
+  }
+  std::optional<DimensionIndex> NonEmptyDatasetDimensionality() const final {
+    return dot_product_helper_.NonEmptyDatasetDimensionality();
   }
 
   Status ComputeDistancesForReordering(const DatapointPtr<float>& query,
@@ -341,6 +360,9 @@ class Bfloat16ReorderingHelper : public ReorderingHelper<float> {
 
   Status Reconstruct(DatapointIndex i, MutableSpan<float> output) const final;
   shared_ptr<const Dataset> dataset() const final;
+  std::optional<DimensionIndex> NonEmptyDatasetDimensionality() const final {
+    return DimensionalityIfNonEmpty(bfloat16_dataset_.get());
+  }
 
  private:
   shared_ptr<DenseDataset<int16_t>> bfloat16_dataset_;

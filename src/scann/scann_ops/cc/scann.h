@@ -161,6 +161,9 @@ class ScannInterface {
 
   size_t n_points() const { return scann_->DatasetSize().value(); }
   DimensionIndex dimensionality() const { return dimensionality_; }
+  // scann-core: the factor ReshapeNNResult applies to distances (-1 for the
+  // similarities that ScaNN negates into distances, e.g. dot product).
+  float result_multiplier() const { return result_multiplier_; }
   // scann-core: how many neighbors a search with final_nn = -1 returns per
   // query (fewer if the index has fewer points).
   int default_num_neighbors() const {

@@ -841,6 +841,28 @@ std::shared_ptr<ThreadPool> ScannInterface::parallel_query_pool() const {
   return parallel_query_pool_;
 }
 
+namespace {
+
+// scann-core: the tree parameters for a leaves_to_search value, made once
+// per thread and value instead of per query (a make_shared and a vector
+// allocation each time). Immutable once made (SearchParameters holds them
+// as shared_ptr<const ...>), and thread-local, so no reference count is
+// shared between threads.
+std::shared_ptr<const TreeXOptionalParameters> TreeParametersForLeaves(
+    int leaves) {
+  thread_local int cached_leaves = -1;
+  thread_local std::shared_ptr<const TreeXOptionalParameters> cached;
+  if (leaves != cached_leaves || cached == nullptr) {
+    auto tree_params = std::make_shared<TreeXOptionalParameters>();
+    tree_params->set_num_partitions_to_search_override(leaves);
+    cached = std::move(tree_params);
+    cached_leaves = leaves;
+  }
+  return cached;
+}
+
+}  // namespace
+
 SearchParameters ScannInterface::GetSearchParameters(int final_nn,
                                                      int pre_reorder_nn,
                                                      int leaves) const {
@@ -858,11 +880,9 @@ SearchParameters ScannInterface::GetSearchParameters(int final_nn,
   // even for non-tree searchers; the int8 brute-force searcher then
   // down_cast them to its own parameter type and segfaulted. leaves_to_search
   // only means something for a partitioned (tree) index; ignore it otherwise.
-  if (leaves > 0 && config_.has_partitioning()) {
-    auto tree_params = std::make_shared<TreeXOptionalParameters>();
-    tree_params->set_num_partitions_to_search_override(leaves);
-    params.set_searcher_specific_optional_parameters(tree_params);
-  }
+  if (leaves > 0 && config_.has_partitioning())
+    params.set_searcher_specific_optional_parameters(
+        TreeParametersForLeaves(leaves));
   return params;
 }
 
@@ -877,12 +897,10 @@ vector<SearchParameters> ScannInterface::GetSearchParametersBatched(
   } else {
     pre_reorder_nn = final_nn;
   }
-  std::shared_ptr<research_scann::TreeXOptionalParameters> tree_params;
+  std::shared_ptr<const TreeXOptionalParameters> tree_params;
   // scann-core: only for tree indexes; see GetSearchParameters.
-  if (leaves > 0 && config_.has_partitioning()) {
-    tree_params = std::make_shared<TreeXOptionalParameters>();
-    tree_params->set_num_partitions_to_search_override(leaves);
-  }
+  if (leaves > 0 && config_.has_partitioning())
+    tree_params = TreeParametersForLeaves(leaves);
 
   for (auto& p : params) {
     p.set_pre_reordering_num_neighbors(pre_reorder_nn);

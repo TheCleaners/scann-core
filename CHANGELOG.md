@@ -34,6 +34,16 @@ All notable changes to scann-core. Versions follow
   512 and more are unchanged. Distances of queries searched this way are
   `search()`'s, which can differ from a batched search's in the last bits.
 
+- Less fixed cost per `search()` call: without docids, the Python wrapper
+  calls the C++ searcher directly (no docid lock or context manager); the
+  results are written straight into the returned arrays (they were copied
+  twice); the tree parameters for a `leaves_to_search` value are made once
+  per thread instead of per query; the query dimensionality check no longer
+  copies a shared pointer that every searching thread shares; the SOAR
+  duplicate merge no longer allocates. On a 1,000-point index (1 leaf,
+  reorder 10): 3.54 → 3.00 µs per `search()` call (−0.53 µs; −0.26 µs of
+  it in C++). On GloVe-100 (53 µs per query) that is within the noise.
+
 ### Changed
 - `set_num_threads(n)` (Python, `ScannInterface::SetNumThreads`, Rust
   `set_num_threads`) now means n threads in all, the calling one

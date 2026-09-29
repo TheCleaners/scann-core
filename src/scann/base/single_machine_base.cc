@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -415,8 +419,9 @@ Status SingleMachineSearcherBase<T>::FindNeighborsNoSortNoExactReorder(
   if (dataset() && !dataset()->empty()) {
     db_dim = dataset()->dimensionality();
   } else if (reordering_helper_) {
-    auto dataset = reordering_helper_->dataset();
-    if (dataset && !dataset->empty()) db_dim = dataset->dimensionality();
+    // scann-core: without copying the helper's dataset shared_ptr (see
+    // NonEmptyDatasetDimensionality).
+    db_dim = reordering_helper_->NonEmptyDatasetDimensionality();
   }
   if (db_dim && *db_dim != query.dimensionality()) {
     return FailedPreconditionError(
