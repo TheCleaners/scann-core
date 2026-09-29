@@ -121,8 +121,11 @@ set_tests_properties(search_scratch PROPERTIES TIMEOUT 900)
 # recorded; end to end with recall, reload and retraining.
 add_executable(scann_core_autopilot_test cpp/autopilot_test.cc)
 target_link_libraries(scann_core_autopilot_test PRIVATE scann::core)
-add_test(NAME autopilot COMMAND scann_core_autopilot_test)
-set_tests_properties(autopilot PROPERTIES TIMEOUT 900)
+add_test(NAME autopilot COMMAND scann_core_autopilot_test rules)
+set_tests_properties(autopilot PROPERTIES TIMEOUT 300)
+# Label "slow": scripts/cross-aarch64.sh runs it under one emulated CPU only.
+add_test(NAME autopilot_end_to_end COMMAND scann_core_autopilot_test end_to_end)
+set_tests_properties(autopilot_end_to_end PROPERTIES TIMEOUT 1800 LABELS slow)
 
 # The default thread count (scann_core::AvailableCPUs): cgroup quota parsing,
 # the SCANN_NUM_THREADS override, the affinity mask.

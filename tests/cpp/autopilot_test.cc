@@ -527,11 +527,21 @@ void TestEndToEnd() {
 
 }  // namespace
 
-int main() {
-  TestTunedPreviews();
-  TestUpstreamRules();
-  TestDataDependence();
-  TestEndToEnd();
+// With no argument, every part; "rules" or "end_to_end" runs one of them
+// (two ctests: the end-to-end part builds and retrains six indexes, which
+// under QEMU takes minutes per emulated CPU).
+int main(int argc, char** argv) {
+  const std::string part = argc > 1 ? argv[1] : "";
+  if (part != "" && part != "rules" && part != "end_to_end") {
+    std::fprintf(stderr, "usage: %s [rules|end_to_end]\n", argv[0]);
+    return 2;
+  }
+  if (part != "end_to_end") {
+    TestTunedPreviews();
+    TestUpstreamRules();
+    TestDataDependence();
+  }
+  if (part != "rules") TestEndToEnd();
   std::printf("autopilot: %s (%d failure(s))\n", g_failures ? "FAILED" : "PASSED",
               g_failures);
   return g_failures ? 1 : 0;

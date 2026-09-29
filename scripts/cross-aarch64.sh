@@ -55,9 +55,13 @@ echo "::endgroup::"
 # detection picks: cortex-a57 = Neon only; neoverse-n1 = + dot product;
 # neoverse-v1 = + i8mm, SVE (256-bit); neoverse-n2 = + SVE2 (128-bit). Then
 # SVE at other vector lengths (sve-default-vector-length is in bytes).
+# Tests labelled "slow" (whole-index builds whose kernels the other tests
+# cover too) run under neoverse-v1 only, the CPU with the most kernel variants.
 for cpu in cortex-a57 neoverse-n1 neoverse-v1 neoverse-n2 \
            "max,sve-default-vector-length=64" "max,sve-default-vector-length=256"; do
   echo "::group::ctest, QEMU_CPU=$cpu"
-  QEMU_CPU="$cpu" ctest --test-dir "$BUILD_DIR" --output-on-failure -j "$(nproc)"
+  labels=(-LE slow)
+  if [ "$cpu" = neoverse-v1 ]; then labels=(); fi
+  QEMU_CPU="$cpu" ctest --test-dir "$BUILD_DIR" --output-on-failure -j "$(nproc)" "${labels[@]}"
   echo "::endgroup::"
 done
