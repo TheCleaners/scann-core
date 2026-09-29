@@ -17,7 +17,7 @@
 //! serialize/load, mutation, concurrency and error handling.
 
 use scann_core::{
-    AhOptions, ConfigBuilder, DistanceMeasure, IncrementalMode, IncrementalThreshold,
+    AhOptions, AutopilotOptions, AutopilotRules, ConfigBuilder, DistanceMeasure, IncrementalMode, IncrementalThreshold,
     L2AsDotProductOptions, Neighbors, PcaOptions, Quantization, ReorderOptions, ScannError,
     ScannIndex, SearchOptions, TreeOptions, UpperTreeOptions,
 };
@@ -306,6 +306,70 @@ fn autopilot_builds() {
         .build_index(&data)
         .unwrap();
     assert_eq!(index.search(row(&data, 3), SearchOptions::k(1)).unwrap().indices, vec![3]);
+}
+
+fn field<'a>(config: &'a str, name: &str) -> Option<&'a str> {
+    let at = config.find(&format!("{name}: "))? + name.len() + 2;
+    config[at..].split_whitespace().next()
+}
+
+#[test]
+fn autopilot_rules() {
+    // The tuned rules (the default) for GloVe-100's shape: upstream's 903
+    // leaves and 106 to search, tree AVQ, threshold 0.2; at 768 dimensions,
+    // sqrt(n) leaves, 4 dimensions per block, threshold 0.2 (128 / 768)^0.75.
+    let dot = |dim| ConfigBuilder::new(10, DistanceMeasure::DotProduct, dim);
+    let tuned = dot(100).autopilot(IncrementalMode::None, Quantization::Float32).build(1183514).unwrap();
+    assert_eq!(field(&tuned, "num_children"), Some("903"));
+    assert_eq!(field(&tuned, "max_spill_centers"), Some("106"));
+    assert_eq!(field(&tuned, "avq"), Some("2.5"));
+    assert_eq!(field(&tuned, "rules"), Some("TUNED_V1"));
+    let high = ConfigBuilder::new(100, DistanceMeasure::DotProduct, 768)
+        .autopilot_with(AutopilotOptions::new())
+        .build(1344643)
+        .unwrap();
+    assert_eq!(field(&high, "num_children"), Some("1160"));
+    assert_eq!(field(&high, "max_spill_centers"), Some("86"));
+    assert_eq!(field(&high, "num_dims_per_block"), Some("4"));
+    let t: f64 = field(&high, "noise_shaping_threshold").unwrap().parse().unwrap();
+    assert!((t - 0.2 * (128.0f64 / 768.0).powf(0.75)).abs() < 1e-6, "{t}");
+    // Upstream's rules: scann-core 0.2.0's config.
+    let up = ConfigBuilder::new(100, DistanceMeasure::DotProduct, 768)
+        .autopilot_with(AutopilotOptions::new().rules(AutopilotRules::Upstream))
+        .build(1344643)
+        .unwrap();
+    assert_eq!(field(&up, "num_children"), Some("5000"));
+    assert_eq!(field(&up, "noise_shaping_threshold"), Some("0.2"));
+    assert_eq!(field(&up, "rules"), None);
+    // allow_l2_as_dot_product is the tuned rules'.
+    assert!(dot(16)
+        .autopilot_with(AutopilotOptions::new().rules(AutopilotRules::Upstream).allow_l2_as_dot_product(false))
+        .build(100000)
+        .is_err());
+
+    // Built on squared L2 data large enough for a tree (200 dimensions: from
+    // 27,510 points) with constant norms, the tuned rules search through
+    // l2_as_dot_product with a threshold measured from the data.
+    let (n, dim) = (30000, 200);
+    // Constant norms (like SIFT's): the tuned rules use l2_as_dot_product.
+    let mut data = dataset(n, dim, 21);
+    for v in data.chunks_mut(dim) {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter_mut().for_each(|x| *x *= 10.0 / norm);
+    }
+    let mut index = ConfigBuilder::new(10, DistanceMeasure::SquaredL2, dim)
+        .autopilot_with(AutopilotOptions::new().quantize(Quantization::Bfloat16))
+        .build_index(&data)
+        .unwrap();
+    let config = index.config();
+    assert!(config.contains("l2_as_dot_product {"), "{config}");
+    assert!(config.contains("bfloat16"), "{config}");
+    assert_eq!(index.search(&data[7 * dim..8 * dim], SearchOptions::k(1)).unwrap().indices, vec![7]);
+    let mut plain = ConfigBuilder::new(10, DistanceMeasure::SquaredL2, dim)
+        .autopilot_with(AutopilotOptions::new().allow_l2_as_dot_product(false))
+        .build_index(&data)
+        .unwrap();
+    assert!(!plain.config().contains("l2_as_dot_product {"));
 }
 
 fn is_invalid_argument<T: std::fmt::Debug>(r: Result<T, ScannError>) -> bool {

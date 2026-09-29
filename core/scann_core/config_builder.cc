@@ -135,10 +135,16 @@ ConfigBuilder& ConfigBuilder::L2AsDotProduct(const L2AsDotProductOptions& o) {
   l2_as_dot_product_ = o;
   return *this;
 }
-ConfigBuilder& ConfigBuilder::Autopilot(IncrementalMode mode, Quantization q) {
+ConfigBuilder& ConfigBuilder::Autopilot(const AutopilotOptions& o) {
   Set("autopilot", autopilot_set_);
-  autopilot_ = {mode, q};
+  autopilot_ = o;
   return *this;
+}
+ConfigBuilder& ConfigBuilder::Autopilot(IncrementalMode mode, Quantization q) {
+  AutopilotOptions o;
+  o.mode = mode;
+  o.quantize = q;
+  return Autopilot(o);
 }
 
 absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const {
@@ -194,10 +200,22 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
       return absl::InvalidArgumentError(
           "Autopilot() cannot be combined with other options: it chooses the "
           "whole configuration (the Python builder silently ignores the rest)");
+    // Python: ScannBuilder.autopilot()'s stanza.
+    const AutopilotOptions& a = *autopilot_;
     absl::StrAppend(&config, "autopilot { tree_ah { incremental_mode: ",
-                    IncrementalModeName(autopilot_->first),
-                    " reordering_dtype: ", QuantizationName(autopilot_->second),
-                    " } }\n");
+                    IncrementalModeName(a.mode), " reordering_dtype: ",
+                    QuantizationName(a.quantize));
+    if (a.rules == AutopilotRules::kUpstream) {
+      if (!a.allow_l2_as_dot_product)
+        return absl::InvalidArgumentError(
+            "Autopilot(): allow_l2_as_dot_product applies to the tuned rules "
+            "only");
+    } else {
+      absl::StrAppend(&config, " rules: TUNED_V1");
+      if (!a.allow_l2_as_dot_product)
+        absl::StrAppend(&config, " allow_l2_as_dot_product: false");
+    }
+    absl::StrAppend(&config, " } }\n");
     if (num_points == 0)
       return absl::InvalidArgumentError("Autopilot() needs num_points");
     research_scann::ScannConfig proto;

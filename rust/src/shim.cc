@@ -385,13 +385,17 @@ void config_builder_truncate(ConfigBuilder& b, int32_t reduction_dim) {
   b.Truncate(reduction_dim);
 }
 
-void config_builder_autopilot(ConfigBuilder& b, IncrementalMode mode,
-                              Quantization quantize) {
-  b.Autopilot(mode == IncrementalMode::Online ? scann_core::IncrementalMode::kOnline
-              : mode == IncrementalMode::OnlineIncremental
-                  ? scann_core::IncrementalMode::kOnlineIncremental
-                  : scann_core::IncrementalMode::kNone,
-              ToCore(quantize));
+void config_builder_autopilot(ConfigBuilder& b, const FfiAutopilotOptions& o) {
+  scann_core::AutopilotOptions a;
+  a.mode = o.mode == IncrementalMode::Online ? scann_core::IncrementalMode::kOnline
+           : o.mode == IncrementalMode::OnlineIncremental
+               ? scann_core::IncrementalMode::kOnlineIncremental
+               : scann_core::IncrementalMode::kNone;
+  a.quantize = ToCore(o.quantize);
+  a.rules = o.upstream_rules ? scann_core::AutopilotRules::kUpstream
+                             : scann_core::AutopilotRules::kTuned;
+  a.allow_l2_as_dot_product = o.allow_l2_as_dot_product;
+  b.Autopilot(a);
 }
 
 void config_builder_l2_as_dot_product(ConfigBuilder& b, double scale,

@@ -49,6 +49,7 @@ Usage:
 
 import argparse
 import atexit
+import inspect
 import json
 import os
 import shutil
@@ -95,6 +96,13 @@ def _tree_ah(n, random_init, aq=0.2):
   return f
 
 
+def _upstream_autopilot(b):
+  """autopilot() with upstream's rules: scann-core >= 0.2.1 defaults to its own."""
+  if "rules" in inspect.signature(b.autopilot.proto_maker).parameters:
+    return b.autopilot(rules="upstream")
+  return b.autopilot()
+
+
 # name -> (dataset, distance, deterministic, fn(scann module, builder))
 CONFIGS = {
     "A_brute_force_dot": ("A", "dot_product", True, lambda s, b: b.score_brute_force()),
@@ -102,7 +110,7 @@ CONFIGS = {
         "A", "dot_product", True,
         lambda s, b: b.score_ah(2, anisotropic_quantization_threshold=0.2)
         .reorder(100, quantize=s.ReorderType.INT8)),
-    "A_autopilot_dot": ("A", "dot_product", True, lambda s, b: b.autopilot()),
+    "A_autopilot_dot": ("A", "dot_product", True, lambda s, b: _upstream_autopilot(b)),
     "A_tree_ah_reorder_dot_kmpp": ("A", "dot_product", True, _tree_ah(5000, False)),
     "A_tree_ah_reorder_l2_kmpp": ("A", "squared_l2", True, _tree_ah(5000, False, aq=None)),
     "B_brute_force_dot": ("B", "dot_product", True, lambda s, b: b.score_brute_force()),

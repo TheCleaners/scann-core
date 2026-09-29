@@ -105,6 +105,15 @@ target_link_libraries(scann_core_l2_as_dot_product_test PRIVATE scann::core)
 add_test(NAME l2_as_dot_product COMMAND scann_core_l2_as_dot_product_test)
 set_tests_properties(l2_as_dot_product PROPERTIES TIMEOUT 900)
 
+# Autopilot's rules: the tuned rules' configs for given shapes, value by
+# value; upstream's unchanged; what the tuned rules derive from the data
+# (threshold, reordering precision, l2_as_dot_product) and how it is
+# recorded; end to end with recall, reload and retraining.
+add_executable(scann_core_autopilot_test cpp/autopilot_test.cc)
+target_link_libraries(scann_core_autopilot_test PRIVATE scann::core)
+add_test(NAME autopilot COMMAND scann_core_autopilot_test)
+set_tests_properties(autopilot PROPERTIES TIMEOUT 900)
+
 # The default thread count (scann_core::AvailableCPUs): cgroup quota parsing,
 # the SCANN_NUM_THREADS override, the affinity mask.
 add_executable(scann_core_available_cpus_test cpp/available_cpus_test.cc)
@@ -170,6 +179,9 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   # serialize()/load_searcher() round trips, including an all-deleted tree,
   # and re-serializing (also killed midway) over an existing index.
   scann_add_python_test(python_serialization python/test_serialization.py)
+  # autopilot(): the tuned rules' configs, data-dependent choices, recall,
+  # persistence; rules="upstream".
+  scann_add_python_test(python_autopilot python/test_autopilot.py)
   # Raw config values that crashed the process; builder checks.
   scann_add_python_test(python_config_validation python/test_config_validation.py)
   # Thread pools sized from the CPU affinity (and SCANN_NUM_THREADS), started

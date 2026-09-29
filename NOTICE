@@ -317,6 +317,30 @@ isn't a one-line change:
       soar_lambda=...), residual AH, the AH blocks and pca() are built for
       a dot-product index over one more dimension, and truncate(),
       spherical trees and autopilot() are rejected.
+  Autopilot's tuned rules (0.2.1; the builders' default, upstream's rules
+  on request):
+  src/scann/proto/auto_tuning.proto
+      AutopilotTreeAH.rules (UPSTREAM, the default, or TUNED_V1),
+      noise_shaping_threshold and allow_l2_as_dot_product (fields 900-902).
+      Not in upstream's proto: an upstream loader keeps them as unknown
+      fields and applies upstream's rules.
+  src/scann/utils/single_machine_autopilot.h,
+  src/scann/utils/single_machine_autopilot.cc
+      Autopilot() applies the TUNED_V1 rules when the config asks for them
+      (AutopilotTreeAhTuned: at most about sqrt(n) leaves, leaves to search
+      scaled to them, AH blocks and an anisotropic threshold scaled to the
+      dimensionality and to the datapoints' norms, which is recorded in the
+      config, tree AVQ, rounded lookup tables); upstream's AutopilotTreeAh
+      is unchanged. ComputeAutopilotDataStats(),
+      AutopilotChoosesL2AsDotProduct() and ApplyAutopilotL2AsDotProduct()
+      are new.
+  src/scann/scann_ops/cc/scann.cc
+      Initialize() lets the tuned rules build a squared L2 autopilot index
+      as l2_as_dot_product (ApplyAutopilotL2AsDotProduct).
+  python/scann/scann_ops/py/scann_builder.py
+      autopilot(mode, quantize, rules="tuned", allow_l2_as_dot_product=True):
+      the tuned rules unless rules="upstream", which emits upstream's
+      stanza.
   Performance changes (0.2.1; results unchanged unless noted):
   src/scann/scann_ops/cc/scann.h, src/scann/scann_ops/cc/scann.cc
       Thread pools are sized from scann_core::AvailableCPUs() (the CPU
