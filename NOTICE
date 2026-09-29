@@ -321,7 +321,14 @@ isn't a one-line change:
       time with the GIL held). Search() writes the results into the
       returned arrays directly (upstream: into two vectors, then copied).
       Loading an index (the ScannNumpy(dir, ...) constructor) releases the
-      GIL (upstream held it for the whole load).
+      GIL (upstream held it for the whole load). Upsert() has an overload
+      for a 2-D float32 array, read in place with the GIL released (the
+      list-of-rows one made one Python array object per row), and runs the
+      incremental maintenance once per call instead of after every batch.
+  src/scann/scann_ops/cc/python/scann_pybind.cc
+      upsert() takes a C-contiguous float32 2-D array without conversion,
+      and anything else through the list-of-rows overload; named arguments,
+      batch_size defaults to 256.
   src/scann/base/health_stats_collector.h
       Initialize() computes the per-partition quantization error in
       parallel (a pool sized by scann_core::AvailableCPUs(), for 65,536
@@ -339,7 +346,9 @@ isn't a one-line change:
       per query); same results.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
-      directly (no docid lock, no context manager).
+      directly (no docid lock, no context manager). upsert() passes the rows
+      as one float32 2-D array, and its batch_size defaults to 256, the C++
+      default (upstream: 1).
 docs/algorithms.md is upstream's scann/docs/algorithms.md, modified (added
 explanation of asymmetric hashing and anisotropic quantization, and links).
 python/scann/tf.py is adapted from upstream's

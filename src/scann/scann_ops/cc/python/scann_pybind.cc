@@ -36,7 +36,23 @@ PYBIND11_MODULE(scann_pybind, py_module, pybind11::mod_gil_not_used()) {
       .def("search", &research_scann::ScannNumpy::Search)
       .def("search_batched", &research_scann::ScannNumpy::SearchBatched)
 
-      .def("upsert", &research_scann::ScannNumpy::Upsert)
+      // scann-core: a float32 C-contiguous 2-D array is read in place
+      // (noconvert: anything else, e.g. a list of rows, falls through to
+      // the list-of-rows overload, as before).
+      .def("upsert",
+           pybind11::overload_cast<
+               std::vector<std::optional<research_scann::DatapointIndex>>,
+               const research_scann::np_row_major_arr<float>&, int>(
+               &research_scann::ScannNumpy::Upsert),
+           pybind11::arg("indices"), pybind11::arg("vectors").noconvert(),
+           pybind11::arg("batch_size") = 256)
+      .def("upsert",
+           pybind11::overload_cast<
+               std::vector<std::optional<research_scann::DatapointIndex>>,
+               std::vector<research_scann::np_row_major_arr<float>>&, int>(
+               &research_scann::ScannNumpy::Upsert),
+           pybind11::arg("indices"), pybind11::arg("vectors"),
+           pybind11::arg("batch_size") = 256)
       .def("delete", &research_scann::ScannNumpy::Delete)
       .def("rebalance", &research_scann::ScannNumpy::Rebalance)
       .def_static("suggest_autopilot",

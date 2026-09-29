@@ -277,8 +277,10 @@ rust::Vec<uint32_t> scann_upsert(ScannIndex& idx, rust::Slice<const int64_t> ids
                                     dptr, static_cast<DatapointIndex>(id), mo),
                                 "Failed to update datapoint"));
     }
-    mutator = MaintainOrRetrain(idx, mutator, attach_pool);
   }
+  // Incremental maintenance once per call, after every row is in (as
+  // ScannNumpy::Upsert; it ran after every batch before 0.2.1).
+  MaintainOrRetrain(idx, mutator, attach_pool);
   return result;
 }
 

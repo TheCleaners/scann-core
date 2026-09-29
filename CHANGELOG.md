@@ -49,8 +49,21 @@ All notable changes to scann-core. Versions follow
   with float reordering 0.62 → 0.43 s on 16 CPUs. And `load_searcher`
   releases the GIL: other Python threads kept running (the longest stall
   a 1 ms ticker thread saw went from 624 ms to 1 ms).
+- `upsert` passes the rows to C++ as one float32 array, read with the GIL
+  released (they became one Python array object per row), and runs the
+  index's incremental maintenance once per call (it ran after every
+  batch; with autopilot that recomputed the autopilot config each time).
+  With the new default `batch_size=256` (see Changed), 10,000 rows into a
+  200k-point GloVe tree: 128 → 32 ms; at an equal `batch_size`, −6 to
+  −7 %. The Rust `upsert` also maintains once per call.
 
 ### Changed
+- `upsert(docids, database, batch_size=256)`: the default `batch_size`
+  was 1 (upstream's), which prepared and inserted the rows one at a
+  time; 256 matches the C++ and Rust APIs. Rows prepared in one batch are
+  assigned to leaves from the index as it was before the batch, so
+  results can differ slightly from one-row-at-a-time upserts; pass
+  `batch_size=1` for the previous behavior.
 - `set_num_threads(n)` (Python, `ScannInterface::SetNumThreads`, Rust
   `set_num_threads`) now means n threads in all, the calling one
   included: n − 1 pool threads, and 0 or 1 runs everything on the calling

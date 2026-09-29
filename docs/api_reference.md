@@ -501,16 +501,20 @@ duplicates rejected at construction. The searcher keeps its own copy
 (`searcher.docids`); upstream used your list, and upserts and deletes then
 changed it.
 
-- **`upsert(docids, database, batch_size=1)`** — insert-or-update by docid.
+- **`upsert(docids, database, batch_size=256)`** — insert-or-update by docid.
   Accepts a single docid/vector or lists/arrays (1D vectors are
   auto-promoted to a single row). Each docid may appear once per call: a
   repeated one raises `ValueError` before anything changes (upstream added
   a repeated new docid to the index twice but mapped it once, leaving a
-  duplicate in `searcher.docids`). Every `batch_size`-sized chunk may trigger
-  internal incremental maintenance, and if that determines the index needs
-  rebuilding, it transparently calls a full `rebalance()` for you — **an
-  upsert call can silently become an expensive full retrain**, not a cheap
-  incremental insert, depending on how much has changed.
+  duplicate in `searcher.docids`). The rows are assigned to leaves
+  `batch_size` at a time, on the searcher's thread pool when `batch_size` >
+  1 (the default was 1 before 0.2.1: one row at a time, about 4× slower
+  for 10k rows). After all rows are in, the call runs the index's
+  incremental maintenance once (before 0.2.1: after every `batch_size`
+  rows), and if that determines the index needs rebuilding, it
+  transparently calls a full `rebalance()` for you — **an upsert call can
+  silently become an expensive full retrain**, not a cheap incremental
+  insert, depending on how much has changed.
 - **`delete(docids)`** — removes by docid; raises `KeyError` for unknown
   docids. Uses swap-with-last-element removal internally (mirroring the C++
   side's index recycling) to keep the docid mapping dense.

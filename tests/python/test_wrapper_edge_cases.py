@@ -31,6 +31,10 @@
   vector scored differently depending on when it was added.
 - rebalance() of an index that keeps no float data (tree + bfloat16 brute
   force): a clear error, and the index keeps working.
+- upsert() inputs: a 2-D array of any float dtype, a list of rows, one 1-D
+  vector, and the pybind searcher's upsert() with a float32 2-D array (read
+  in place) or a list of rows, all give the same index; a wrong-sized row
+  is an error naming it.
 
 Run with scann-core's build/python on PYTHONPATH:
   PYTHONPATH=build/python python tests/python/test_wrapper_edge_cases.py
@@ -220,6 +224,48 @@ def check_rebalance_without_float_data():
   assert s.size() == 600
 
 
+def check_upsert_inputs():
+  db = dataset(300)
+  new = dataset(5, seed=2)
+  ids = [f"d{i}" for i in range(300)]
+  results = []
+  for kind in ("float32", "float64", "list", "raw2d", "rawlist", "rows"):
+    s = (scann_ops_pybind.builder(db, 5, "squared_l2")
+         .tree(6, 3, training_sample_size=300).score_ah(2).reorder(30)
+         .build(docids=list(ids)))
+    docids = ["n0", "d3", "n1", "n2", "d7"]
+    if kind == "float32":
+      s.upsert(docids, new)
+    elif kind == "float64":
+      s.upsert(docids, new.astype(np.float64))
+    elif kind == "list":
+      s.upsert(docids, [list(map(float, r)) for r in new])
+    elif kind == "rows":  # one docid and one 1-D vector per call
+      for d, r in zip(docids, new):
+        s.upsert(d, r)
+    else:  # the pybind searcher directly; indices None = add
+      idx = [None, 3, None, None, 7]
+      vecs = new if kind == "raw2d" else [r for r in new]
+      s.searcher.upsert(idx, vecs, 256)
+      s.docids.extend(["n0", "n1", "n2"])
+      s.docids[3], s.docids[7] = "d3", "d7"
+    assert s.size() == 303, (kind, s.size())
+    results.append(s.search_batched(new, leaves_to_search=6))
+  for i, d in results[1:]:
+    assert i == results[0][0]
+    np.testing.assert_array_equal(d, results[0][1])
+  expect_raises(ValueError, lambda: s.upsert(["x", "y"], dataset(2)[:, :5]),
+                "Upsert vector has dimensionality 5")
+  expect_raises(ValueError,
+                lambda: s.searcher.upsert([None], [np.zeros(5, np.float32)],
+                                          256),
+                "Upsert vector has dimensionality 5")
+  expect_raises(ValueError,
+                lambda: s.searcher.upsert([None], np.zeros(8, np.float32),
+                                          256),
+                "two-dimensional")
+
+
 def main():
   check_repeated_docids()
   check_docids_not_aliased()
@@ -227,6 +273,7 @@ def main():
   check_too_many_rows()
   check_spherical_is_consistent()
   check_rebalance_without_float_data()
+  check_upsert_inputs()
   print("PASSED")
 
 

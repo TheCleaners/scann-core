@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -99,8 +100,37 @@ vector<DatapointIndex> ScannNumpy::Upsert(
   if (batch_size < 1)
     throw std::invalid_argument("Upsert batch_size must be >= 1.");
   pybind11::gil_scoped_release gil_release;
+  return UpsertRows(
+      indices, vecs.size(),
+      [&](size_t row) { return ConstSpan<float>(vecs[row].data(), vecs[row].size()); },
+      batch_size);
+}
+
+// scann-core: upsert from one row-major 2-D array, read in place with the GIL
+// released. The list-of-rows overload above makes pybind11 build one Python
+// array object per row, with the GIL held.
+vector<DatapointIndex> ScannNumpy::Upsert(
+    vector<std::optional<DatapointIndex>> indices,
+    const np_row_major_arr<float>& vecs, int batch_size) {
+  if (batch_size < 1)
+    throw std::invalid_argument("Upsert batch_size must be >= 1.");
+  if (vecs.ndim() != 2)
+    throw std::invalid_argument("Upsert vectors must be a two-dimensional array");
+  const size_t n = vecs.shape()[0];
+  const size_t width = vecs.shape()[1];
+  const float* data = vecs.data();
+  pybind11::gil_scoped_release gil_release;
+  return UpsertRows(
+      indices, n,
+      [&](size_t row) { return ConstSpan<float>(data + row * width, width); },
+      batch_size);
+}
+
+vector<DatapointIndex> ScannNumpy::UpsertRows(
+    const vector<std::optional<DatapointIndex>>& indices, size_t n_rows,
+    const std::function<ConstSpan<float>(size_t)>& rows, int batch_size) {
   absl::MutexLock lock(&mu_);
-  if (indices.size() != vecs.size())
+  if (indices.size() != n_rows)
     throw std::runtime_error("Upsert input size must match.");
   // scann-core: validate every row before mutating anything. Upstream
   // checked nothing here: a wrong-sized vector failed deep in the mutator
@@ -118,16 +148,15 @@ vector<DatapointIndex> ScannNumpy::Upsert(
         "Upsert would grow the index to ", n_points + n_adds,
         " datapoints; ScaNN supports at most ", kMaxDatapoints,
         " (datapoint indices are 32-bit)"));
-  for (size_t row : Seq(vecs.size())) {
-    const auto& vec = vecs[row];
+  for (size_t row : Seq(n_rows)) {
+    const ConstSpan<float> vec = rows(row);
     if (vec.size() != scann_.dimensionality())
       throw std::invalid_argument(absl::StrCat(
           "Upsert vector has dimensionality ", vec.size(),
           ", but the dataset has ", scann_.dimensionality(), " (row ", row,
           ")"));
-    const float* data = vec.data();
-    for (size_t d : Seq(vec.size()))
-      if (!std::isfinite(data[d]))
+    for (float v : vec)
+      if (!std::isfinite(v))
         throw std::invalid_argument(absl::StrCat(
             "Upsert vector at row ", row,
             " contains NaN or infinity; ScaNN only supports finite values."));
@@ -141,23 +170,25 @@ vector<DatapointIndex> ScannNumpy::Upsert(
   if (batch_size > 1)
     mutator->set_mutation_threadpool(scann_.parallel_query_pool());
 
-  DatapointIndex n = vecs.size();
+  const DatapointIndex n = n_rows;
   vector<DatapointIndex> result;
+  result.reserve(n);
 
   // scann-core: an index with spherical partitioning stores unit vectors;
   // see ScannInterface::NormalizeDatapoints.
   const size_t dim = scann_.dimensionality();
   vector<float> normalized;
   if (scann_.NormalizesDatapoints()) {
-    normalized.resize(vecs.size() * dim);
-    for (size_t row : Seq(vecs.size()))
-      std::copy(vecs[row].data(), vecs[row].data() + dim,
-                normalized.begin() + row * dim);
+    normalized.resize(n_rows * dim);
+    for (size_t row : Seq(n_rows)) {
+      const ConstSpan<float> vec = rows(row);
+      std::copy(vec.begin(), vec.end(), normalized.begin() + row * dim);
+    }
     scann_.NormalizeDatapoints(MakeMutableSpan(normalized));
   }
   auto row_ptr = [&](size_t row) {
     return MakeDatapointPtr(
-        normalized.empty() ? vecs[row].data() : normalized.data() + row * dim,
+        normalized.empty() ? rows(row).data() : normalized.data() + row * dim,
         dim);
   };
 
@@ -185,17 +216,15 @@ vector<DatapointIndex> ScannNumpy::Upsert(
             "Failed to update datapoint: "));
       }
     }
-    auto statusor = mutator->IncrementalMaintenance();
-    RuntimeErrorIfNotOk("Error performing incremental maintenance ",
-                        statusor.status());
-    if (statusor.value().has_value()) {
-      RebalanceLocked("");
-      mutator =
-          ValueOrRuntimeError(scann_.GetMutator(), "Failed to fetch mutator: ");
-      if (batch_size > 1)
-        mutator->set_mutation_threadpool(scann_.parallel_query_pool());
-    }
   }
+  // scann-core: incremental maintenance once per call, after every row is
+  // in (upstream: after every batch, i.e. after every row with the Python
+  // wrapper's batch_size of 1). With autopilot it recomputes the autopilot
+  // config each time, and a retrain it triggers midway was redone work.
+  auto statusor = mutator->IncrementalMaintenance();
+  RuntimeErrorIfNotOk("Error performing incremental maintenance ",
+                      statusor.status());
+  if (statusor.value().has_value()) RebalanceLocked("");
   return result;
 }
 

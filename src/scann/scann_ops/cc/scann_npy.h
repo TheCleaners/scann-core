@@ -20,6 +20,7 @@
 #define SCANN_SCANN_OPS_CC_SCANN_NPY_H_
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -61,6 +62,10 @@ class ScannNumpy {
   vector<DatapointIndex> Upsert(
       std::vector<std::optional<DatapointIndex>> indices,
       std::vector<np_row_major_arr<float>>& vecs, int batch_size = 256);
+  // scann-core: the same from a 2-D (rows x dimensionality) array.
+  vector<DatapointIndex> Upsert(
+      std::vector<std::optional<DatapointIndex>> indices,
+      const np_row_major_arr<float>& vecs, int batch_size = 256);
   vector<DatapointIndex> Delete(std::vector<DatapointIndex> indices);
 
   int Rebalance(const string& config = "");
@@ -81,6 +86,10 @@ class ScannNumpy {
 
  private:
   int RebalanceLocked(const string& config) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  // Called with the GIL released; takes mu_.
+  vector<DatapointIndex> UpsertRows(
+      const std::vector<std::optional<DatapointIndex>>& indices, size_t n_rows,
+      const std::function<ConstSpan<float>(size_t)>& rows, int batch_size);
 
   // scann-core: makes a ScannNumpy safe to share between Python threads,
   // including on free-threaded Python, where the module declares that it

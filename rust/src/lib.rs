@@ -335,7 +335,9 @@ impl ScannIndex {
 
     /// For each row of `vectors`: replaces datapoint `ids[i]`, or adds a new
     /// one if `ids[i]` is `None`. Rows are processed `batch_size` at a time
-    /// (> 1 parallelizes on the thread pool). Returns each row's index.
+    /// (> 1 parallelizes on the thread pool); the index's incremental
+    /// maintenance (which may retrain it) runs once, after all of them.
+    /// Returns each row's index.
     ///
     /// Python's `searcher.upsert` maps docids to these indices on top.
     ///

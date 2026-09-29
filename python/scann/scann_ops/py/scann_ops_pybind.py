@@ -231,13 +231,22 @@ class ScannSearcher(object):
   def initialize_health_stats(self):
     return self.searcher.initialize_health_stats()
 
-  def upsert(self, docids, database, batch_size=1):
-    """Insert or update datapoints into the searcher."""
+  def upsert(self, docids, database, batch_size=256):
+    """Insert or update datapoints into the searcher.
+
+    scann-core: batch_size defaults to 256, as in the C++ API (upstream's
+    Python default of 1 prepared and inserted one row at a time); rows are
+    prepared batch_size at a time on the thread pool, and the index's
+    incremental maintenance runs once per call. The rows reach the C++
+    searcher as one float32 array, not one Python object per row.
+    """
     if not isinstance(docids, list):
       docids = [docids]
     database = _host_array(database)
     if database.ndim == 1:
       database = np.expand_dims(database, 0)
+    if database.ndim == 2:
+      database = np.ascontiguousarray(database, dtype=np.float32)
     if len(docids) != database.shape[0]:
       raise ValueError(
           "Number of items mismatch in docids and database vectors:"
