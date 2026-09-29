@@ -372,7 +372,7 @@ your data (the default stays `FLOAT32`). `INT8` lost 0.006–0.009 recall on
 GloVe and 0.046 on SIFT (euclidean). See
 [tuning.md](tuning.md#reordering-how-many-candidates-and-at-what-precision).
 
-## `.autopilot(mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32, rules="tuned", allow_l2_as_dot_product=True)`
+## `.autopilot(mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32, rules="tuned", allow_l2_as_dot_product=True, target_recall=None, calibration_queries=None, calibration_sample_size=None)`
 
 Instead of manually tuning `.tree()`/`.score_ah()`/`.reorder()`, lets the
 searcher pick the whole configuration from the dataset's size,
@@ -406,15 +406,45 @@ configuration you've set** — don't combine it with manual
 - **`mode`** controls whether the resulting config supports incremental
   updates (`NONE` / `ONLINE` / `ONLINE_INCREMENTAL`); see `upsert`/`delete`
   below for what that enables.
+- **`target_recall`** (scann-core 0.3): a recall@`num_neighbors` in (0, 1].
+  `build()` then calibrates the default `leaves_to_search` and
+  `pre_reorder_num_neighbors` to the cheapest setting that reaches it on
+  sample queries, measured against brute force, and records the choice and
+  the target in the config (`autopilot { tree_ah { target_recall: ...
+  calibration { ... } } }`), so `serialize()`, `load_searcher()` and
+  `rebalance()` keep them. The index itself is built as without it; the
+  build takes longer by about a brute-force search of the sample queries
+  plus their searches at the settings tried (0.2–1.5 s on the benchmark
+  sets). Both settings stay overridable per search. `None` (the default):
+  the rules' defaults. See
+  [tuning.md](tuning.md#a-recall-target-autopilottarget_recall) for the
+  method and how close it lands.
+- **`calibration_queries`**: with `target_recall`, sample queries to
+  calibrate on (a 2-D array with the dataset's columns; a few hundred to a
+  few thousand real queries). Without them, datapoints serve as queries
+  (each one's own datapoint left out of its neighbors); they can be
+  optimistic when real queries differ from the data (on SIFT-128, 0.011
+  short of a 0.95 target, where 1,000 real queries landed on it).
+- **`calibration_sample_size`**: with `target_recall` and no
+  `calibration_queries`, how many datapoints to use (default 1000; chosen
+  with a fixed seed).
 
 `create_config()` shows the configuration without building, but the tuned
 rules measure the data only when the index is built: the preview assumes
 unit norms for the anisotropic threshold, and a `"squared_l2"` preview
 doesn't show the `l2_as_dot_product` the build may choose. The searcher's
 `config()` shows what was built, including the threshold measured
-(`autopilot { tree_ah { noise_shaping_threshold: ... } }`). C++:
-`ConfigBuilder::Autopilot(AutopilotOptions)`; Rust:
-`ConfigBuilder::autopilot_with(AutopilotOptions)`.
+(`autopilot { tree_ah { noise_shaping_threshold: ... } }`), and the
+calibration with `target_recall`. C++:
+`ConfigBuilder::Autopilot(AutopilotOptions)` (`target_recall`,
+`calibration_sample_size`; calibration queries as the last argument of
+`ScannInterface::Initialize(dataset, n, config, training_threads,
+queries)`, and `ScannInterface::CalibrateSearchDefaults(dataset, target,
+queries)` to recalibrate an index in place); Rust:
+`ConfigBuilder::autopilot_with(AutopilotOptions)`
+(`.target_recall(t)`, `.calibration_sample_size(n)`;
+`ConfigBuilder::build_index_with_calibration_queries` or
+`ScannIndex::with_calibration_queries`).
 
 ## `.l2_as_dot_product(scale=None, center=None)` (scann-core)
 
@@ -673,6 +703,7 @@ distances.
 | `ValueError: SOAR requires dot product distance (or squared_l2 with l2_as_dot_product()).` | `.tree(soar_lambda=...)` used with `distance_measure="squared_l2"`. (With `.l2_as_dot_product()`, both are allowed.) |
 | `ValueError: l2_as_dot_product() requires the squared_l2 distance measure.` / `... can't be combined with ...` | `.l2_as_dot_product()` on a `"dot_product"` builder, or with `tree(spherical=True)`, `truncate()` or `autopilot()`. |
 | `ValueError: autopilot: rules must be "tuned" or "upstream" ...` / `... allow_l2_as_dot_product applies to rules="tuned" only` | A bad `rules` value, or `allow_l2_as_dot_product=False` with `rules="upstream"`. |
+| `ValueError: autopilot: target_recall must be in (0, 1] ...` / `... calibration_queries needs target_recall` / `... calibration_sample_size ...` | A target outside (0, 1], or calibration options without a `target_recall` (or both kinds at once). |
 | `RuntimeError: ... Invalid distance_measure: 'SquaredL2Distance [l2_as_dot_product: needs scann-core >= 0.2.1]'` | Loading an index built with `.l2_as_dot_product()` with a ScaNN that doesn't have it (upstream ScaNN, scann-core 0.2.0). |
 | `RuntimeError: Failed to retrain searcher: l2_as_dot_product's scale and center can't change when retraining ...` | `rebalance(config)` with another `scale`/`center` than the index's (or, similarly, a config without `l2_as_dot_product` for an index that has it). |
 | `Exception: {key} has already been configured` | Called the same builder method (e.g. `.tree(...)`) twice. |

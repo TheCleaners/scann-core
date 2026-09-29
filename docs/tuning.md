@@ -49,6 +49,7 @@ exceptions.
 | euclidean data | `.l2_as_dot_product()`, the [L2 → MIPS reduction](#euclidean-data-the-exact-l2--inner-product-reduction) | SIFT: +12–55% QPS over the untuned plain `squared_l2` grid at recall 0.8–0.995 |
 | `hash_type` | `"lut16"` | `"lut256"` was 2.5–3× slower |
 | no time to tune | `autopilot()` | its rules come from this study: on eight datasets, the same or higher recall at its default settings than upstream's rules, and 1.15–1.9× the QPS at equal recall on SIFT and at 512–768 dimensions ([defaults and autopilot](#defaults-and-autopilot)) |
+| a recall to meet | `autopilot(target_recall=0.95, calibration_queries=...)` | the default search settings calibrated to it at build time: within 0.002 of the target on GloVe and arxiv-768 (SIFT: 0.011 short at 0.95 with datapoints as queries, on target with real ones) ([a recall target](#a-recall-target-autopilottarget_recall)) |
 
 Together these gave 9–65% more single-query QPS than the parameter grid
 ann-benchmarks used for ScaNN on GloVe, 12–55% on SIFT, and 13–51% on the
@@ -759,7 +760,9 @@ search). Since scann-core 0.2.1 it uses rules derived from this study,
 upstream ScaNN's rules, as scann-core 0.2.0 did (the same configs, value for
 value). An index keeps the rules it was built with: indexes built with
 autopilot by upstream ScaNN or scann-core 0.2.0 reload, retrain and update
-with upstream's.
+with upstream's. With `autopilot(target_recall=...)` (0.3), the default
+search settings are calibrated to a recall target when the index is built
+([below](#a-recall-target-autopilottarget_recall)).
 
 ### What the tuned rules change
 
@@ -892,3 +895,140 @@ SIFT 3 dimensions per block.
   apply. (Upstream failed on the first upsert into a tree with both AVQ
   and incremental training, through a dangling pointer; scann-core 0.2.1
   fixes that.)
+
+### A recall target: `autopilot(target_recall=...)`
+
+The rules' default search settings aim high and land wherever the data puts
+them: recall@10 0.963 on GloVe-100 but 0.999 on SIFT-128, recall@100 0.941
+on GloVe-100 and 0.998 on the full 768-d set. With a target (scann-core
+0.3), the build calibrates the defaults to it instead:
+
+```python
+searcher = scann.scann_ops_pybind.builder(db, 10, "dot_product").autopilot(
+    target_recall=0.95).build()
+# Better, if you have real queries (a few hundred to a few thousand):
+searcher = scann.scann_ops_pybind.builder(db, 10, "dot_product").autopilot(
+    target_recall=0.95, calibration_queries=sample_queries).build()
+```
+
+C++: `AutopilotOptions::target_recall` (and calibration queries as the last
+argument of `ScannInterface::Initialize`); Rust:
+`AutopilotOptions::target_recall` (and
+`ConfigBuilder::build_index_with_calibration_queries`).
+
+**How.** The index is built as without a target (the same rules, the same
+structure). Then:
+
+1. Sample queries: the ones given, or else 1000 datapoints
+   (`calibration_sample_size=`) chosen with a fixed seed. A datapoint finds
+   itself, so each one searches for k + 1 neighbors with one more candidate,
+   and its own datapoint is left out of both its results and its true
+   neighbors.
+2. Their exact k nearest neighbors, by brute force over the dataset
+   (ScaNN's blocked many-to-many kernel, on the build's threads). A result
+   counts as a hit if it is no farther than the k-th true neighbor, so ties
+   count, as in ann-benchmarks' recall.
+3. The cheapest setting that reaches the target on them. Candidates:
+   `pre_reorder_num_neighbors` at multiples of k up to twice the rules'
+   count, `leaves_to_search` on a grid growing by 20% up to all the leaves.
+   For each candidate count, the fewest leaves that reach the target, by
+   bisection (recall is assumed not to fall as either grows), only among
+   settings cheaper than the best so far. "Cheapest" is the
+   [cost model](#a-per-query-cost-model): about 0.02 ns per scanned
+   point and AH block, plus 60 ns + 0.04 ns per byte of the row for each
+   reordered candidate. Each setting tried is a `search()` of every sample
+   query, spread over the build's threads.
+4. The choice is recorded in the config:
+   `autopilot { tree_ah { target_recall: 0.95 calibration { leaves_to_search: ...
+   pre_reordering_num_neighbors: ... sample_recall: ... target_met: true
+   query_source: DATAPOINTS num_queries: 1000 } } }`, and applied to
+   `partitioning.query_spilling.max_spill_centers` and
+   `exact_reordering.approx_num_neighbors`. Autopilot applies a recorded
+   calibration, so `serialize()`, loading and `rebalance()` keep it. If no
+   setting reaches the target, the one with the highest recall is chosen
+   and `target_met` is false.
+
+The settings stay overridable per search, and the calibration is for the
+config's k: a search for more neighbors gets at least that many candidates,
+but its recall isn't calibrated. After many updates, the C++
+`ScannInterface::CalibrateSearchDefaults(dataset, target, queries)`
+recalibrates an index in place.
+
+**Measured** (scann-core 0.3 development build, `-march=native`, Zen 4).
+Each index built with `autopilot(target_recall=t)` (float32 reordering, 16
+threads), datapoints as calibration queries. Recall on the datasets' own
+query sets (ann-benchmarks' recall). QPS: single-query `search()` calls,
+pinned to one core, 3 alternating rounds (5,000 queries at k=10, 1,000 at
+k=100; the median); the hand-picked setting is the fastest, on the same
+index, of the fewest leaves on a √2 grid reaching the target on the real
+queries at 1/8, 1/4, 1/2 and 1× the rules' candidate count (it knows the
+real queries' recall; on that coarse grid it often lands above the target).
+Calibration time: the median build time with the target minus without (2
+builds each; noisy).
+
+| dataset | target | calibrated leaves / candidates | sample recall | recall on the real queries | QPS | hand-picked (its recall) | QPS | calibration |
+|---|---:|---|---:|---:|---:|---|---:|---:|
+| GloVe-100, k=10 | 0.90 | 40 / 80 | 0.9012 | 0.8986 | 18,917 | 45 / 79 (0.9048) | 17,432 | 0.3 s |
+| | 0.95 | 84 / 160 | 0.9504 | 0.9486 | 9,123 | 91 / 158 (0.9522) | 8,695 | 0.8 s |
+| | 0.99 | 256 / 317 | 0.9909 | 0.9887 | 3,763 | 362 / 317 (0.9944) | 2,764 | 0.9 s |
+| SIFT-128, k=10 | 0.90 | 15 / 60 | 0.9151 | 0.9086 | 34,634 | 16 / 79 (0.9227) | 31,976 | 0.4 s |
+| | 0.95 | 22 / 60 | 0.9504 | **0.9393** | 28,089 | 23 / 79 (0.9516) | 26,375 | 0.2 s |
+| | 0.99 | 48 / 120 | 0.9902 | 0.9885 | 15,159 | 64 / 158 (0.9946) | 12,185 | 0.2 s |
+| arxiv-768, 300k rows, k=100 | 0.90 | 18 / 300 | 0.9033 | 0.8984 | 10,215 | 32 / 250 (0.9006) | 8,854 | 1.5 s |
+| | 0.95 | 40 / 400 | 0.9524 | 0.9504 | 6,472 | 32 / 500 (0.9557) | 6,576 | 1.4 s |
+| | 0.99 | 75 / 1000 | 0.9907 | 0.9903 | 3,556 | 91 / 1000 (0.9920) | 3,275 | 1.5 s |
+
+For scale, the rules' defaults on the same builds: GloVe-100 106 / 317,
+recall 0.9625, 7,786 QPS; SIFT-128 109 / 317, 0.9991, 7,437 QPS; arxiv-768
+(300k) 75 / 1000, 0.9903, 3,520 QPS. Builds without a target took 2.3 s,
+2.8 s and 4.8 s.
+
+* **Recall on the real queries** is within 0.002 of the target in 7 of 9
+  cases (GloVe and arxiv −0.0016 to +0.0004, SIFT at 0.99 −0.0015). On
+  SIFT it is 0.009 above at 0.9 (the grid's step from 12 to 15 leaves) and
+  0.011 short at 0.95.
+* **Pseudo-queries are optimistic.** A datapoint's neighbors come from the
+  same set it does; SIFT's queries come from other images than its base
+  set. On SIFT, calibrating on 1,000 of its real queries instead and
+  measuring on the other 9,000 gave 0.9166 / 0.9557 / 0.9902 for 0.9 / 0.95
+  / 0.99 (datapoints: 0.8923 / 0.9408 / 0.9884 on the same 9,000). So pass
+  `calibration_queries` when you have them, or ask for a little more than
+  you need: on these sets datapoints underestimated the miss rate
+  (1 − recall) by 3–24%.
+* **Speed.** Against the hand-picked setting, 0.98–1.15× at 0.9–0.95 (where
+  the hand-picked recall is 0.001–0.014 higher) and 1.09–1.36× at 0.99
+  (where the coarse grid overshoots more). Against the rules' defaults:
+  1.17× on GloVe at 0.95 (defaults: 0.963), 2.0× on SIFT at 0.99 (0.999),
+  1.84× on arxiv-768 at 0.95 (0.990).
+* **Overhead**: 0.2–0.9 s on the 1M-point k=10 sets (builds of 2–3 s) and
+  about 1.5 s on 300k × 768 at k=100 (4.8 s), with 16 threads. The brute
+  force costs 1000 × n × d multiply-adds; the searches about as much as
+  1000 queries at each setting tried.
+* **Deterministic** for a given index: the sample and the choice depend only
+  on the data, the index and the target (recalibrating the same index gives
+  the same result). The index itself isn't bit-for-bit reproducible across
+  builds (random k-means initialization), so two builds can calibrate a
+  step apart.
+
+### Why the default settings stay where they are
+
+Without a target, the defaults are the rules' (unchanged since 0.2.1). They
+look cautious on some data: searching half the default leaves on SIFT-128
+still gives recall@10 0.9937 at 1.55× the QPS. But on other data the
+defaults are already at the recall people usually want, and a lower rule
+would cost it (same builds as above; recall at the rules' candidate count):
+
+| | default leaves | recall at the defaults | ½ the leaves | ¼ | QPS at ½ / ¼, relative |
+|---|---:|---:|---:|---:|---|
+| GloVe-100, k=10 | 106 | 0.9625 | 0.9284 | 0.8844 | 1.60× / 2.34× |
+| SIFT-128, k=10 | 109 | 0.9991 | 0.9937 | 0.9722 | 1.55× / 2.23× |
+| arxiv-768 300k, k=100 | 75 | 0.9903 | 0.9750 | 0.9366 | 1.26× / 1.49× |
+| GloVe-100, k=100 | 106 | 0.9409 | 0.8958 | 0.8388 | – |
+| SIFT-128, k=100 | 109 | 0.9980 | 0.9857 | 0.9461 | – |
+
+The 0.2.1 runs' 0.998 at k=100 on the 768-d sets was for their full
+1.3M-row sets; the same rules give 0.990 on a 300k subsample, and 0.941 on
+GloVe-100 at k=100. Neither k nor the dimensionality separates the cautious
+cases from the others, so no simple rule lowers the defaults without taking
+GloVe below 0.93 at k=10 (or 0.90 at k=100). The defaults stay; a target
+does what a lower default would have, measured on the data at hand.

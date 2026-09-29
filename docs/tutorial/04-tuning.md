@@ -218,7 +218,15 @@ than plain partitioning at recall 0.8–0.95 and slightly faster from 0.99; on
    ([tuning.md](../tuning.md#precision-bfloat16)). Or start from
    `.autopilot()`, whose rules come from the same study
    ([tuning.md](../tuning.md#defaults-and-autopilot)), and sweep its
-   search settings as in step 3.
+   search settings as in step 3 — or let it do that sweep:
+   `.autopilot(target_recall=0.95, calibration_queries=queries[:1000])`
+   picks the cheapest `leaves_to_search` and `pre_reorder_num_neighbors`
+   that reach recall 0.95 on those queries when it builds, and saves them
+   as the index's defaults. Check the recall on other queries: calibrated
+   on 1,000 real queries, SIFT's other 9,000 met the targets; with
+   datapoints as queries (no `calibration_queries`) it landed within 0.002
+   of the target on GloVe and a 768-d set, but 0.011 short on SIFT
+   ([tuning.md](../tuning.md#a-recall-target-autopilottarget_recall)).
 3. Sweep `leaves_to_search`, and `pre_reorder_num_neighbors` at a few
    values, at query time. Pick the fastest setting that meets your recall
    target.
