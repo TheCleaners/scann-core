@@ -140,6 +140,16 @@ struct AutopilotOptions {
   // kTuned with kSquaredL2: whether the index may be built as
   // L2AsDotProduct(), which the rules choose when the data suits it.
   bool allow_l2_as_dot_product = true;
+  // A recall@num_neighbors in (0, 1] for the default search settings: the
+  // index ScannInterface::Initialize() builds is calibrated to it (its
+  // default leaves_to_search and pre-reordering count; see
+  // ScannInterface::CalibrateSearchDefaults), on the calibration queries
+  // passed to Initialize(), or else on sampled datapoints. Unset: the
+  // rules' defaults.
+  std::optional<double> target_recall;
+  // With target_recall and no calibration queries: how many datapoints to
+  // sample as queries (0: the default, 1000).
+  int32_t calibration_sample_size = 0;
 };
 
 // scann-core (the Python builder has it too): ScannBuilder.l2_as_dot_product().

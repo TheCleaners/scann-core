@@ -20,9 +20,11 @@
 #define SCANN_UTILS_SINGLE_MACHINE_AUTOPILOT_H_
 
 #include <cmath>
+#include <functional>
 #include <memory>
 
 #include "scann/data_format/dataset.h"
+#include "scann/proto/auto_tuning.pb.h"
 #include "scann/proto/scann.pb.h"
 #include "scann/utils/types.h"
 
@@ -64,6 +66,46 @@ bool AutopilotChoosesL2AsDotProduct(const ScannConfig& config,
 // returns true.
 bool ApplyAutopilotL2AsDotProduct(ScannConfig* config, ConstSpan<float> data,
                                   DatapointIndex n);
+
+// scann-core: calibrating the search defaults to AutopilotTreeAH's
+// target_recall. ScannInterface::CalibrateSearchDefaults measures recall on
+// sample queries; these choose and apply the settings.
+
+// Sample queries when none are given (AutopilotTreeAH.calibration_sample_size
+// unset or 0).
+inline constexpr int kDefaultCalibrationSampleSize = 1000;
+
+// The modeled cost of one query at (leaves_to_search, pre-reordering
+// count), in nanoseconds, for a built config over n datapoints of `dim`
+// dimensions: the AH scan of the searched leaves plus the exact reordering.
+// Only its ranking of settings matters (it leaves out the per-query costs
+// that don't depend on them). leaves = 0: no tree; pre_reorder = 0: no
+// reordering.
+double ModeledSearchCost(const ScannConfig& config, DatapointIndex n,
+                         DimensionIndex dim, int leaves, int pre_reorder);
+
+// The recall of the sample queries at (leaves_to_search, pre-reordering
+// count), each 0 where the index has no tree or no reordering.
+using CalibrationRecallFn =
+    std::function<StatusOr<double>(int leaves, int pre_reorder)>;
+
+// Chooses the setting with the lowest ModeledSearchCost whose recall
+// reaches target_recall, searching leaves_to_search in [1, num_children]
+// and the pre-reordering count in [num_neighbors, 2 * the config's] on
+// geometric grids (with the config's own values), assuming recall doesn't
+// fall as either grows. If none does, the setting with the highest recall.
+// `config` is the built one (its tree, reordering and num_neighbors); the
+// result has no query_source / num_queries.
+StatusOr<AutopilotCalibration> ChooseCalibratedSearchDefaults(
+    const ScannConfig& config, DatapointIndex n, DimensionIndex dim,
+    double target_recall, const CalibrationRecallFn& recall);
+
+// Sets config's leaves_to_search (max_spill_centers, at most the number of
+// leaves) and pre-reordering count (approx_num_neighbors) to the
+// calibration's, where both have them. Autopilot() does this with a
+// recorded calibration.
+void ApplyAutopilotCalibration(const AutopilotCalibration& calibration,
+                               ScannConfig* config);
 
 }
 

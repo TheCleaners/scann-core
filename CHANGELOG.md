@@ -5,6 +5,47 @@ All notable changes to scann-core. Versions follow
 
 ## Unreleased
 
+### Added
+- Autopilot recall target: `autopilot(target_recall=0.95)` (Python; C++
+  and Rust `AutopilotOptions::target_recall`) calibrates the index's
+  default `leaves_to_search` and `pre_reorder_num_neighbors` when it is
+  built: the cheapest setting (by a per-query cost model) that reaches the
+  target recall@k on sample queries, against brute force. The index
+  structure is the rules' as before. The choice and the target are
+  recorded in the config (`autopilot { tree_ah { target_recall ...
+  calibration { ... } } }`), so saving, loading and rebalancing keep them.
+  - Sample queries: `calibration_queries=` (C++: the last argument of
+    `ScannInterface::Initialize`; Rust:
+    `ConfigBuilder::build_index_with_calibration_queries`), or else 1000
+    datapoints (`calibration_sample_size=`) picked with a fixed seed, each
+    one's own datapoint left out of its neighbors. C++
+    `ScannInterface::CalibrateSearchDefaults()` recalibrates an index.
+  - Measured on the datasets' real queries with datapoints as calibration
+    queries (targets 0.9 / 0.95 / 0.99): GloVe-100 k=10 0.8986 / 0.9486 /
+    0.9887, arxiv-768 (300k rows) k=100 0.8984 / 0.9504 / 0.9903, SIFT-128
+    k=10 0.9086 / 0.9393 / 0.9885; calibrated on 1,000 real SIFT queries,
+    the other 9,000 got 0.9166 / 0.9557 / 0.9902. Single-query QPS at the
+    calibrated settings: 0.98–1.36× that of the fastest setting of a
+    hand-sweep that reaches the target; against the defaults, e.g. 2.0× on
+    SIFT at 0.99 (defaults: 0.999). The calibration added 0.2–0.9 s to 2–3 s
+    builds of the 1M-point sets and about 1.5 s to a 4.8 s build at k=100
+    (16 threads). Details: docs/tuning.md, "A recall target".
+  - Without `target_recall`, configs and default settings are unchanged
+    (`rules="upstream"` still gives 0.2.0's configs), and saved indexes
+    keep their saved defaults. The default settings were left as they are:
+    they are cautious on SIFT (half the leaves: 0.9991 → 0.9937 at 1.55×
+    QPS) but not on GloVe-100 (0.9625 → 0.9284) or at k=100 on GloVe-100
+    (0.941 at the defaults); docs/tuning.md, "Why the default settings
+    stay where they are".
+  - Rust: `AutopilotOptions` no longer implements `Eq` (it has an `f64`
+    field now); `PartialEq` stays.
+
+### Fixed
+- A search asking for more neighbors than the index's default
+  pre-reordering count (e.g. `search(q, final_num_neighbors=400)` on an
+  autopilot index built for k=10, whose default is 317) returned only that
+  many; the default now grows to the number of neighbors asked for.
+
 ### Performance
 - The AH (`lut16`) scan uses ScaNN's AVX-512 kernel on CPUs with AVX-512
   (F, BW, DQ). Upstream compiled it but never ran it: nothing produced the

@@ -42,7 +42,8 @@ using ConfigBuilder = ::scann_core::ConfigBuilder;
 
 std::unique_ptr<ScannIndex> scann_new(rust::Slice<const float> dataset,
                                       uint64_t n_points, rust::Str config,
-                                      int32_t training_threads);
+                                      int32_t training_threads,
+                                      rust::Slice<const float> calibration_queries);
 std::unique_ptr<ScannIndex> scann_load(rust::Str dir);
 
 Neighbors scann_search(const ScannIndex& idx, rust::Slice<const float> query,

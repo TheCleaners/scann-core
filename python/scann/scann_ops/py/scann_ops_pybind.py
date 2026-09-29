@@ -368,8 +368,13 @@ def create_searcher(db,
                     scann_config,
                     training_threads=0,
                     docids=None,
+                    calibration_queries=None,
                     **unused_kwargs):
-  """Creates a searcher object wrapping a ScannNumpy object."""
+  """Creates a searcher object wrapping a ScannNumpy object.
+
+  scann-core: calibration_queries are sample queries for an autopilot
+  config's target_recall (see ScannBuilder.autopilot()).
+  """
   db = _host_array(db)
   if docids is not None:
     if len(docids) != db.shape[0]:
@@ -384,6 +389,18 @@ def create_searcher(db,
         }}
       }}
     """
+  if calibration_queries is not None:
+    queries = _host_array(calibration_queries)
+    if queries.ndim != 2 or (len(queries) and queries.shape[1] != db.shape[1]):
+      raise ValueError(
+          "calibration_queries must be a 2-D array with the dataset's "
+          f"{db.shape[1]} columns, not shape {queries.shape}.")
+    if len(queries):
+      return ScannSearcher(
+          scann_pybind.ScannNumpy(db, scann_config, training_threads,
+                                  np.ascontiguousarray(queries,
+                                                       dtype=np.float32)),
+          docids=docids)
   return ScannSearcher(
       scann_pybind.ScannNumpy(db, scann_config, training_threads),
       docids=docids)

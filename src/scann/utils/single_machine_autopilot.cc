@@ -22,8 +22,10 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "absl/log/log.h"
@@ -558,6 +560,228 @@ bool ApplyAutopilotL2AsDotProduct(ScannConfig* config, ConstSpan<float> data,
   return true;
 }
 
+namespace {
+
+// ModeledSearchCost's constants, from the tuning study's single-query
+// measurements (docs/tuning.md): the LUT16 AH scan costs about 1 ns per
+// point with 50 blocks (GloVe-100) and 0.8-1.1 ns with 43-64; reordering a
+// candidate costs 60-120 ns, mostly a DRAM miss, somewhat more for longer
+// rows (bfloat16 saved about 15 % of it at 100 dimensions).
+constexpr double kAhScanNsPerPointBlock = 0.02;
+constexpr double kReorderNsPerCandidate = 60;
+constexpr double kReorderNsPerByte = 0.04;
+// Brute-force scoring of float rows, per point and dimension.
+constexpr double kFloatScanNsPerPointDim = 0.1;
+
+// The grids: leaves_to_search grows by at least this factor, the
+// pre-reordering count by these multiples of num_neighbors, up to this many
+// times the rules' own.
+constexpr double kLeavesGridRatio = 1.2;
+constexpr double kPreReorderGrid[] = {1,  1.5, 2,  3,  4,   6,   8,   12,
+                                      16, 24,  32, 48, 64, 96, 128, 192,
+                                      256, 384, 512};
+constexpr int kMaxPreReorderOverRules = 2;
+
+int NumAhBlocks(const ScannConfig& config) {
+  if (!config.has_hash() || !config.hash().has_asymmetric_hash()) return 0;
+  const ProjectionConfig& p = config.hash().asymmetric_hash().projection();
+  if (p.projection_type() == ProjectionConfig::VARIABLE_CHUNK) {
+    int blocks = 0;
+    for (const auto& vb : p.variable_blocks()) blocks += vb.num_blocks();
+    return blocks;
+  }
+  if (p.has_num_blocks()) return p.num_blocks();
+  const int per_block = std::max<int>(1, p.num_dims_per_block());
+  return (p.input_dim() + per_block - 1) / per_block;
+}
+
+// Sorted, distinct values: `grid`, plus `extra` where it lies in [lo, hi].
+std::vector<int> Grid(std::vector<int> grid, int extra, int lo, int hi) {
+  if (extra >= lo && extra <= hi) grid.push_back(extra);
+  std::sort(grid.begin(), grid.end());
+  grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
+  return grid;
+}
+
+}  // namespace
+
+double ModeledSearchCost(const ScannConfig& config, DatapointIndex n,
+                         DimensionIndex dim, int leaves, int pre_reorder) {
+  double points = n;
+  if (config.has_partitioning() && leaves > 0) {
+    const double num_children =
+        std::max<int64_t>(1, config.partitioning().num_children());
+    points = n * std::min(1.0, leaves / num_children);
+  }
+  const int blocks = NumAhBlocks(config);
+  double cost = blocks > 0 ? points * blocks * kAhScanNsPerPointBlock
+                           : points * dim * kFloatScanNsPerPointDim;
+  if (config.has_exact_reordering() && pre_reorder > 0) {
+    const ExactReordering& r = config.exact_reordering();
+    const double bytes_per_dim = r.fixed_point().enabled() ? 1
+                                 : r.bfloat16().enabled()  ? 2
+                                                           : 4;
+    cost += pre_reorder *
+            (kReorderNsPerCandidate + kReorderNsPerByte * bytes_per_dim * dim);
+  }
+  return cost;
+}
+
+StatusOr<AutopilotCalibration> ChooseCalibratedSearchDefaults(
+    const ScannConfig& config, DatapointIndex n, DimensionIndex dim,
+    double target_recall, const CalibrationRecallFn& recall) {
+  if (!(target_recall > 0 && target_recall <= 1))
+    return InvalidArgumentError(
+        "target_recall must be in (0, 1], not %f", target_recall);
+  const int k = std::max(1, config.num_neighbors());
+  // The grids. A tree: 1, 2, ..., growing by kLeavesGridRatio, to all the
+  // leaves, with the rules' leaves_to_search. Reordering: multiples of k to
+  // kMaxPreReorderOverRules times the rules' count (at most n), with it.
+  std::vector<int> leaves_grid = {0}, pre_grid = {0};
+  int rules_leaves = 0, rules_pre = 0;
+  const bool tree =
+      config.has_partitioning() &&
+      config.partitioning().query_spilling().spilling_type() ==
+          QuerySpillingConfig::FIXED_NUMBER_OF_CENTERS &&
+      config.partitioning().num_children() > 0;
+  if (tree) {
+    const int num_children = config.partitioning().num_children();
+    rules_leaves = std::clamp<int>(
+        config.partitioning().query_spilling().max_spill_centers(), 1,
+        num_children);
+    std::vector<int> g;
+    for (double l = 1; l < num_children;
+         l = std::max(l + 1, std::ceil(l * kLeavesGridRatio)))
+      g.push_back(static_cast<int>(l));
+    g.push_back(num_children);
+    leaves_grid = Grid(std::move(g), rules_leaves, 1, num_children);
+  }
+  if (config.has_exact_reordering()) {
+    rules_pre = std::max(k, config.exact_reordering().approx_num_neighbors());
+    const int64_t hi = std::max<int64_t>(
+        k, std::min<int64_t>(int64_t{kMaxPreReorderOverRules} * rules_pre, n));
+    std::vector<int> g;
+    for (double m : kPreReorderGrid)
+      if (k * m <= hi) g.push_back(static_cast<int>(std::ceil(k * m)));
+    g.push_back(static_cast<int>(hi));
+    pre_grid = Grid(std::move(g), rules_pre, k, hi);
+  }
+
+  // Memoized recall. Recall is assumed not to fall as either index grows,
+  // so a setting at or above one that reached the target reaches it, and
+  // one at or below one that didn't doesn't.
+  std::map<std::pair<size_t, size_t>, double> memo;
+  auto eval = [&](size_t li, size_t pi) -> StatusOr<double> {
+    auto it = memo.find({li, pi});
+    if (it != memo.end()) return it->second;
+    SCANN_ASSIGN_OR_RETURN(double r, recall(leaves_grid[li], pre_grid[pi]));
+    memo[{li, pi}] = r;
+    return r;
+  };
+  auto good = [&](size_t li, size_t pi) -> StatusOr<bool> {
+    for (const auto& [key, r] : memo) {
+      if (r >= target_recall && key.first <= li && key.second <= pi)
+        return true;
+      if (r < target_recall && key.first >= li && key.second >= pi)
+        return false;
+    }
+    SCANN_ASSIGN_OR_RETURN(double r, eval(li, pi));
+    return r >= target_recall;
+  };
+  auto cost = [&](size_t li, size_t pi) {
+    return ModeledSearchCost(config, n, dim, leaves_grid[li], pre_grid[pi]);
+  };
+
+  // The pre-reordering counts in this order: the rules' first, then smaller
+  // ones, then larger ones. For each, the fewest leaves that reach the
+  // target, by bisection among the settings cheaper than the best so far
+  // (for the rules' count, the rules' leaves_to_search is probed first).
+  std::vector<size_t> order;
+  const size_t rules_pi =
+      std::lower_bound(pre_grid.begin(), pre_grid.end(), rules_pre) -
+      pre_grid.begin();
+  for (size_t pi = rules_pi + 1; pi-- > 0;) order.push_back(pi);
+  for (size_t pi = rules_pi + 1; pi < pre_grid.size(); ++pi)
+    order.push_back(pi);
+  const size_t rules_li =
+      std::lower_bound(leaves_grid.begin(), leaves_grid.end(), rules_leaves) -
+      leaves_grid.begin();
+  std::optional<std::pair<size_t, size_t>> best;
+  double best_cost = std::numeric_limits<double>::infinity();
+  for (size_t pi : order) {
+    size_t hi = leaves_grid.size() - 1;
+    while (hi > 0 && cost(hi, pi) >= best_cost) --hi;
+    if (cost(hi, pi) >= best_cost) continue;
+    size_t lo = 0;
+    if (pi == rules_pi && rules_li <= hi) {
+      SCANN_ASSIGN_OR_RETURN(bool g, good(rules_li, pi));
+      if (g)
+        hi = rules_li;
+      else
+        lo = rules_li + 1;
+    }
+    if (lo > hi) continue;
+    SCANN_ASSIGN_OR_RETURN(bool g_hi, good(hi, pi));
+    if (!g_hi) continue;
+    while (lo < hi) {
+      const size_t mid = lo + (hi - lo) / 2;
+      SCANN_ASSIGN_OR_RETURN(bool g, good(mid, pi));
+      if (g)
+        hi = mid;
+      else
+        lo = mid + 1;
+    }
+    if (cost(hi, pi) < best_cost) {
+      best = {hi, pi};
+      best_cost = cost(hi, pi);
+    }
+  }
+
+  AutopilotCalibration result;
+  result.set_target_recall(target_recall);
+  result.set_num_neighbors(k);
+  result.set_target_met(best.has_value());
+  if (!best) {
+    // Nothing reached the target: the setting with the highest recall
+    // (the most exhaustive one included), the cheapest of those.
+    SCANN_RETURN_IF_ERROR(
+        eval(leaves_grid.size() - 1, pre_grid.size() - 1).status());
+    double max_recall = -1;
+    for (const auto& [key, r] : memo) {
+      if (r > max_recall ||
+          (r == max_recall && cost(key.first, key.second) < best_cost)) {
+        best = key;
+        max_recall = r;
+        best_cost = cost(key.first, key.second);
+      }
+    }
+  }
+  SCANN_ASSIGN_OR_RETURN(double best_recall, eval(best->first, best->second));
+  result.set_sample_recall(best_recall);
+  if (tree) result.set_leaves_to_search(leaves_grid[best->first]);
+  if (config.has_exact_reordering())
+    result.set_pre_reordering_num_neighbors(pre_grid[best->second]);
+  return result;
+}
+
+void ApplyAutopilotCalibration(const AutopilotCalibration& calibration,
+                               ScannConfig* config) {
+  if (calibration.has_leaves_to_search() && config->has_partitioning() &&
+      config->partitioning().query_spilling().spilling_type() ==
+          QuerySpillingConfig::FIXED_NUMBER_OF_CENTERS) {
+    const int64_t num_children =
+        std::max<int64_t>(1, config->partitioning().num_children());
+    config->mutable_partitioning()
+        ->mutable_query_spilling()
+        ->set_max_spill_centers(std::clamp<int64_t>(
+            calibration.leaves_to_search(), 1, num_children));
+  }
+  if (calibration.has_pre_reordering_num_neighbors() &&
+      config->has_exact_reordering())
+    config->mutable_exact_reordering()->set_approx_num_neighbors(
+        std::max(1, calibration.pre_reordering_num_neighbors()));
+}
+
 StatusOr<ScannConfig> Autopilot(const ScannConfig& config,
                                 shared_ptr<const Dataset> dataset,
                                 DatapointIndex n, DimensionIndex dim) {
@@ -571,11 +795,19 @@ StatusOr<ScannConfig> Autopilot(const ScannConfig& config,
         "explicitly specified dimensionality and size.");
   switch (config.autopilot().autopilot_option_case()) {
     case (AutopilotConfig::AutopilotOptionCase::AUTOPILOT_OPTION_NOT_SET):
-    case (AutopilotConfig::AutopilotOptionCase::kTreeAh):
+    case (AutopilotConfig::AutopilotOptionCase::kTreeAh): {
       // scann-core: the tuned rules, when asked for (AutopilotTreeAH.rules).
-      if (config.autopilot().tree_ah().rules() == AutopilotTreeAH::TUNED_V1)
-        return AutopilotTreeAhTuned(config, dataset.get(), n, dim);
-      return AutopilotTreeAh(config, ds, n, dim);
+      StatusOr<ScannConfig> result =
+          config.autopilot().tree_ah().rules() == AutopilotTreeAH::TUNED_V1
+              ? AutopilotTreeAhTuned(config, dataset.get(), n, dim)
+              : AutopilotTreeAh(config, ds, n, dim);
+      // scann-core: search defaults calibrated to target_recall when the
+      // index was built (ScannInterface::CalibrateSearchDefaults).
+      if (result.ok() && config.autopilot().tree_ah().has_calibration())
+        ApplyAutopilotCalibration(config.autopilot().tree_ah().calibration(),
+                                  &result.value());
+      return result;
+    }
     default:
       return FailedPreconditionError("Autopilot option not supported: %s",
                                      config.autopilot().DebugString());

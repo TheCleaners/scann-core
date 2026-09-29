@@ -347,6 +347,30 @@ isn't a one-line change:
       autopilot(mode, quantize, rules="tuned", allow_l2_as_dot_product=True):
       the tuned rules unless rules="upstream", which emits upstream's
       stanza.
+  Autopilot's recall target (0.3):
+  src/scann/proto/auto_tuning.proto
+      AutopilotTreeAH.target_recall, calibration_sample_size and
+      calibration (fields 903-905), and the AutopilotCalibration message.
+  src/scann/utils/single_machine_autopilot.h,
+  src/scann/utils/single_machine_autopilot.cc
+      Autopilot() applies a recorded calibration (either rules);
+      ModeledSearchCost(), ChooseCalibratedSearchDefaults() and
+      ApplyAutopilotCalibration() are new.
+  src/scann/scann_ops/cc/scann.h, src/scann/scann_ops/cc/scann.cc
+      CalibrateSearchDefaults() (new), which Initialize() calls for a
+      config with a target_recall (an Initialize() overload takes the
+      calibration queries); searches with the default leaves_to_search or
+      pre-reordering count use the calibrated ones. A search with the
+      default pre-reordering count and more neighbors than it now reorders
+      that many candidates (upstream returned only as many as the
+      default).
+  src/scann/scann_ops/cc/scann_npy.h, src/scann/scann_ops/cc/scann_npy.cc,
+  src/scann/scann_ops/cc/python/scann_pybind.cc
+      A ScannNumpy constructor with calibration queries.
+  python/scann/scann_ops/py/scann_builder.py,
+  python/scann/scann_ops/py/scann_ops_pybind.py
+      autopilot(target_recall=None, calibration_queries=None,
+      calibration_sample_size=None); create_searcher(calibration_queries=).
   Performance changes (0.2.1; results unchanged unless noted):
   src/scann/scann_ops/cc/scann.h, src/scann/scann_ops/cc/scann.cc
       Thread pools are sized from scann_core::AvailableCPUs() (the CPU

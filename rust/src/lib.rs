@@ -216,7 +216,38 @@ impl ScannIndex {
             return invalid(format!("{n} datapoints exceed the 32-bit index space"));
         }
         let threads = to_i32(training_threads, "training_threads")?;
-        Ok(ScannIndex::wrap(ffi::scann_new(dataset, n as u64, config, threads)?))
+        Ok(ScannIndex::wrap(ffi::scann_new(dataset, n as u64, config, threads, &[])?))
+    }
+
+    /// Like [`with_training_threads`](Self::with_training_threads), for an
+    /// autopilot config with a target recall
+    /// ([`AutopilotOptions::target_recall`]): the index's default search
+    /// settings are calibrated on `calibration_queries` (row-major,
+    /// `dimensionality` values each; e.g. a few hundred real queries)
+    /// instead of on sampled datapoints.
+    pub fn with_calibration_queries(
+        dataset: &[f32],
+        dimensionality: usize,
+        config: &str,
+        training_threads: usize,
+        calibration_queries: &[f32],
+    ) -> Result<Self> {
+        let n = rows(dataset, dimensionality, "dataset")?;
+        if n == 0 {
+            return invalid("dataset is empty");
+        }
+        if u32::try_from(n).is_err() {
+            return invalid(format!("{n} datapoints exceed the 32-bit index space"));
+        }
+        rows(calibration_queries, dimensionality, "calibration_queries")?;
+        let threads = to_i32(training_threads, "training_threads")?;
+        Ok(ScannIndex::wrap(ffi::scann_new(
+            dataset,
+            n as u64,
+            config,
+            threads,
+            calibration_queries,
+        )?))
     }
 
     /// Loads an index written by [`serialize`](Self::serialize) -- or by
@@ -482,7 +513,7 @@ pub enum AutopilotRules {
 }
 
 /// Options for [`ConfigBuilder::autopilot_with`] (Python: `autopilot()`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutopilotOptions {
     pub mode: IncrementalMode,
     /// The reordering data's precision (default float32).
@@ -492,6 +523,17 @@ pub struct AutopilotOptions {
     /// be built as [`l2_as_dot_product`](ConfigBuilder::l2_as_dot_product),
     /// which the rules choose when the data suits it.
     pub allow_l2_as_dot_product: bool,
+    /// A recall@k in (0, 1] for the default search settings: building the
+    /// index calibrates its default `leaves_to_search` and
+    /// `pre_reorder_num_neighbors` to the cheapest setting that reaches it
+    /// on sample queries (sampled datapoints, or those given to
+    /// [`ScannIndex::with_calibration_queries`]), measured against brute
+    /// force, and records them in the config (they survive
+    /// [`ScannIndex::serialize`] and loading). `None`: the rules' defaults.
+    pub target_recall: Option<f64>,
+    /// With `target_recall` and no calibration queries: how many datapoints
+    /// to sample as queries (`None`: 1000).
+    pub calibration_sample_size: Option<u32>,
 }
 
 impl Default for AutopilotOptions {
@@ -501,6 +543,8 @@ impl Default for AutopilotOptions {
             quantize: Quantization::Float32,
             rules: AutopilotRules::Tuned,
             allow_l2_as_dot_product: true,
+            target_recall: None,
+            calibration_sample_size: None,
         }
     }
 }
@@ -523,6 +567,14 @@ impl AutopilotOptions {
     }
     pub fn allow_l2_as_dot_product(mut self, allow: bool) -> Self {
         self.allow_l2_as_dot_product = allow;
+        self
+    }
+    pub fn target_recall(mut self, recall: f64) -> Self {
+        self.target_recall = Some(recall);
+        self
+    }
+    pub fn calibration_sample_size(mut self, n: u32) -> Self {
+        self.calibration_sample_size = Some(n);
         self
     }
 }
@@ -991,13 +1043,30 @@ impl ConfigBuilder {
             IncrementalMode::Online => ffi::IncrementalMode::Online,
             IncrementalMode::OnlineIncremental => ffi::IncrementalMode::OnlineIncremental,
         };
-        let v = ffi::FfiAutopilotOptions {
-            mode: m,
-            quantize: q(o.quantize),
-            upstream_rules: o.rules == AutopilotRules::Upstream,
-            allow_l2_as_dot_product: o.allow_l2_as_dot_product,
-        };
-        self.apply(Ok(v), ffi::config_builder_autopilot)
+        let v = (|| {
+            if let Some(t) = o.target_recall {
+                if !(t > 0.0 && t <= 1.0) {
+                    return invalid(format!("autopilot: target_recall must be in (0, 1], not {t}"));
+                }
+            }
+            let size = match o.calibration_sample_size {
+                None => 0,
+                Some(_) if o.target_recall.is_none() => {
+                    return invalid("autopilot: calibration_sample_size needs target_recall");
+                }
+                Some(0) => return invalid("autopilot: calibration_sample_size must be positive"),
+                Some(n) => to_i32(n as usize, "calibration_sample_size")?,
+            };
+            Ok(ffi::FfiAutopilotOptions {
+                mode: m,
+                quantize: q(o.quantize),
+                upstream_rules: o.rules == AutopilotRules::Upstream,
+                allow_l2_as_dot_product: o.allow_l2_as_dot_product,
+                target_recall: nan_if_none(o.target_recall),
+                calibration_sample_size: size,
+            })
+        })();
+        self.apply(v, ffi::config_builder_autopilot)
     }
 
     /// Squared L2 search through an inner-product index (the exact L2 ->
@@ -1044,5 +1113,24 @@ impl ConfigBuilder {
         let n = rows(dataset, self.dimensionality, "dataset")?;
         let config = self.build(n as u64)?;
         ScannIndex::with_training_threads(dataset, self.dimensionality, &config, self.training_threads)
+    }
+
+    /// Like [`build_index`](Self::build_index), calibrating the autopilot
+    /// target recall on `calibration_queries` (see
+    /// [`ScannIndex::with_calibration_queries`]).
+    pub fn build_index_with_calibration_queries(
+        &self,
+        dataset: &[f32],
+        calibration_queries: &[f32],
+    ) -> Result<ScannIndex> {
+        let n = rows(dataset, self.dimensionality, "dataset")?;
+        let config = self.build(n as u64)?;
+        ScannIndex::with_calibration_queries(
+            dataset,
+            self.dimensionality,
+            &config,
+            self.training_threads,
+            calibration_queries,
+        )
     }
 }

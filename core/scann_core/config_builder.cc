@@ -215,6 +215,25 @@ absl::StatusOr<std::string> ConfigBuilder::BuildText(uint64_t num_points) const 
       if (!a.allow_l2_as_dot_product)
         absl::StrAppend(&config, " allow_l2_as_dot_product: false");
     }
+    // scann-core: the recall target the built index is calibrated to.
+    if (a.target_recall) {
+      if (!(*a.target_recall > 0 && *a.target_recall <= 1))
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Autopilot(): target_recall must be in (0, 1], not ",
+            *a.target_recall));
+      absl::StrAppend(&config, " target_recall: ",
+                      Num(*a.target_recall));
+    }
+    if (a.calibration_sample_size != 0) {
+      if (!a.target_recall)
+        return absl::InvalidArgumentError(
+            "Autopilot(): calibration_sample_size needs target_recall");
+      if (a.calibration_sample_size < 0)
+        return absl::InvalidArgumentError(
+            "Autopilot(): calibration_sample_size must be positive");
+      absl::StrAppend(&config, " calibration_sample_size: ",
+                      a.calibration_sample_size);
+    }
     absl::StrAppend(&config, " } }\n");
     if (num_points == 0)
       return absl::InvalidArgumentError("Autopilot() needs num_points");

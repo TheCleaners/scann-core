@@ -49,6 +49,12 @@ class ScannNumpy {
              const std::string& scann_assets_pbtxt);
   ScannNumpy(const np_row_major_arr<float>& np_dataset,
              absl::string_view config, int training_threads);
+  // scann-core: with sample queries for an autopilot target_recall (see
+  // ScannInterface::CalibrateSearchDefaults); a 2-D array with the
+  // dataset's dimensionality.
+  ScannNumpy(const np_row_major_arr<float>& np_dataset,
+             absl::string_view config, int training_threads,
+             const np_row_major_arr<float>& calibration_queries);
   std::pair<pybind11::array_t<DatapointIndex>, pybind11::array_t<float>> Search(
       const np_row_major_arr<float>& query, int final_nn, int pre_reorder_nn,
       int leaves);

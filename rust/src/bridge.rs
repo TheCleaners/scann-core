@@ -75,6 +75,8 @@ pub(crate) mod ffi {
         quantize: Quantization,
         upstream_rules: bool,
         allow_l2_as_dot_product: bool,
+        target_recall: f64,
+        calibration_sample_size: i32,
     }
 
     struct FfiTreeOptions {
@@ -139,6 +141,7 @@ pub(crate) mod ffi {
             n_points: u64,
             config: &str,
             training_threads: i32,
+            calibration_queries: &[f32],
         ) -> Result<UniquePtr<ScannIndex>>;
         fn scann_load(dir: &str) -> Result<UniquePtr<ScannIndex>>;
 
