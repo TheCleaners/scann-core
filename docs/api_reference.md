@@ -269,6 +269,14 @@ sampled for training) and `training_iterations` (default 10).
   SIMD-optimized `INT8_LUT16` lookup path) or `"lut256"` (256 centroids/block,
   plain `INT8` lookup — finer-grained/more accurate but slower per lookup,
   closer to textbook PQ). Anything else raises `ValueError`.
+
+  On x86-64 CPUs with AVX-512 (F, BW and DQ), `lut16` codes are scanned by an
+  AVX-512 kernel, elsewhere by an AVX2 (or SSE4 / Highway) one. Both return
+  the same neighbors and distances, bit for bit; the AVX-512 one is 3–9 %
+  faster per query on Zen 4 (see the changelog). It keeps the codes in its
+  own layout in memory, chosen when the index is built or loaded; saved
+  indexes don't depend on it. ScaNN's `ignore_avx512` flag (a build-time
+  default in practice: flags are read at startup) keeps the AVX2 kernel.
 - `min_cluster_size` — **accepted but explicitly ignored** (`del
   min_cluster_size  # Deprecated field.` in the source). Don't rely on it;
   it's a no-op left in the signature for backward compatibility.

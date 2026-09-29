@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -107,6 +111,9 @@ SearcherBase<T>::SearcherBase(
     packed_dataset_ =
         ::research_scann::asymmetric_hashing2::CreatePackedDataset(
             *this->hashed_dataset());
+    // scann-core: the AVX-512 kernel's layout where it runs.
+    SetLUT16Layout(&packed_dataset_,
+                   asymmetric_hashing_internal::UseAvx512Lut16Layout());
 
     const size_t l2_cache_bytes = 256 * 1024;
     if (packed_dataset_.bit_packed_data.size() <= l2_cache_bytes / 2) {
@@ -168,7 +175,13 @@ SearcherBase<T>::SearcherBase(SearcherOptions<T> opts,
                opts_.asymmetric_queryer_->lookup_distance().get()) != nullptr)),
       lut16_(opts_.asymmetric_lookup_type_ ==
                  AsymmetricHasherConfig::INT8_LUT16 &&
-             opts_.asymmetric_queryer_) {}
+             opts_.asymmetric_queryer_) {
+  // scann-core: for datapoints added later.
+  if (lut16_) {
+    packed_dataset_.avx512_layout =
+        asymmetric_hashing_internal::UseAvx512Lut16Layout();
+  }
+}
 
 template <typename T>
 StatusOr<DatapointIndex> SearcherBase<T>::DatasetSize() const {

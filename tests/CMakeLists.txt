@@ -73,6 +73,15 @@ foreach(cfg tree_ah_dot tree_soar_ah_dot tree_l2mips_ah)
   set_tests_properties(mutfuzz_${cfg}_inject PROPERTIES TIMEOUT 900
     LABELS mutfuzz ENVIRONMENT INJECT=1)
 endforeach()
+# AH configs again with the AVX2 kernels (canonical LUT16 layout; the
+# default runs above use the AVX-512 layout on AVX-512 CPUs).
+if(SCANN_TEST_X86)
+  foreach(cfg ah_dot tree_ah_dot tree_soar_ah_dot tree_incr_ah_dot tree_l2mips_ah)
+    add_test(NAME mutfuzz_${cfg}_avx2 COMMAND scann_core_mutfuzz ${cfg} 3 600 4)
+    set_tests_properties(mutfuzz_${cfg}_avx2 PROPERTIES TIMEOUT 900
+      LABELS mutfuzz ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
+  endforeach()
+endif()
 
 # Damaged or inconsistent index directories (generated at run time) fail to
 # load with an error instead of crashing or loading garbage; all-deleted
@@ -114,6 +123,13 @@ add_executable(scann_core_search_scratch_test cpp/search_scratch_test.cc)
 target_link_libraries(scann_core_search_scratch_test PRIVATE scann::core)
 add_test(NAME search_scratch COMMAND scann_core_search_scratch_test)
 set_tests_properties(search_scratch PROPERTIES TIMEOUT 900)
+
+# The AVX-512 LUT16 layout (conversions, resizes, per-datapoint writes)
+# and, on AVX-512 CPUs, the AVX-512 kernel against the AVX2 one, bit for bit.
+add_executable(scann_core_lut16_avx512_test cpp/lut16_avx512_test.cc)
+target_link_libraries(scann_core_lut16_avx512_test PRIVATE scann::core)
+add_test(NAME lut16_avx512 COMMAND scann_core_lut16_avx512_test)
+set_tests_properties(lut16_avx512 PROPERTIES TIMEOUT 900)
 
 # Autopilot's rules: the tuned rules' configs for given shapes, value by
 # value; upstream's unchanged; what the tuned rules derive from the data

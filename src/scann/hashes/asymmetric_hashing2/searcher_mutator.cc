@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include <cmath>
 #include <cstdint>
@@ -138,8 +142,11 @@ StatusOr<DatapointIndex> Searcher<T>::Mutator::AddDatapoint(
     }
 
     if (!(result & 31)) {
-      packed_dataset_->bit_packed_data.resize(
-          packed_dataset_->bit_packed_data.size() + 16 * hash_size);
+      // scann-core: layout-preserving resize (the AVX-512 layout's tail
+      // depends on the size).
+      ResizeLUT16PackedData(
+          packed_dataset_,
+          packed_dataset_->bit_packed_data.size() / (16 * hash_size) + 1);
     }
     SCANN_RETURN_IF_ERROR(
         SetLUT16Hash(hashed.ToPtr(), result, packed_dataset_));
@@ -171,8 +178,9 @@ Status Searcher<T>::Mutator::RemoveDatapoint(DatapointIndex index) {
 
     if (!(new_size & 31)) {
       const DimensionIndex hash_size = hashed.nonzero_entries();
-      packed_dataset_->bit_packed_data.resize(
-          packed_dataset_->bit_packed_data.size() - 16 * hash_size);
+      ResizeLUT16PackedData(
+          packed_dataset_,
+          packed_dataset_->bit_packed_data.size() / (16 * hash_size) - 1);
     }
     call_on_datapont_index_rename(new_size, index);
   }

@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/hashes/asymmetric_hashing2/querying.h"
 
@@ -19,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -28,6 +33,7 @@
 #include "scann/distance_measures/distance_measure_base.h"
 #include "scann/hashes/asymmetric_hashing2/training_model.h"
 #include "scann/hashes/internal/asymmetric_hashing_impl.h"
+#include "scann/hashes/internal/lut16_avx512_swizzle.h"
 #include "scann/projection/chunking_projection.h"
 #include "scann/proto/hash.pb.h"
 #include "scann/utils/common.h"
@@ -190,6 +196,19 @@ DenseDataset<uint8_t> UnpackDataset(const PackedDatasetView& packed) {
 
 absl::Status UnpackDataset(const PackedDatasetView& packed,
                            DenseDataset<uint8_t>& unpacked) {
+  // scann-core: AVX-512-layout codes are unpacked from a temporary
+  // canonical copy (saving writes the canonical, unpacked form either way).
+  if (packed.avx512_layout && packed.num_blocks > 0) {
+    std::vector<uint8_t> canonical(packed.bit_packed_data.begin(),
+                                   packed.bit_packed_data.end());
+    asymmetric_hashing_internal::Lut16Avx512Unswizzle(
+        canonical.data(), canonical.size() / (16 * packed.num_blocks),
+        packed.num_blocks);
+    PackedDatasetView view = packed;
+    view.bit_packed_data = canonical;
+    view.avx512_layout = false;
+    return UnpackDataset(view, unpacked);
+  }
   const size_t num_dim = packed.num_blocks;
   const size_t num_dp = packed.num_datapoints;
   SCANN_RET_CHECK_GE(unpacked.size(), num_dp)
@@ -239,7 +258,41 @@ PackedDatasetView CreatePackedDatasetView(const PackedDataset& packed_dataset) {
   result.bit_packed_data = absl::MakeConstSpan(packed_dataset.bit_packed_data);
   result.num_datapoints = packed_dataset.num_datapoints;
   result.num_blocks = packed_dataset.num_blocks;
+  result.avx512_layout = packed_dataset.avx512_layout;
   return result;
+}
+
+void SetLUT16Layout(PackedDataset* packed, bool avx512_layout) {
+  if (packed->avx512_layout == avx512_layout) return;
+  packed->avx512_layout = avx512_layout;
+  const size_t nb = packed->num_blocks;
+  if (nb == 0) return;  // empty; later additions use the new layout
+  const size_t n32 = packed->bit_packed_data.size() / (16 * nb);
+  if (avx512_layout) {
+    asymmetric_hashing_internal::Lut16Avx512Swizzle(
+        packed->bit_packed_data.data(), n32, nb);
+  } else {
+    asymmetric_hashing_internal::Lut16Avx512Unswizzle(
+        packed->bit_packed_data.data(), n32, nb);
+  }
+}
+
+void ResizeLUT16PackedData(PackedDataset* packed, size_t num_groups) {
+  const size_t nb = packed->num_blocks;
+  std::vector<uint8_t>& data = packed->bit_packed_data;
+  if (!packed->avx512_layout || nb == 0) {
+    data.resize(num_groups * 16 * nb);
+    return;
+  }
+  const size_t old_groups = data.size() / (16 * nb);
+  // Full 8-group super-groups common to both sizes stay; the tail after
+  // them goes canonical, is resized, and is converted back for the new size.
+  const size_t kept = 8 * (std::min(old_groups, num_groups) / 8);
+  asymmetric_hashing_internal::Lut16Avx512Unswizzle(data.data(), old_groups,
+                                                    nb, kept);
+  data.resize(num_groups * 16 * nb);
+  asymmetric_hashing_internal::Lut16Avx512Swizzle(data.data(), num_groups, nb,
+                                                  kept);
 }
 
 AsymmetricQueryerBase::AsymmetricQueryerBase(
@@ -287,6 +340,19 @@ Status SetLUT16Hash(const DatapointPtr<uint8_t>& hashed, const size_t index,
   SCANN_RET_CHECK_LE(offset + (hashed.nonzero_entries() - 1) * 16,
                      packed_dataset.size());
   SCANN_RET_CHECK_EQ(hashed.nonzero_entries(), packed_struct->num_blocks);
+  if (packed_struct->avx512_layout) {  // scann-core
+    // The layout's shape follows the allocated groups, not num_datapoints
+    // (the mutator changes that before resizing).
+    const size_t n32 = packed_dataset.size() / (16 * hash_size);
+    for (size_t i = 0; i < hash_size; ++i) {
+      const auto a = asymmetric_hashing_internal::Lut16Avx512NibbleAddress(
+          n32, hash_size, index, i);
+      uint8_t& b = packed_dataset[a.byte];
+      b = a.high ? ((hashed.values()[i] << 4) | (b & 0x0f))
+                 : (hashed.values()[i] | (b & 0xf0));
+    }
+    return OkStatus();
+  }
 
   if (index & 0x10) {
     for (int i = 0; i < hashed.nonzero_entries(); ++i) {
@@ -313,6 +379,17 @@ Datapoint<uint8_t> GetLUT16Hash(const size_t index,
             packed_dataset.bit_packed_data.size());
   Datapoint<uint8_t> result;
   result.mutable_values()->reserve(hash_size);
+  if (packed_dataset.avx512_layout) {  // scann-core; as in SetLUT16Hash
+    const size_t n32 =
+        packed_dataset.bit_packed_data.size() / (16 * hash_size);
+    for (size_t i : Seq(hash_size)) {
+      const auto a = asymmetric_hashing_internal::Lut16Avx512NibbleAddress(
+          n32, hash_size, index, i);
+      const uint8_t b = packed_dataset.bit_packed_data[a.byte];
+      result.mutable_values()->push_back(a.high ? (b >> 4) : (b & 0x0f));
+    }
+    return result;
+  }
 
   if (index & 0x10) {
     for (size_t i : Seq(hash_size)) {

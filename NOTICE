@@ -449,6 +449,30 @@ isn't a one-line change:
       (made on first use) for DOT_PRODUCT lookups, reading the blocks
       straight from the query when the projection is plain chunking
       (checked once with a probe query), into a per-thread buffer.
+  src/scann/hashes/internal/lut16_avx512.inc,
+  src/scann/hashes/internal/lut16_avx512_swizzle.h,
+  src/scann/hashes/internal/lut16_avx512_swizzle.cc,
+  src/scann/hashes/internal/lut16_interface.h,
+  src/scann/hashes/internal/asymmetric_hashing_lut16.h,
+  src/scann/hashes/asymmetric_hashing2/querying.h,
+  src/scann/hashes/asymmetric_hashing2/querying.cc,
+  src/scann/hashes/asymmetric_hashing2/searcher.cc,
+  src/scann/hashes/asymmetric_hashing2/searcher_mutator.cc,
+  src/scann/tree_x_hybrid/tree_ah_hybrid_residual.cc
+      The AVX-512 LUT16 kernel runs (upstream compiled it, but nothing
+      produced the code layout it reads). On CPUs with AVX-512, an AH
+      searcher's LUT16 codes are converted in place to that layout when
+      packed (PackedDataset::avx512_layout); the kernel is chosen by the
+      codes' layout. Portable layout helpers (Lut16Avx512Swizzle /
+      Unswizzle, per-datapoint addresses), with UnpackDataset,
+      Set/GetLUT16Hash and the mutator's resizes (ResizeLUT16PackedData)
+      handling the layout, so saved indexes are unchanged. In the kernel:
+      unaligned loads, masked loads in the 32-datapoint tail (upstream read
+      up to 48 bytes past the codes and lookup table), the next-partition
+      prefetch of the AVX2 kernel, and top-N functions rewritten to push
+      what the AVX2 kernel pushes (its thresholds and their clamping, int32
+      accumulators from 256 blocks, datapoint-translation and batch-filter
+      predicates), for bit-identical results.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
       directly (no docid lock, no context manager). upsert() passes the rows
