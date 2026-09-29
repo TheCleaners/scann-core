@@ -48,6 +48,8 @@
 #include "google/protobuf/message.h"
 #include "scann/base/single_machine_base.h"
 #include "scann/data_format/dataset.h"
+#include "scann/distance_measures/distance_measure_factory.h"
+#include "scann/distance_measures/many_to_many/many_to_many_floating_point.h"
 #include "scann/oss_wrappers/scann_status.h"
 #include "scann/partitioning/partitioner.pb.h"
 #include "scann/proto/brute_force.pb.h"
@@ -58,8 +60,10 @@
 #include "scann/tree_x_hybrid/tree_ah_hybrid_residual.h"
 #include "scann/tree_x_hybrid/tree_x_params.h"
 #include "scann/utils/common.h"
+#include "scann/utils/fast_top_neighbors.h"
 #include "scann/utils/io_npy.h"
 #include "scann/utils/io_oss_wrapper.h"
+#include "scann/utils/parallel_for.h"
 #include "scann/utils/scann_config_utils.h"
 #include "scann/utils/single_machine_autopilot.h"
 #include "scann/utils/single_machine_retraining.h"
@@ -996,7 +1000,30 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
                                   DatapointIndex n_points,
                                   absl::string_view config,
                                   int training_threads) {
+  return Initialize(dataset, n_points, config, training_threads, {});
+}
+
+Status ScannInterface::Initialize(ConstSpan<float> dataset,
+                                  DatapointIndex n_points,
+                                  absl::string_view config,
+                                  int training_threads,
+                                  ConstSpan<float> calibration_queries) {
   SCANN_RETURN_IF_ERROR(ParseTextProto(&config_, config));
+  // scann-core: autopilot's target_recall calibrates the new index below; a
+  // calibration recorded in the config (e.g. one copied from another
+  // index's) is for other data.
+  std::optional<double> target_recall;
+  if (config_.has_autopilot() && config_.autopilot().has_tree_ah()) {
+    AutopilotTreeAH* tree_ah = config_.mutable_autopilot()->mutable_tree_ah();
+    if (tree_ah->has_target_recall()) {
+      target_recall = tree_ah->target_recall();
+      tree_ah->clear_calibration();
+    }
+  }
+  if (!calibration_queries.empty() && !target_recall)
+    return InvalidArgumentError(
+        "Calibration queries were given, but the config has no autopilot "
+        "target_recall to calibrate to.");
   if (training_threads < 0)
     return InvalidArgumentError("training_threads must be non-negative");
   SCANN_RETURN_IF_ERROR(CheckDenseShape(dataset, n_points, "dataset"));
@@ -1035,11 +1062,20 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
   if (ds && IsSphericalPartitioning(config_))
     for (size_t i = 0; i < ds->size(); ++i)
       NormalizeForSphericalPartitioning(ds->mutable_data(i));
-  return Initialize(std::make_tuple(config_, std::move(ds), std::move(opts)));
+  SCANN_RETURN_IF_ERROR(
+      Initialize(std::make_tuple(config_, std::move(ds), std::move(opts))));
+  // scann-core: an empty index (built to be filled by upserts) has nothing
+  // to calibrate on.
+  if (target_recall && n_points > 0)
+    SCANN_RETURN_IF_ERROR(
+        CalibrateSearchDefaults(dataset, *target_recall, calibration_queries)
+            .status());
+  return OkStatus();
 }
 
 Status ScannInterface::Initialize(ScannInterface::ScannArtifacts artifacts) {
   auto [config, dataset, opts] = std::move(artifacts);
+  calibrated_leaves_ = calibrated_pre_reorder_ = 0;
   // scann-core: with l2_as_dot_product, the searcher runs the inner-product
   // config (config_ is the config as given again once it's built).
   SCANN_ASSIGN_OR_RETURN(l2_as_dot_product_, ToSearcherConfig(&config));
@@ -1141,6 +1177,19 @@ std::shared_ptr<const TreeXOptionalParameters> TreeParametersForLeaves(
 
 }  // namespace
 
+// scann-core: the default pre-reordering count for a search of final_nn
+// neighbors (pre_reorder_nn <= 0): the calibrated one if any, else the
+// searcher's (-1 here), and at least final_nn. Upstream kept the searcher's
+// default when a search asked for more neighbors than that, and returned
+// only as many.
+int ScannInterface::DefaultPreReorder(int final_nn) const {
+  const int pre = calibrated_pre_reorder_ > 0
+                      ? calibrated_pre_reorder_
+                      : scann_->default_pre_reordering_num_neighbors();
+  if (final_nn > pre) return final_nn;
+  return calibrated_pre_reorder_ > 0 ? calibrated_pre_reorder_ : -1;
+}
+
 SearchParameters ScannInterface::GetSearchParameters(int final_nn,
                                                      int pre_reorder_nn,
                                                      int leaves) const {
@@ -1149,9 +1198,12 @@ SearchParameters ScannInterface::GetSearchParameters(int final_nn,
   int post_reorder_nn = -1;
   if (has_reordering) {
     post_reorder_nn = final_nn;
+    if (pre_reorder_nn <= 0) pre_reorder_nn = DefaultPreReorder(final_nn);
   } else {
     pre_reorder_nn = final_nn;
   }
+  // scann-core: the calibrated leaves_to_search (CalibrateSearchDefaults).
+  if (leaves <= 0 && calibrated_leaves_ > 0) leaves = calibrated_leaves_;
   params.set_pre_reordering_num_neighbors(pre_reorder_nn);
   params.set_post_reordering_num_neighbors(post_reorder_nn);
   // scann-core: upstream attached TreeXOptionalParameters whenever leaves > 0,
@@ -1172,9 +1224,12 @@ vector<SearchParameters> ScannInterface::GetSearchParametersBatched(
   int post_reorder_nn = -1;
   if (has_reordering) {
     post_reorder_nn = final_nn;
+    if (pre_reorder_nn <= 0) pre_reorder_nn = DefaultPreReorder(final_nn);
   } else {
     pre_reorder_nn = final_nn;
   }
+  // scann-core: see GetSearchParameters.
+  if (leaves <= 0 && calibrated_leaves_ > 0) leaves = calibrated_leaves_;
   std::shared_ptr<const TreeXOptionalParameters> tree_params;
   // scann-core: only for tree indexes; see GetSearchParameters.
   if (leaves > 0 && config_.has_partitioning())
@@ -1277,6 +1332,9 @@ StatusOr<ScannConfig> ScannInterface::RetrainAndReindex(const string& config) {
   scann_.reset(static_cast<SingleMachineSearcherBase<float>*>(
       std::move(status_or.value().release())));
   mu.WriterUnlock();
+  // scann-core: the new searcher is built with its config's defaults (a
+  // recorded calibration included: see Autopilot()).
+  calibrated_leaves_ = calibrated_pre_reorder_ = 0;
   RefreshConfig();
   // scann-core: health stats first, while the searcher still has its float
   // dataset, as CreateSearcher() does. Upstream released the dataset first,
@@ -1488,6 +1546,223 @@ Status ScannInterface::SearchBatchedRows(ConstSpan<float> queries,
                    }
                  });
   return report(status);
+}
+
+namespace {
+
+// scann-core: helpers for CalibrateSearchDefaults.
+
+// The seed of the datapoints sampled as calibration queries.
+constexpr uint64_t kCalibrationSeed = 0x5ca11b7a7e5eed01ULL;
+
+uint64_t SplitMix64(uint64_t* state) {
+  uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
+// m distinct indices in [0, n), sorted, the same on every platform (Floyd's
+// algorithm over SplitMix64).
+std::vector<DatapointIndex> SampleDatapoints(DatapointIndex n, size_t m) {
+  std::vector<DatapointIndex> out;
+  if (m >= n) {
+    out.resize(n);
+    for (DatapointIndex i = 0; i < n; ++i) out[i] = i;
+    return out;
+  }
+  uint64_t state = kCalibrationSeed;
+  absl::flat_hash_set<DatapointIndex> chosen;
+  for (uint64_t j = n - m; j < n; ++j) {
+    const auto t = static_cast<DatapointIndex>(SplitMix64(&state) % (j + 1));
+    chosen.insert(chosen.contains(t) ? static_cast<DatapointIndex>(j) : t);
+  }
+  out.assign(chosen.begin(), chosen.end());
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// The distance ScaNN ranks by (squared L2, or the negated dot product), in
+// double precision.
+double ExactDistance(const float* a, const float* b, size_t dim, bool l2) {
+  double v = 0;
+  if (l2) {
+    for (size_t i = 0; i < dim; ++i) {
+      const double d = static_cast<double>(a[i]) - b[i];
+      v += d * d;
+    }
+  } else {
+    for (size_t i = 0; i < dim; ++i) v -= static_cast<double>(a[i]) * b[i];
+  }
+  return v;
+}
+
+}  // namespace
+
+StatusOr<AutopilotCalibration> ScannInterface::CalibrateSearchDefaults(
+    ConstSpan<float> dataset, double target_recall, ConstSpan<float> queries) {
+  RefreshConfig();
+  if (!config_.has_autopilot())
+    return FailedPreconditionError(
+        "Calibrating the search defaults needs an autopilot index: the "
+        "calibration is recorded in its autopilot config.");
+  if (!(target_recall > 0 && target_recall <= 1))
+    return InvalidArgumentError(absl::StrCat(
+        "target_recall must be in (0, 1], not ", target_recall));
+  const std::string& distance = config_.distance_measure().distance_measure();
+  if (distance != "SquaredL2Distance" && distance != "DotProductDistance")
+    return InvalidArgumentError(absl::StrCat(
+        "Calibration supports SquaredL2Distance and DotProductDistance, not ",
+        distance));
+  const size_t dim = dimensionality_;
+  const size_t n = n_points();
+  if (n == 0 || dim == 0)
+    return FailedPreconditionError("The index is empty: nothing to calibrate.");
+  if (dataset.size() != n * dim)
+    return InvalidArgumentError(absl::StrCat(
+        "The calibration dataset has ", dataset.size(), " values; the index "
+        "has ", n, " datapoints of ", dim, " dimensions."));
+  if (queries.size() % dim != 0)
+    return InvalidArgumentError(absl::StrCat(
+        "Calibration queries have ", queries.size(),
+        " values, not a multiple of the dimensionality ", dim));
+  SCANN_RETURN_IF_ERROR(CheckAllFinite(queries, dim, "calibration query"));
+
+  // The queries: given, or sampled datapoints (self[i] is query i's).
+  const bool given = !queries.empty();
+  std::vector<DatapointIndex> self;
+  std::vector<float> sampled;
+  if (!given) {
+    int m = config_.autopilot().tree_ah().calibration_sample_size();
+    if (m <= 0) m = kDefaultCalibrationSampleSize;
+    self = SampleDatapoints(n, m);
+    sampled.resize(self.size() * dim);
+    for (size_t i = 0; i < self.size(); ++i)
+      std::copy(dataset.data() + self[i] * dim,
+                dataset.data() + (self[i] + 1) * dim, sampled.data() + i * dim);
+    queries = sampled;
+  }
+  const size_t nq = queries.size() / dim;
+  const int extra = given ? 0 : 1;
+  const int k = static_cast<int>(std::min<size_t>(
+      std::max(1, config_.num_neighbors()), n - extra));
+  if (k < 1)
+    return FailedPreconditionError(
+        "The index has too few datapoints to calibrate on its own.");
+  const bool l2 = distance == "SquaredL2Distance";
+  std::shared_ptr<ThreadPool> pool =
+      training_threads_ > 0
+          ? std::shared_ptr<ThreadPool>(
+                StartThreadPool("scann_calibration", training_threads_ - 1))
+          : parallel_query_pool();
+
+  // Exact neighbors (the k + extra closest, then without query i's own
+  // datapoint), rescored in double precision: a result counts as a hit if
+  // it is no farther than the k-th, so ties count.
+  SCANN_ASSIGN_OR_RETURN(auto dist, GetDistanceMeasure(distance));
+  std::vector<FastTopNeighbors<float>> topns(nq);
+  for (auto& t : topns) t.Init(k + extra);
+  DenseDistanceManyToManyTopK(*dist, DefaultDenseDatasetView<float>(queries, dim),
+                              DefaultDenseDatasetView<float>(dataset, dim),
+                              MakeMutableSpan(topns), pool.get());
+  std::vector<double> kth(nq), tolerance(nq);
+  for (size_t i = 0; i < nq; ++i) {
+    const float* q = queries.data() + i * dim;
+    NNResultsVector res;
+    topns[i].FinishUnsorted(&res);
+    std::vector<double> d;
+    for (const auto& [idx, unused] : res) {
+      if (!given && idx == self[i]) continue;
+      d.push_back(ExactDistance(q, dataset.data() + idx * dim, dim, l2));
+    }
+    std::sort(d.begin(), d.end());
+    kth[i] = d.empty() ? 0 : d[std::min<size_t>(k, d.size()) - 1];
+    double q2 = 0;
+    for (size_t j = 0; j < dim; ++j) q2 += static_cast<double>(q[j]) * q[j];
+    tolerance[i] = 1e-6 * (std::abs(kth[i]) + q2);
+  }
+
+  // Recall@k of the queries at a setting (0: the index has no tree / no
+  // reordering). Datapoint queries search for one more neighbor, with one
+  // more candidate, and leave their own datapoint out.
+  auto recall = [&](int leaves, int pre_reorder) -> StatusOr<double> {
+    std::vector<double> hits(nq);
+    std::atomic<bool> failed{false};
+    Status status;
+    absl::Mutex mu;
+    ParallelFor<8>(Seq(nq), pool.get(), [&](size_t i) {
+      if (failed.load(std::memory_order_relaxed)) return;
+      const float* q = queries.data() + i * dim;
+      NNResultsVector res;
+      Status st = Search(DatapointPtr<float>(nullptr, q, dim, dim), &res,
+                         k + extra, pre_reorder > 0 ? pre_reorder + extra : -1,
+                         leaves > 0 ? leaves : -1);
+      if (!st.ok()) {
+        absl::MutexLock lock(&mu);
+        if (status.ok()) status = st;
+        failed.store(true, std::memory_order_relaxed);
+        return;
+      }
+      int taken = 0, found = 0;
+      for (const auto& [idx, unused] : res) {
+        if (!given && idx == self[i]) continue;
+        if (taken++ == k) break;
+        if (ExactDistance(q, dataset.data() + idx * dim, dim, l2) <=
+            kth[i] + tolerance[i])
+          ++found;
+      }
+      hits[i] = static_cast<double>(found) / k;
+    });
+    SCANN_RETURN_IF_ERROR(status);
+    double sum = 0;
+    for (double h : hits) sum += h;
+    return sum / nq;
+  };
+
+  // The grids start from the rules' defaults: the config's, unless it was
+  // calibrated before.
+  ScannConfig rules = config_;
+  if (rules.autopilot().tree_ah().has_calibration()) {
+    rules.mutable_autopilot()->mutable_tree_ah()->clear_calibration();
+    auto defaults = Autopilot(rules, nullptr, n, stored_dimensionality());
+    if (defaults.ok()) {
+      if (defaults->has_partitioning() && rules.has_partitioning())
+        rules.mutable_partitioning()->mutable_query_spilling()->set_max_spill_centers(
+            defaults->partitioning().query_spilling().max_spill_centers());
+      if (defaults->has_exact_reordering() && rules.has_exact_reordering())
+        rules.mutable_exact_reordering()->set_approx_num_neighbors(
+            defaults->exact_reordering().approx_num_neighbors());
+    }
+  }
+  rules.set_num_neighbors(k);
+  SCANN_ASSIGN_OR_RETURN(
+      AutopilotCalibration calibration,
+      ChooseCalibratedSearchDefaults(rules, n, stored_dimensionality(),
+                                     target_recall, recall));
+  calibration.set_num_neighbors(std::max(1, config_.num_neighbors()));
+  calibration.set_query_source(given ? AutopilotCalibration::GIVEN
+                                     : AutopilotCalibration::DATAPOINTS);
+  calibration.set_num_queries(nq);
+  VLOG(1) << "Calibrated search defaults: " << calibration.DebugString();
+
+  // Recorded in both configs (the searcher's is the one RefreshConfig()
+  // reads; with l2_as_dot_product they differ only elsewhere), and in
+  // effect for this searcher from now on.
+  auto record = [&](ScannConfig* c) {
+    AutopilotTreeAH* tree_ah = c->mutable_autopilot()->mutable_tree_ah();
+    tree_ah->set_target_recall(target_recall);
+    *tree_ah->mutable_calibration() = calibration;
+    ApplyAutopilotCalibration(calibration, c);
+  };
+  if (scann_->config().has_value()) {
+    ScannConfig searcher_config = *scann_->config();
+    record(&searcher_config);
+    scann_->set_config(std::move(searcher_config));
+  }
+  record(&config_);
+  calibrated_leaves_ = calibration.leaves_to_search();
+  calibrated_pre_reorder_ = calibration.pre_reordering_num_neighbors();
+  return calibration;
 }
 
 StatusOr<ScannAssets> ScannInterface::Serialize(std::string path,

@@ -33,6 +33,10 @@ PYBIND11_MODULE(scann_pybind, py_module, pybind11::mod_gil_not_used()) {
       .def(pybind11::init<const std::string&, const std::string&>())
       .def(pybind11::init<const research_scann::np_row_major_arr<float>&,
                           const std::string&, int>())
+      // scann-core: with calibration queries (autopilot's target_recall).
+      .def(pybind11::init<const research_scann::np_row_major_arr<float>&,
+                          const std::string&, int,
+                          const research_scann::np_row_major_arr<float>&>())
       .def("search", &research_scann::ScannNumpy::Search)
       .def("search_batched", &research_scann::ScannNumpy::SearchBatched)
 

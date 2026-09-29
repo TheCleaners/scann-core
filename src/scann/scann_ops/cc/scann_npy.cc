@@ -77,7 +77,13 @@ ScannNumpy::ScannNumpy(const std::string& artifacts_dir,
 }
 
 ScannNumpy::ScannNumpy(const np_row_major_arr<float>& np_dataset,
-                       absl::string_view config, int training_threads) {
+                       absl::string_view config, int training_threads)
+    : ScannNumpy(np_dataset, config, training_threads,
+                 np_row_major_arr<float>(std::vector<pybind11::ssize_t>{0, 0})) {}
+
+ScannNumpy::ScannNumpy(const np_row_major_arr<float>& np_dataset,
+                       absl::string_view config, int training_threads,
+                       const np_row_major_arr<float>& calibration_queries) {
   if (np_dataset.ndim() != 2)
     throw std::invalid_argument("Dataset input must be two-dimensional");
   // scann-core: datapoint indices are 32-bit. Upstream passed the row count
@@ -88,10 +94,21 @@ ScannNumpy::ScannNumpy(const np_row_major_arr<float>& np_dataset,
         "Dataset has ", np_dataset.shape()[0], " rows; ScaNN supports at most ",
         kMaxDatapoints, " (datapoint indices are 32-bit)"));
   ConstSpan<float> dataset(np_dataset.data(), np_dataset.size());
+  // scann-core: calibration queries (an empty array: none).
+  ConstSpan<float> queries;
+  if (calibration_queries.size() > 0) {
+    if (calibration_queries.ndim() != 2 ||
+        calibration_queries.shape()[1] != np_dataset.shape()[1])
+      throw std::invalid_argument(absl::StrCat(
+          "Calibration queries must be a two-dimensional array with the "
+          "dataset's ", np_dataset.shape()[1], " columns"));
+    queries = ConstSpan<float>(calibration_queries.data(),
+                               calibration_queries.size());
+  }
   pybind11::gil_scoped_release gil_release;
   RuntimeErrorIfNotOk("Error initializing searcher: ",
                       scann_.Initialize(dataset, np_dataset.shape()[0], config,
-                                        training_threads));
+                                        training_threads, queries));
 }
 
 vector<DatapointIndex> ScannNumpy::Upsert(

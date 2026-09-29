@@ -43,6 +43,7 @@
 #include "scann/base/single_machine_factory_options.h"
 #include "scann/base/single_machine_factory_scann.h"
 #include "scann/data_format/dataset.h"
+#include "scann/proto/auto_tuning.pb.h"
 #include "scann/scann_ops/scann_assets.pb.h"
 #include "scann/utils/common.h"
 #include "scann/utils/threads.h"
@@ -84,7 +85,32 @@ class ScannInterface {
                     ConstSpan<float> dp_norms, DatapointIndex n_points);
   Status Initialize(ConstSpan<float> dataset, DatapointIndex n_points,
                     absl::string_view config, int training_threads);
+  // scann-core: with an autopilot config whose AutopilotTreeAH has a
+  // target_recall, the index built is then calibrated to it
+  // (CalibrateSearchDefaults, on `calibration_queries` if given, row-major
+  // with the dataset's dimensionality, else on sampled datapoints).
+  Status Initialize(ConstSpan<float> dataset, DatapointIndex n_points,
+                    absl::string_view config, int training_threads,
+                    ConstSpan<float> calibration_queries);
   Status Initialize(ScannArtifacts artifacts);
+
+  // scann-core: calibrates an autopilot index's default leaves_to_search
+  // and pre-reordering count to reach `target_recall` (recall@num_neighbors,
+  // in (0, 1]) on sample queries, as cheaply as possible (see
+  // ChooseCalibratedSearchDefaults), and records the choice and the target
+  // in the config's autopilot (AutopilotTreeAH.calibration), so that
+  // Serialize(), reloading and RetrainAndReindex() keep them. `dataset` is
+  // the index's datapoints, in index order, as given (n_points() rows of
+  // dimensionality() values). The sample queries are `queries` (row-major),
+  // or else AutopilotTreeAH.calibration_sample_size datapoints (1000 by
+  // default) chosen with a fixed seed, each query's own datapoint left out
+  // of its neighbors. Recall is measured against brute force over
+  // `dataset`, with ties at the k-th distance counted as hits. Initialize()
+  // calls this for a target_recall config; call it to recalibrate, e.g.
+  // after many updates. Not concurrently with searches or updates.
+  StatusOr<AutopilotCalibration> CalibrateSearchDefaults(
+      ConstSpan<float> dataset, double target_recall,
+      ConstSpan<float> queries = {});
 
   StatusOr<typename SingleMachineSearcherBase<float>::Mutator*> GetMutator()
       const {
@@ -236,6 +262,8 @@ class ScannInterface {
   vector<SearchParameters> GetSearchParametersBatched(
       int batch_size, int final_nn, int pre_reorder_nn, int leaves,
       bool set_unspecified) const;
+  // scann-core: see GetSearchParameters.
+  int DefaultPreReorder(int final_nn) const;
   // scann-core: SearchBatched on a view.
   Status SearchBatchedView(const DefaultDenseDatasetView<float>& queries,
                            MutableSpan<NNResultsVector> res, int final_nn,
@@ -262,6 +290,11 @@ class ScannInterface {
   // The training_threads the index was built with (0: the default), which
   // RetrainAndReindex also uses; the query pool's size when 0.
   int training_threads_ = 0;
+  // scann-core: the calibrated search defaults (CalibrateSearchDefaults) in
+  // effect for this searcher, whose own defaults are the ones it was built
+  // with; 0: none. A reloaded or retrained searcher is built with them.
+  int calibrated_leaves_ = 0;
+  int calibrated_pre_reorder_ = 0;
   mutable absl::Mutex pool_mu_;
   mutable std::shared_ptr<ThreadPool> parallel_query_pool_
       ABSL_GUARDED_BY(pool_mu_);

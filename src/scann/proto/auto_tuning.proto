@@ -76,6 +76,52 @@ message AutopilotTreeAH {
   // rules choose when the data suits it. false keeps it a plain squared L2
   // index.
   optional bool allow_l2_as_dot_product = 902 [default = true];
+
+  // scann-core: an opt-in recall target, in (0, 1]. When an index is built
+  // from data (ScannInterface::Initialize), its default leaves_to_search and
+  // pre-reordering count are calibrated to reach this recall@num_neighbors,
+  // measured against brute force on sample queries, and recorded in
+  // `calibration`. The index structure is the rules' as without it. Unset:
+  // the rules' defaults.
+  optional double target_recall = 903;
+
+  // scann-core: with target_recall and no sample queries given, how many
+  // datapoints the calibration uses as queries (0: the default, 1000).
+  optional int32 calibration_sample_size = 904;
+
+  // scann-core: the calibrated search defaults (see target_recall), filled
+  // in when the index is built. Autopilot() applies them, so a reloaded or
+  // retrained index keeps them.
+  optional AutopilotCalibration calibration = 905;
+}
+
+// scann-core: the outcome of calibrating an index's search defaults to
+// AutopilotTreeAH.target_recall.
+message AutopilotCalibration {
+  // What was asked: the target and the number of neighbors it applies to.
+  optional double target_recall = 1;
+  optional int32 num_neighbors = 2;
+
+  // The chosen defaults: partitioning.query_spilling.max_spill_centers and
+  // exact_reordering.approx_num_neighbors. Unset where the index has no
+  // tree or no reordering.
+  optional int32 leaves_to_search = 3;
+  optional int32 pre_reordering_num_neighbors = 4;
+
+  // The recall the sample queries got at the chosen defaults, and whether
+  // it reached the target (if no setting did, the one with the highest
+  // recall was chosen).
+  optional double sample_recall = 5;
+  optional bool target_met = 6;
+
+  // The sample queries: how many, and whether they were datapoints (each
+  // query's own datapoint is left out of its neighbors) or given.
+  enum QuerySource {
+    DATAPOINTS = 0;
+    GIVEN = 1;
+  }
+  optional QuerySource query_source = 7;
+  optional int32 num_queries = 8;
 }
 
 message AutopilotConfig {
