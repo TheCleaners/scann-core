@@ -23,6 +23,7 @@
 // with repeated candidates. Under the sanitizers it also covers
 // the prefetcher's reads of the candidate list.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -229,13 +230,38 @@ void TestDims(size_t dims, std::mt19937* rng) {
         (void)int8_cosine.ComputeDistancesForReordering(query, &got);
         Expect(got, want, absl::StrCat(where, " int8 cosine"));
 
-        const float query_norm = research_scann::SquaredL2Norm(query);
-        want = dot_ref;
+        // Squared L2 adds |q|^2, which the helper computes itself with the
+        // inline SquaredL2Norm(). clang may contract its x * x + acc into an
+        // FMA at some call sites and not at others (llvm.fmuladd leaves the
+        // choice to each inlined copy; with clang 22 on aarch64 the helper's
+        // copy doesn't fuse in its unrolled loop, the test's does), so
+        // recomputing |q|^2 here can differ from the helper's in the last
+        // bit, prefetching or not. This query has an |q|^2 that is exact in
+        // float whatever the fusion and summation order: multiples of 1/8 in
+        // [-4, 4], whose squares (multiples of 1/64, at most 16) sum exactly
+        // for up to 2^24 / (16 * 64) = 16384 dimensions.
+        std::vector<float> exact_norm_values(query.values(),
+                                             query.values() + dims);
+        for (float& v : exact_norm_values) {
+          v = std::clamp(std::round(v * 8.0f) / 8.0f, -4.0f, 4.0f);
+        }
+        const DatapointPtr<float> sql2_query =
+            MakeDatapointPtr(exact_norm_values.data(), dims);
+        auto sql2_preprocessed =
+            research_scann::PrepareForAsymmetricScalarQuantizedDotProduct(
+                sql2_query, inverse_multipliers);
+        NNResultsVector sql2_dot_ref = candidates;
+        research_scann::DenseDotProductDistanceOneToManyInt8Float(
+            MakeDatapointPtr(sql2_preprocessed.get(), dims),
+            DefaultDenseDatasetView<int8_t>(*int8_dataset),
+            MakeMutableSpan(sql2_dot_ref));
+        const float query_norm = research_scann::SquaredL2Norm(sql2_query);
+        want = sql2_dot_ref;
         for (auto& w : want) {
           w.second = query_norm + (*squared_norms)[w.first] + 2.0f * w.second;
         }
         got = candidates;
-        (void)int8_sql2.ComputeDistancesForReordering(query, &got);
+        (void)int8_sql2.ComputeDistancesForReordering(sql2_query, &got);
         Expect(got, want, absl::StrCat(where, " int8 sql2"));
       }
     }
