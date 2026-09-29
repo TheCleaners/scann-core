@@ -70,6 +70,13 @@ pub(crate) mod ffi {
     // so "unset" is NaN for floating-point fields, a negative value for
     // integer fields, and a separate flag for booleans. lib.rs converts
     // from the public Option-based structs.
+    struct FfiAutopilotOptions {
+        mode: IncrementalMode,
+        quantize: Quantization,
+        upstream_rules: bool,
+        allow_l2_as_dot_product: bool,
+    }
+
     struct FfiTreeOptions {
         num_leaves: i32,
         num_leaves_to_search: i32,
@@ -192,11 +199,7 @@ pub(crate) mod ffi {
         fn config_builder_reorder(b: Pin<&mut ConfigBuilder>, o: &FfiReorderOptions);
         fn config_builder_pca(b: Pin<&mut ConfigBuilder>, o: &FfiPcaOptions);
         fn config_builder_truncate(b: Pin<&mut ConfigBuilder>, reduction_dim: i32);
-        fn config_builder_autopilot(
-            b: Pin<&mut ConfigBuilder>,
-            mode: IncrementalMode,
-            quantize: Quantization,
-        );
+        fn config_builder_autopilot(b: Pin<&mut ConfigBuilder>, o: &FfiAutopilotOptions);
         /// NaN = unset.
         fn config_builder_l2_as_dot_product(b: Pin<&mut ConfigBuilder>, scale: f64, center: f64);
         fn config_builder_build(b: &ConfigBuilder, num_points: u64) -> Result<String>;

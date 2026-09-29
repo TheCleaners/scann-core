@@ -136,7 +136,14 @@ void Apply(ConfigBuilder& b, const std::string& method, const Args& a) {
       m = a.at("mode") == "ONLINE" ? IncrementalMode::kOnline
           : a.at("mode") == "ONLINE_INCREMENTAL" ? IncrementalMode::kOnlineIncremental
                                                  : IncrementalMode::kNone;
-    b.Autopilot(m, has("quantize") ? Q(a.at("quantize")) : Quantization::kFloat32);
+    scann_core::AutopilotOptions o;
+    o.mode = m;
+    if (has("quantize")) o.quantize = Q(a.at("quantize"));
+    if (has("rules") && a.at("rules") == "upstream")
+      o.rules = scann_core::AutopilotRules::kUpstream;
+    if (has("allow_l2_as_dot_product"))
+      o.allow_l2_as_dot_product = a.at("allow_l2_as_dot_product") == "true";
+    b.Autopilot(o);
   } else {
     Fail("unknown method " + method);
   }

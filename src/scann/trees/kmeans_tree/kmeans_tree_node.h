@@ -337,7 +337,14 @@ Status KMeansTreeNode::ApplyAvq(
 
   double rescale_numerator = 0, rescale_denominator = 0;
   absl::Mutex rescaling_mutex;
-  SCANN_ASSIGN_OR_RETURN(auto mutator, new_centers.GetMutator());
+  // scann-core: a mutator of its own, not the one new_centers caches.
+  // Upstream's (GetMutator()) moved into float_centers_ with it below, still
+  // pointing at this function's new_centers: incremental training's
+  // centroid updates then wrote through it after the function returned
+  // (upserts into an AVQ tree with incremental training failed with a
+  // garbage dimensionality, or corrupted memory).
+  SCANN_ASSIGN_OR_RETURN(auto mutator,
+                         DenseDataset<float>::Mutator::Create(&new_centers));
   Status status = ParallelForWithStatus<1>(
       Seq(children_.size()), pool_or_null, [&](size_t child_idx) -> Status {
         auto& child = children_[child_idx];

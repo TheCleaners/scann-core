@@ -127,6 +127,10 @@ CASES = {
     "l2mips_bf": ("squared_l2", [
         ("score_brute_force", {}), ("l2_as_dot_product", {"scale": 2.0})]),
     "autopilot_default": ("dot_product", [("autopilot", {})]),
+    "autopilot_upstream": ("dot_product", [("autopilot", {"rules": "upstream"})]),
+    "autopilot_l2_no_mips_bf16": ("squared_l2", [
+        ("autopilot", {"quantize": RT.BFLOAT16,
+                       "allow_l2_as_dot_product": False})]),
     "autopilot_online_int8": ("squared_l2", [
         ("autopilot", {"mode": scann.scann_ops.py.scann_builder.IncrementalMode.ONLINE,
                        "quantize": RT.INT8})]),

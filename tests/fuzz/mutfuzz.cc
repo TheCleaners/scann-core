@@ -116,6 +116,7 @@ int main(int argc, char** argv) {
   t.min_partition_size = 5;
   if (cfg.find("incr") != std::string::npos) t.incremental_threshold_fraction = 0.2;
   if (cfg.find("soar") != std::string::npos) t.soar_lambda = 1.5;
+  if (cfg.find("avq") != std::string::npos) t.avq = 2.5;
   if (cfg.find("sph") != std::string::npos) t.spherical = true;
   if (cfg.find("qc") != std::string::npos) t.quantize_centroids = true;
   if (cfg.find("tree") != std::string::npos) b.Tree(t);

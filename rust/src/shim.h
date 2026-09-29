@@ -30,6 +30,7 @@ struct FfiUpperTreeOptions;
 struct FfiAhOptions;
 struct FfiReorderOptions;
 struct FfiPcaOptions;
+struct FfiAutopilotOptions;
 enum class DistanceMeasure : uint8_t;
 enum class Quantization : uint8_t;
 enum class IncrementalMode : uint8_t;
@@ -79,8 +80,7 @@ void config_builder_score_brute_force(ConfigBuilder& b, Quantization quantize);
 void config_builder_reorder(ConfigBuilder& b, const FfiReorderOptions& o);
 void config_builder_pca(ConfigBuilder& b, const FfiPcaOptions& o);
 void config_builder_truncate(ConfigBuilder& b, int32_t reduction_dim);
-void config_builder_autopilot(ConfigBuilder& b, IncrementalMode mode,
-                              Quantization quantize);
+void config_builder_autopilot(ConfigBuilder& b, const FfiAutopilotOptions& o);
 void config_builder_l2_as_dot_product(ConfigBuilder& b, double scale,
                                       double center);
 rust::String config_builder_build(const ConfigBuilder& b, uint64_t num_points);

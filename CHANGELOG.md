@@ -101,6 +101,36 @@ All notable changes to scann-core. Versions follow
   9.1 → 8.4 µs, SIFT-128 (`l2_as_dot_product`) 8.2 → 7.7 µs.
 
 ### Changed
+- `autopilot()` chooses the configuration with scann-core's tuned rules
+  (`rules="tuned"`, the new default; C++ `AutopilotRules::kTuned`, Rust
+  `AutopilotRules::Tuned`; `autopilot { tree_ah { rules: TUNED_V1 } }` in
+  the config) instead of upstream ScaNN's. They keep upstream's
+  brute-force cutoff, candidate count and reordering precision, and change
+  the index: at most about √n leaves, with `leaves_to_search` scaled to
+  them; for dot product, tree AVQ 2.5, 2 dimensions per AH block up to 384
+  dimensions and about 192 blocks above, and an anisotropic threshold of
+  0.2 × the norms' 5th percentile up to 128 dimensions, falling as
+  d^-0.75 above (upstream: 0.2 whatever the dimension and norm); rounded
+  AH lookup tables; and squared L2 through `l2_as_dot_product` when the
+  squared norms vary by at most 5% and the data isn't far from the origin.
+  On eight datasets (GloVe-100, SIFT-128, arxiv-nomic-768 and
+  imagenet-clip-512 at k=100, 100k subsamples of GloVe and SIFT, and two
+  synthetic sets), against upstream's rules: recall at the default search
+  settings the same or higher (GloVe-100 0.961 → 0.971); QPS at equal
+  recall 1.15–1.28× on SIFT, 1.2–1.9× at 512–768 dimensions (builds
+  4.6–4.9× faster there), 1.0–1.9× elsewhere; QPS at the default settings
+  0.89–1.39×. Previews (`create_config()`, `ConfigBuilder::Build(n)`)
+  assume unit norms and plain squared L2, since the rules measure the data
+  when the index is built; the searcher's config records the threshold.
+  Indexes built with autopilot by upstream ScaNN or scann-core 0.2.0 keep
+  upstream's rules when loaded, retrained or updated, and
+  `autopilot(rules="upstream")` builds exactly the previous configs. See
+  [docs/tuning.md](docs/tuning.md#defaults-and-autopilot).
+- The tuning guide no longer recommends bfloat16 reordering unconditionally:
+  on the same index at autopilot's default settings it cost 0.0019
+  recall@100 on imagenet-clip-512 and 0.0009–0.0044 exact-id recall on
+  three more datasets (none on GloVe-100, SIFT-128 or arxiv-768). The
+  builders' defaults (float32) are unchanged.
 - The x86 builds use `-mpopcnt` by default (`SCANN_ARCH_FLAGS`), and the
   AVX2/AVX-512 kernels' target attributes include POPCNT (every AVX CPU has
   it; GCC compiled `popcount` to a bit-twiddling sequence without it; with
@@ -155,6 +185,12 @@ All notable changes to scann-core. Versions follow
   of through `tf.numpy_function`.
 
 ### Added
+- `autopilot(rules=..., allow_l2_as_dot_product=...)` (Python); C++
+  `ConfigBuilder::Autopilot(AutopilotOptions)` with `AutopilotRules`; Rust
+  `ConfigBuilder::autopilot_with(AutopilotOptions)` with `AutopilotRules`;
+  config fields `AutopilotTreeAH.rules`, `noise_shaping_threshold` and
+  `allow_l2_as_dot_product`. Tests: `autopilot` (C++), `python_autopilot`,
+  the Rust `autopilot_rules`, and mutation-fuzzer configs with tree AVQ.
 - Squared L2 search through an inner-product index, the exact L2 → MIPS
   reduction: `builder(db, k, "squared_l2").....l2_as_dot_product()`
   (C++ `ConfigBuilder::L2AsDotProduct()`, Rust
@@ -177,7 +213,7 @@ All notable changes to scann-core. Versions follow
   C++ callers that mutate through `GetMutator()` convert vectors with the
   new `ScannInterface::ToStoredDatapoints()`.
 - A mutation fuzzer (`tests/fuzz/mutfuzz.cc`): random adds, updates,
-  deletes, retrains and save/reload on 43 index configs, checked against a
+  deletes, retrains and save/reload on 46 index configs, checked against a
   shadow copy with exhaustive searches that must repeat bit for bit, with
   optional injected leaf failures. Every config runs as a ctest (label
   `mutfuzz`, about 1 s in all; also in the CI sanitizer job), and
@@ -270,6 +306,12 @@ All notable changes to scann-core. Versions follow
   data, not every dimension.
 
 ### Fixed
+- A tree with AVQ (`tree(avq=...)`) and incremental training
+  (`incremental_threshold`, or autopilot's `ONLINE` modes) failed on the
+  first upsert with "Dimensionality mismatch (d vs. <garbage>)": upstream's
+  `KMeansTreeNode::ApplyAvq` left the tree's centres with a cached mutator
+  of a destroyed dataset, which incremental training then wrote through
+  (undefined behavior). The centres now get a mutator of their own.
 - The wheels no longer contain Eigen's headers: 0.2.0's installed 681
   files under `include/eigen3` into site-packages (from Eigen's install
   rules). The wheel now installs only the `scann` package.

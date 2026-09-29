@@ -122,6 +122,26 @@ struct PcaOptions {
   double pca_truncation_threshold = 0.6;
 };
 
+// Python: ScannBuilder.autopilot(rules=...).
+enum class AutopilotRules {
+  // scann-core's rules, from its tuning study (docs/tuning.md, "Defaults and
+  // autopilot"): AutopilotTreeAH.rules = TUNED_V1.
+  kTuned,
+  // Upstream ScaNN's rules, as scann-core 0.2.0 used.
+  kUpstream,
+};
+
+// Python: ScannBuilder.autopilot().
+struct AutopilotOptions {
+  IncrementalMode mode = IncrementalMode::kNone;
+  // The reordering data's precision (Python's default, float32, as before).
+  Quantization quantize = Quantization::kFloat32;
+  AutopilotRules rules = AutopilotRules::kTuned;
+  // kTuned with kSquaredL2: whether the index may be built as
+  // L2AsDotProduct(), which the rules choose when the data suits it.
+  bool allow_l2_as_dot_product = true;
+};
+
 // scann-core (the Python builder has it too): ScannBuilder.l2_as_dot_product().
 // The exact L2 -> inner-product reduction for a kSquaredL2 builder: the
 // index stores [x, (center - |x|^2) / (2 scale)] and searches [q, scale] by
@@ -150,12 +170,17 @@ class ConfigBuilder {
   ConfigBuilder& Reorder(const ReorderOptions& options);
   ConfigBuilder& Pca(const PcaOptions& options);
   ConfigBuilder& Truncate(int32_t reduction_dim);
-  ConfigBuilder& Autopilot(IncrementalMode mode = IncrementalMode::kNone,
+  ConfigBuilder& Autopilot(const AutopilotOptions& options = {});
+  ConfigBuilder& Autopilot(IncrementalMode mode,
                            Quantization quantize = Quantization::kFloat32);
   ConfigBuilder& L2AsDotProduct(const L2AsDotProductOptions& options = {});
 
   // The config as ScaNN text format. num_points is only needed with
-  // Autopilot(), which sizes the config to the dataset.
+  // Autopilot(), which sizes the config to the dataset. Autopilot()'s
+  // tuned rules also look at the data when the index is built: without it,
+  // this config assumes unit norms (for the anisotropic threshold), and a
+  // squared L2 one leaves out the l2_as_dot_product the build may choose.
+  // The searcher's config shows what was built.
   absl::StatusOr<std::string> BuildText(uint64_t num_points = 0) const;
   absl::StatusOr<research_scann::ScannConfig> Build(uint64_t num_points = 0) const;
 
@@ -172,7 +197,7 @@ class ConfigBuilder {
   std::optional<ReorderOptions> reorder_;
   std::optional<PcaOptions> pca_;
   std::optional<int32_t> truncate_;
-  std::optional<std::pair<IncrementalMode, Quantization>> autopilot_;
+  std::optional<AutopilotOptions> autopilot_;
   std::optional<L2AsDotProductOptions> l2_as_dot_product_;
   bool tree_set_ = false, upper_tree_set_ = false, ah_set_ = false,
        bf_set_ = false, reorder_set_ = false, pca_set_ = false,

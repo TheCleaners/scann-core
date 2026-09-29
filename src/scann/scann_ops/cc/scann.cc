@@ -61,6 +61,7 @@
 #include "scann/utils/io_npy.h"
 #include "scann/utils/io_oss_wrapper.h"
 #include "scann/utils/scann_config_utils.h"
+#include "scann/utils/single_machine_autopilot.h"
 #include "scann/utils/single_machine_retraining.h"
 #include "scann/utils/threads.h"
 #include "scann/utils/types.h"
@@ -1010,6 +1011,10 @@ Status ScannInterface::Initialize(ConstSpan<float> dataset,
   if (config_.input_output().pure_dynamic_config().has_dimensionality())
     n_dim = config_.input_output().pure_dynamic_config().dimensionality();
   shared_ptr<DenseDataset<float>> ds;
+  // scann-core: autopilot's tuned rules build squared L2 indexes as
+  // l2_as_dot_product when the data suits it (see
+  // AutopilotChoosesL2AsDotProduct); the config then says so.
+  ApplyAutopilotL2AsDotProduct(&config_, dataset, n_points);
   // scann-core: l2_as_dot_product stores each datapoint with its extra
   // coordinate, and fills in the unset scale and center (saved in the
   // config) from the dataset.

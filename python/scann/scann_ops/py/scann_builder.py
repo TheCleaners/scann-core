@@ -412,8 +412,26 @@ class ScannBuilder(object):
     """
 
   @_factory_decorator("autopilot")
-  def autopilot(self, mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32):
-    """Configure autopilot."""
+  def autopilot(self, mode=IncrementalMode.NONE,
+                quantize=ReorderType.FLOAT32, rules="tuned",
+                allow_l2_as_dot_product=True):
+    """Configure autopilot: the config is chosen from the data.
+
+    scann-core: `rules="tuned"` (the default) chooses the config with rules
+    from scann-core's tuning study (docs/tuning.md, "Defaults and
+    autopilot"); `rules="upstream"` with upstream ScaNN's, as scann-core
+    0.2.0 did.
+
+    Args:
+      mode: IncrementalMode: whether the index retrains as it is updated.
+      quantize: ReorderType of the reordering data. BFLOAT16 halves its
+        memory and is faster, at a small recall cost on some data (see
+        docs/tuning.md).
+      rules: "tuned" or "upstream".
+      allow_l2_as_dot_product: with the tuned rules and squared_l2, whether
+        the index may be built as l2_as_dot_product(), which they choose
+        when the data suits it.
+    """
     mode_string = {
         IncrementalMode.NONE: "NONE",
         IncrementalMode.ONLINE: "ONLINE",
@@ -424,11 +442,31 @@ class ScannBuilder(object):
         ReorderType.INT8: "INT8",
         ReorderType.BFLOAT16: "BFLOAT16",
     }
+    if rules not in ("tuned", "upstream"):
+      raise ValueError(
+          f'autopilot: rules must be "tuned" or "upstream", not {rules!r}')
+    if rules == "upstream" and not allow_l2_as_dot_product:
+      raise ValueError("autopilot: allow_l2_as_dot_product applies to "
+                       'rules="tuned" only')
+    if rules == "upstream":
+      # scann-core 0.2.0's stanza (upstream's), without the rules field.
+      return f"""
+    autopilot {{
+      tree_ah {{
+        incremental_mode: {mode_string[mode]}
+        reordering_dtype: {reorder_string[quantize]}
+      }}
+    }}
+  """
+    l2_stanza = ("" if allow_l2_as_dot_product else
+                 "allow_l2_as_dot_product: false")
     return f"""
     autopilot {{
       tree_ah {{
         incremental_mode: {mode_string[mode]}
         reordering_dtype: {reorder_string[quantize]}
+        rules: TUNED_V1
+        {l2_stanza}
       }}
     }}
   """
@@ -457,7 +495,8 @@ class ScannBuilder(object):
                          "distance measure.")
       if "autopilot" in self.params:
         raise ValueError(
-            "l2_as_dot_product() can't be combined with autopilot().")
+            "l2_as_dot_product() can't be combined with autopilot() (whose "
+            "tuned rules choose l2_as_dot_product themselves).")
       if "truncate" in self.params:
         raise ValueError(
             "truncate() can't be combined with l2_as_dot_product().")

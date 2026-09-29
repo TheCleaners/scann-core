@@ -469,6 +469,64 @@ pub enum IncrementalMode {
     OnlineIncremental,
 }
 
+/// Which rules [`ConfigBuilder::autopilot_with`] chooses the configuration
+/// with (Python: `autopilot(rules=...)`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AutopilotRules {
+    /// scann-core's rules, from its tuning study (docs/tuning.md, "Defaults
+    /// and autopilot").
+    #[default]
+    Tuned,
+    /// Upstream ScaNN's rules, as scann-core 0.2.0 used.
+    Upstream,
+}
+
+/// Options for [`ConfigBuilder::autopilot_with`] (Python: `autopilot()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutopilotOptions {
+    pub mode: IncrementalMode,
+    /// The reordering data's precision (default float32).
+    pub quantize: Quantization,
+    pub rules: AutopilotRules,
+    /// Tuned rules with [`DistanceMeasure::SquaredL2`]: whether the index may
+    /// be built as [`l2_as_dot_product`](ConfigBuilder::l2_as_dot_product),
+    /// which the rules choose when the data suits it.
+    pub allow_l2_as_dot_product: bool,
+}
+
+impl Default for AutopilotOptions {
+    fn default() -> Self {
+        AutopilotOptions {
+            mode: IncrementalMode::None,
+            quantize: Quantization::Float32,
+            rules: AutopilotRules::Tuned,
+            allow_l2_as_dot_product: true,
+        }
+    }
+}
+
+impl AutopilotOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn mode(mut self, mode: IncrementalMode) -> Self {
+        self.mode = mode;
+        self
+    }
+    pub fn quantize(mut self, quantize: Quantization) -> Self {
+        self.quantize = quantize;
+        self
+    }
+    pub fn rules(mut self, rules: AutopilotRules) -> Self {
+        self.rules = rules;
+        self
+    }
+    pub fn allow_l2_as_dot_product(mut self, allow: bool) -> Self {
+        self.allow_l2_as_dot_product = allow;
+        self
+    }
+}
+
 /// When a partition has grown enough to be retrained in place (Python's
 /// `incremental_threshold`: an int is a point count, a float a fraction).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -916,15 +974,30 @@ impl ConfigBuilder {
         self.apply(v, |b, &d| ffi::config_builder_truncate(b, d))
     }
 
-    /// Let scann-core pick the configuration for the dataset size. Can't be
-    /// combined with manual options.
+    /// Let scann-core pick the configuration for the data, with the tuned
+    /// rules and the given reordering precision:
+    /// `autopilot_with(AutopilotOptions::new().mode(mode).quantize(quantize))`.
+    /// Can't be combined with manual options.
     pub fn autopilot(self, mode: IncrementalMode, quantize: Quantization) -> Self {
-        let m = match mode {
+        self.autopilot_with(AutopilotOptions::new().mode(mode).quantize(quantize))
+    }
+
+    /// Let scann-core pick the configuration for the data (Python:
+    /// `autopilot(mode, quantize, rules, allow_l2_as_dot_product)`). Can't
+    /// be combined with manual options.
+    pub fn autopilot_with(self, o: AutopilotOptions) -> Self {
+        let m = match o.mode {
             IncrementalMode::None => ffi::IncrementalMode::None,
             IncrementalMode::Online => ffi::IncrementalMode::Online,
             IncrementalMode::OnlineIncremental => ffi::IncrementalMode::OnlineIncremental,
         };
-        self.apply(Ok((m, q(quantize))), |b, &(m, qq)| ffi::config_builder_autopilot(b, m, qq))
+        let v = ffi::FfiAutopilotOptions {
+            mode: m,
+            quantize: q(o.quantize),
+            upstream_rules: o.rules == AutopilotRules::Upstream,
+            allow_l2_as_dot_product: o.allow_l2_as_dot_product,
+        };
+        self.apply(Ok(v), ffi::config_builder_autopilot)
     }
 
     /// Squared L2 search through an inner-product index (the exact L2 ->
@@ -955,6 +1028,10 @@ impl ConfigBuilder {
 
     /// The config as ScaNN text format. `num_points` only matters with
     /// [`autopilot`](Self::autopilot), which sizes the config to the data.
+    /// Its tuned rules also look at the data when the index is built:
+    /// without it, this config assumes unit norms (for the anisotropic
+    /// threshold), and a squared L2 one leaves out the `l2_as_dot_product`
+    /// the build may choose. [`ScannIndex::config`] shows what was built.
     pub fn build(&self, num_points: u64) -> Result<String> {
         if let Some(e) = &self.error {
             return Err(e.clone());

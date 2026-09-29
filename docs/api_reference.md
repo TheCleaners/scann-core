@@ -150,14 +150,17 @@ at query time, only the `num_leaves_to_search` leaves nearest the query are
 scored, instead of the whole dataset. **Without `.tree(...)`, every query
 scores 100% of the dataset.**
 
-**When to use it** (from `docs/algorithms.md`, matches the code's own
-`autopilot` cutoffs): brute force under ~20k points, AH without a tree
-between ~20k–100k, tree + AH + reorder above ~100k.
+**When to use it** (from `docs/algorithms.md`): brute force under ~20k
+points, AH without a tree between ~20k–100k, tree + AH + reorder above
+~100k. (`autopilot()` uses brute force below a cutoff that depends on the
+dimensionality, 55,020 points at d=100, and a tree above it.)
 
 - **`num_leaves` / `num_leaves_to_search`** — `num_leaves` should generally be
   on the order of `sqrt(n)` for `n` datapoints (this is the documented rule of
-  thumb; ScaNN's own `autopilot()` uses a more elaborate cache-aware formula
-  instead — see below). `num_leaves_to_search / num_leaves` is roughly the
+  thumb; upstream's `autopilot()` rules size leaves to the L1 cache instead,
+  which at high dimension means thousands of small leaves, and the tuned
+  rules cap that at about `sqrt(n)`; see below).
+  `num_leaves_to_search / num_leaves` is roughly the
   fraction of the dataset scanned per query, so it's your main recall/latency
   knob; tune it against a recall target rather than a fixed formula. Around
   a million points, 1000–1500 leaves did best in single-query tests; see
@@ -352,26 +355,58 @@ k=10 and 2–10× k at k=100, rising with the recall target). Same
 `True`/`False` backward-compatibility shim on `quantize` as
 `.score_brute_force()`.
 
-For `quantize`, `BFLOAT16` is the measured recommendation: recall within
-0.0001 of `FLOAT32` on the same index, half the memory, and faster single
-queries. `INT8`
-lost 0.006–0.009 recall on GloVe and 0.046 on SIFT (euclidean). See
+For `quantize`, `BFLOAT16` halves the reordering data and makes single
+queries faster (+1–7% at k=10, +12–26% at k=100 on 768-d). Its recall
+cost depends on the data: none on GloVe-100, SIFT-128 and 768-d arxiv
+embeddings (within 0.0001), but 0.0019 at k=100 on imagenet-clip-512 and
+0.001–0.004 under exact-id recall on three more datasets, so check it on
+your data (the default stays `FLOAT32`). `INT8` lost 0.006–0.009 recall on
+GloVe and 0.046 on SIFT (euclidean). See
 [tuning.md](tuning.md#reordering-how-many-candidates-and-at-what-precision).
 
-## `.autopilot(mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32)`
+## `.autopilot(mode=IncrementalMode.NONE, quantize=ReorderType.FLOAT32, rules="tuned", allow_l2_as_dot_product=True)`
 
-Instead of manually tuning `.tree()`/`.score_ah()`/`.reorder()`, delegates to
-ScaNN's own autotuner, which picks parameters from dataset size and
-dimensionality using real cache-aware formulas (see
-`single_machine_autopilot.cc`) — e.g. leaf size is sized to fit L1 cache
-during AH scoring, `num_leaves_to_search` grows sub-linearly (roughly a
-log-scaled curve) as `num_leaves` grows, and below a size threshold it falls
-back to pure brute force automatically (the code-level version of the "under
-20k points, use brute force" rule of thumb). **As noted above, this discards
-any other builder configuration you've set** — don't combine it with manual
-`.tree()`/`.score_ah()`/`.reorder()` calls. `mode` controls whether the
-resulting config supports incremental updates (`NONE` / `ONLINE` /
-`ONLINE_INCREMENTAL`); see `upsert`/`delete` below for what that enables.
+Instead of manually tuning `.tree()`/`.score_ah()`/`.reorder()`, lets the
+searcher pick the whole configuration from the dataset's size,
+dimensionality and (with the tuned rules) norms: brute force below a size
+that depends on the dimensionality (55,020 points at d=100, 8,400 from
+d≈656), otherwise a tree with AH and reordering, with default search
+settings (`leaves_to_search`, `pre_reorder_num_neighbors`) that can be
+overridden per search. **As noted above, this discards any other builder
+configuration you've set** — don't combine it with manual
+`.tree()`/`.score_ah()`/`.reorder()` calls.
+
+- **`rules`** (scann-core): `"tuned"` (the default since 0.2.1) or
+  `"upstream"`. The tuned rules come from scann-core's tuning study and
+  were checked on eight datasets; `"upstream"` gives upstream ScaNN's
+  configs, value for value, as scann-core 0.2.0 did. What the tuned rules
+  change and what that measured:
+  [tuning.md](tuning.md#defaults-and-autopilot). In short, they keep
+  upstream's brute-force cutoff and candidate count, and use at most about
+  √n leaves (upstream: thousands of tiny leaves at high dimension), tree
+  AVQ, a block size and an anisotropic threshold scaled to the
+  dimensionality and norms (upstream's 0.2 capped recall at 768
+  dimensions), and squared L2 through `l2_as_dot_product` for data with
+  nearly constant norms. A saved index keeps the rules it was built with:
+  indexes from upstream ScaNN and scann-core 0.2.0 reload, retrain and
+  update with upstream's.
+- **`quantize`**: the reordering data's precision (`FLOAT32` by default,
+  as before). `BFLOAT16` halves the index and is faster, but can cost a
+  little recall; see [Rescoring](#rescoring-reorder).
+- **`allow_l2_as_dot_product`**: with the tuned rules and `"squared_l2"`,
+  `False` keeps the index a plain squared L2 one.
+- **`mode`** controls whether the resulting config supports incremental
+  updates (`NONE` / `ONLINE` / `ONLINE_INCREMENTAL`); see `upsert`/`delete`
+  below for what that enables.
+
+`create_config()` shows the configuration without building, but the tuned
+rules measure the data only when the index is built: the preview assumes
+unit norms for the anisotropic threshold, and a `"squared_l2"` preview
+doesn't show the `l2_as_dot_product` the build may choose. The searcher's
+`config()` shows what was built, including the threshold measured
+(`autopilot { tree_ah { noise_shaping_threshold: ... } }`). C++:
+`ConfigBuilder::Autopilot(AutopilotOptions)`; Rust:
+`ConfigBuilder::autopilot_with(AutopilotOptions)`.
 
 ## `.l2_as_dot_product(scale=None, center=None)` (scann-core)
 
@@ -398,7 +433,9 @@ included: 129 dimensions are 43 blocks of 3).
   the dataset's mean `|x|²`. Pass it (and `scale`) to reproduce an index
   built with the manual recipe.
 - Not combinable with `tree(spherical=True)`, `truncate()` or
-  `autopilot()`; an empty dataset needs an explicit `scale`.
+  `autopilot()` (whose tuned rules use `l2_as_dot_product` themselves for
+  data with nearly constant norms); an empty dataset needs an explicit
+  `scale`.
 - A saved index records the reduction in `scann_config.pb`, with a
   `distance_measure` that loaders without it (upstream ScaNN, scann-core
   0.2.0) reject at load time.
@@ -627,6 +664,7 @@ distances.
 | `ValueError: AVQ only applies to dot product distance (or squared_l2 with l2_as_dot_product()).` | `.tree(avq=...)` used with `distance_measure="squared_l2"`. |
 | `ValueError: SOAR requires dot product distance (or squared_l2 with l2_as_dot_product()).` | `.tree(soar_lambda=...)` used with `distance_measure="squared_l2"`. (With `.l2_as_dot_product()`, both are allowed.) |
 | `ValueError: l2_as_dot_product() requires the squared_l2 distance measure.` / `... can't be combined with ...` | `.l2_as_dot_product()` on a `"dot_product"` builder, or with `tree(spherical=True)`, `truncate()` or `autopilot()`. |
+| `ValueError: autopilot: rules must be "tuned" or "upstream" ...` / `... allow_l2_as_dot_product applies to rules="tuned" only` | A bad `rules` value, or `allow_l2_as_dot_product=False` with `rules="upstream"`. |
 | `RuntimeError: ... Invalid distance_measure: 'SquaredL2Distance [l2_as_dot_product: needs scann-core >= 0.2.1]'` | Loading an index built with `.l2_as_dot_product()` with a ScaNN that doesn't have it (upstream ScaNN, scann-core 0.2.0). |
 | `RuntimeError: Failed to retrain searcher: l2_as_dot_product's scale and center can't change when retraining ...` | `rebalance(config)` with another `scale`/`center` than the index's (or, similarly, a config without `l2_as_dot_product` for an index that has it). |
 | `Exception: {key} has already been configured` | Called the same builder method (e.g. `.tree(...)`) twice. |

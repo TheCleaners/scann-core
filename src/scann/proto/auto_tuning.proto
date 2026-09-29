@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 syntax = "proto2";
 
@@ -45,6 +49,33 @@ message AutopilotTreeAH {
   optional float fraction_leaf_partitions = 8;
 
   optional int64 first_n_leaf_partitions_for_assignment = 7;
+
+  // scann-core: the rules that choose the configuration (see
+  // scann/utils/single_machine_autopilot.cc and docs/tuning.md). Unset means
+  // UPSTREAM, upstream ScaNN's rules: indexes saved without this field (by
+  // upstream ScaNN and scann-core <= 0.2.0) reload, retrain and maintain
+  // themselves with the rules they were built with. scann-core's builders
+  // set TUNED_V1 unless asked for upstream's. A later revision of the rules
+  // gets a new value, so a saved index keeps its own.
+  enum Rules {
+    UPSTREAM = 0;
+    TUNED_V1 = 1;
+  }
+  optional Rules rules = 900;
+
+  // scann-core, TUNED_V1 on dot-product indexes (DotProductDistance, or
+  // squared L2 through l2_as_dot_product): the AH anisotropic quantization
+  // threshold (hash.asymmetric_hash.noise_shaping_threshold); NaN for none.
+  // Unset: derived from the dimensionality and the datapoints' norms when
+  // the index is built, and recorded here, so that reloading, retraining and
+  // incremental maintenance keep it.
+  optional double noise_shaping_threshold = 901;
+
+  // scann-core, TUNED_V1: whether a SquaredL2Distance index may be built as
+  // l2_as_dot_product (squared L2 through an inner-product index), which the
+  // rules choose when the data suits it. false keeps it a plain squared L2
+  // index.
+  optional bool allow_l2_as_dot_product = 902 [default = true];
 }
 
 message AutopilotConfig {

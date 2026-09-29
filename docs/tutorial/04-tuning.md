@@ -210,11 +210,15 @@ than plain partitioning at recall 0.8–0.95 and slightly faster from 0.99; on
 2. Build with part 3's pipeline: `num_leaves` ≈ √n (1000–1500 around a
    million points), `score_ah(2, anisotropic_quantization_threshold=0.2)`
    for normalized data of about 100 dimensions (smaller thresholds at
-   higher dimensions), and `reorder(100)` to `reorder(200)`. Store the
-   reordering data as bfloat16
-   (`reorder(..., quantize=scann.ReorderType.BFLOAT16)`): nearly the same
-   recall, half the memory (part 5), and a few percent faster in
-   single-query tests.
+   higher dimensions), and `reorder(100)` to `reorder(200)`. Consider
+   storing the reordering data as bfloat16
+   (`reorder(..., quantize=scann.ReorderType.BFLOAT16)`): half the memory
+   (part 5) and a few percent faster in single-query tests, usually at
+   nearly the same recall, but check: on some datasets it cost 0.002–0.004
+   ([tuning.md](../tuning.md#precision-bfloat16)). Or start from
+   `.autopilot()`, whose rules come from the same study
+   ([tuning.md](../tuning.md#defaults-and-autopilot)), and sweep its
+   search settings as in step 3.
 3. Sweep `leaves_to_search`, and `pre_reorder_num_neighbors` at a few
    values, at query time. Pick the fastest setting that meets your recall
    target.

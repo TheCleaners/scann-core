@@ -81,9 +81,11 @@ reorder precision vs. index size
 bfloat16 nearly halves the index for less than 0.1 points of recall, and int8
 cuts it by two-thirds for 1.1 points. If size is the constraint, bfloat16 is the
 easy win. It also made single queries a few percent faster in the
-[tuning study](../tuning.md#precision-bfloat16), and int8 lost much more
-recall on euclidean data. Any recall loss can be won back with a few more
-`leaves_to_search`, as in part 4.
+[tuning study](../tuning.md#precision-bfloat16), where it cost up to 0.4
+points of recall on some other datasets, and int8 lost much more recall on
+euclidean data. A small recall loss can usually be won back with a few more
+`leaves_to_search`, as in part 4 (not always: on imagenet-clip-512, recall
+with bfloat16 stopped at 0.998 however many leaves were searched).
 
 ## Serving: batch size, latency and throughput
 
