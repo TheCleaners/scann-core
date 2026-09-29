@@ -139,6 +139,20 @@ target_link_libraries(scann_core_lut16_avx512_test PRIVATE scann::core)
 add_test(NAME lut16_avx512 COMMAND scann_core_lut16_avx512_test)
 set_tests_properties(lut16_avx512 PROPERTIES TIMEOUT 900)
 
+# The fast int8 centroid kernel for query tokenization (x86-64): its
+# AVX-512 VNNI, AVX2 and scalar versions agree bit for bit and stay within
+# the documented tolerance of ScaNN's float kernel; end to end, single,
+# batched and parallel searches agree, exact mode stays selectable.
+add_executable(scann_core_fast_int8_tokenization_test cpp/fast_int8_tokenization_test.cc)
+target_link_libraries(scann_core_fast_int8_tokenization_test PRIVATE scann::core)
+add_test(NAME fast_int8_tokenization COMMAND scann_core_fast_int8_tokenization_test)
+set_tests_properties(fast_int8_tokenization PROPERTIES TIMEOUT 900)
+if(SCANN_TEST_X86)
+  add_test(NAME fast_int8_tokenization_avx2 COMMAND scann_core_fast_int8_tokenization_test)
+  set_tests_properties(fast_int8_tokenization_avx2 PROPERTIES TIMEOUT 900
+    ENVIRONMENT SCANN_TEST_FORCE_AVX2=1)
+endif()
+
 # Autopilot's rules: the tuned rules' configs for given shapes, value by
 # value; upstream's unchanged; what the tuned rules derive from the data
 # (threshold, reordering precision, l2_as_dot_product) and how it is

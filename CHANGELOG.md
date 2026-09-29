@@ -89,6 +89,59 @@ All notable changes to scann-core. Versions follow
     codes and the lookup table, required 64-byte-aligned codes, and its
     top-N functions could return different neighbors from the AVX2 ones
     (threshold clamping, int16 accumulators beyond 256 blocks).
+- Leaf selection with int8 centroids (`tree(quantize_centroids=True)`) is
+  about 4× faster on x86-64, which halves a single query's fixed cost.
+  Scoring the query against every centroid was over half of that cost:
+  ScaNN converts each int8 centroid element to float. scann-core
+  quantizes the (rescaled) query to 16-bit fixed point once and scores the
+  centroids in integers, with AVX-512 VNNI (`VPDPBUSD`, 16 centroids per instruction from a blocked
+  copy of the centroids made at build and load time, about the size of the
+  int8 centroids) or, without VNNI, AVX2 (`VPMADDWD`). The leaves are then
+  picked by a new top-N (per-group minima bound the k-th score, then one
+  compressing pass) instead of `FastTopNeighbors`.
+  - Single query, C++ `Search()`, Zen 4 (Threadripper PRO 7975WX, AVX-512
+    VNNI), interleaved A/B against the previous commit, 3 rounds on one
+    CPU (round-to-round spread ≤ 1.5 %):
+
+    | index | 1 leaf, 10 candidates | recall 0.80 | recall 0.90 |
+    |---|---|---|---|
+    | GloVe-100 tuned (1500 leaves) | 8.41 → 3.80 µs (−55 %) | 20.95 → 16.31 µs (−22 %) | 46.6 → 43.3 µs (−7 %) |
+    | SIFT-128 `l2_as_dot_product` tuned (1000 leaves) | 7.54 → 3.90 µs (−48 %) | 15.88 → 12.21 µs (−23 %) | 23.1 → 19.3 µs (−16 %) |
+
+    Leaf selection alone (scoring the 1500 GloVe centroids and picking one
+    leaf): 5.4 → 1.35 µs. With the AVX2 kernel (VNNI disabled; one round)
+    the fixed cost on GloVe goes from 8.4 to 5.5 µs.
+  - Results change slightly; see Changed below.
+  - Only query-time tokenization uses it: datapoints are assigned to
+    leaves (build, upserts) with ScaNN's kernel, as before, and indexes are
+    built byte-identically (30 index kinds checked). aarch64 and float
+    centroids are unchanged. Up to 4096 dimensions; above, ScaNN's kernel
+    runs.
+
+### Changed
+- On x86-64, indexes with int8 centroids (`quantize_centroids=True`,
+  `query_tokenization_type: FIXED_POINT_INT8`) no longer choose their
+  leaves bit-identically to upstream ScaNN (see Performance above): the
+  query is rounded to 16 bits before scoring, and ties at the last leaf go
+  to the lower leaf index. The effect is at the noise level:
+  - on GloVe-100 (10,000 queries), SIFT-128 (10,000) and 200k × 768
+    arxiv embeddings (1,000), searching 1 to 120 leaves: 99.6–100 % of
+    queries search exactly the same leaves as with ScaNN's kernel (the
+    others differ in one leaf at the margin), the nearest leaf is the same
+    for every query, 99.9–100 % of result lists are identical, and
+    recall@10 is unchanged or higher by at most 0.0001;
+  - results remain deterministic: the same query gives the same result
+    every time, from `search()`, `search_batched()` and
+    `search_batched_parallel()` at any batch size or thread count, and the
+    AVX-512 VNNI and AVX2 kernels give identical results.
+  - `SCANN_EXACT_TOKENIZATION=1` in the environment (read when scann-core
+    is loaded; `--exact_int8_tokenization` for C++ programs that parse
+    absl flags; `scann_core::SetFastInt8TokenizationEnabled(false)` at run
+    time, not while searching) restores ScaNN's float kernel and top-N:
+    bit-identical to the previous release (checked on the 30 index kinds
+    of the kernel-equivalence dump, 6,888 result arrays).
+  - Indexes without int8 centroids, including every `autopilot()` config,
+    are unaffected.
 
 ## 0.2.1 (2026-09-29)
 

@@ -406,6 +406,7 @@ runs everything that needs nothing beyond the build:
 | `mutation_regressions` | a failed `rebalance()` leaves a working index; tree + bfloat16 add/update/delete; a failed update in a SOAR tree (injected leaf failure) changes nothing; every stored vector keeps finding itself; repeated SOAR searches are bit-identical; PCA/TRUNCATE trees report and maintain their quantization error (an identity TRUNCATE tree matches an unprojected one); trees without a float dataset report it as NaN once it can't be maintained |
 | `mutfuzz_*` (label `mutfuzz`) | the mutation fuzzer (`tests/fuzz/mutfuzz.cc`) for 600 steps on each of 46 configs (brute force, int8, bf16, AH, trees with PCA/truncate, upper trees, spherical, incremental, SOAR, AVQ, squared L2 through `l2_as_dot_product`), three also with injected leaf failures, five AH ones also with the AVX2 kernels forced (x86-64): random adds, updates, deletes, retrains and save/reload against a shadow copy, with exhaustive searches repeated bit for bit. [`scripts/fuzz.sh`](scripts/fuzz.sh) runs longer campaigns |
 | `lut16_avx512` | the AVX-512 LUT16 code layout: conversions from and to the canonical layout (checked against upstream's swizzle), per-datapoint writes, and resizes as the mutator does them; on AVX-512 CPUs, every LUT16 entry point of the AVX-512 kernel against the AVX2 kernel, bit for bit (distances; int16 and float top-N with restricts, predicates, int32 accumulators, clamped thresholds; 1-9 queries) |
+| `fast_int8_tokenization`, `fast_int8_tokenization_avx2` | the x86-64 fixed-point kernel for int8 centroids: its AVX-512 VNNI, AVX2 and scalar versions agree bit for bit (centroid counts 1-2000, 1-4096 dimensions, extreme and declined queries) and stay within the documented tolerance of the exact dot product and of ScaNN's float kernel; the leaf top-N against a sorted reference; end to end on four int8-centroid trees, single, batched and parallel searches agree in fast and exact mode, VNNI and AVX2 agree, exact and fast results overlap. The `_avx2` run forces the AVX2 kernels |
 | `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load. Every directory also loads from memory (`LoadArtifactsFromMemory`) with the same outcome |
 | `artifact_loading_avx2` | (x86-64 only) the same, with the AVX2 kernels forced (`SCANN_TEST_FORCE_AVX2=1`); includes searching an index whose leaves are all empty |
 | `l2_as_dot_product` | squared L2 through an inner-product index: search, batched and parallel search return the ids of a manually augmented dot-product index and exact squared L2 distances; recall against brute force; serialize and load (directory and memory) keep the reduction, and a loader without it fails on the saved distance measure; upserts (one far outside the data), updates, deletes and retraining before and after loading; an index grown from empty; config errors |
@@ -489,6 +490,16 @@ squared L2. Indexes serialized by either build load in the other.
     for that config on x86-64. On GloVe the recall matches to the fourth
     decimal place.
   * Details in [docs/benchmarks.md](docs/benchmarks.md#correctness).
+* **x86-64, int8 centroids** (`tree(quantize_centroids=True)`, which none
+  of the harness's configs or `autopilot()` use): since 0.3, queries are
+  scored against int8 centroids with a faster fixed-point kernel that
+  isn't bit-identical to ScaNN's float one (the query is rounded to 16
+  bits first; ties at the last leaf go to the lower leaf index). On
+  GloVe-100, SIFT-128 and 768-d embeddings, 99.6–100 % of queries search
+  the same leaves and recall@10 matches to ±0.0001. Set
+  **`SCANN_EXACT_TOKENIZATION=1`** (before scann-core is loaded) for
+  upstream's kernel and bit-identical leaf choices; see the
+  [changelog](CHANGELOG.md).
 
 Upstream's default `tree(random_init=True)` is **not reproducible even
 against itself**. The initial centers go into an `absl::flat_hash_set`,
