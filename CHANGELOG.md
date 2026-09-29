@@ -120,8 +120,29 @@ All notable changes to scann-core. Versions follow
   of through `tf.numpy_function`.
 
 ### Added
+- Squared L2 search through an inner-product index, the exact L2 → MIPS
+  reduction: `builder(db, k, "squared_l2").....l2_as_dot_product()`
+  (C++ `ConfigBuilder::L2AsDotProduct()`, Rust
+  `ConfigBuilder::l2_as_dot_product()`; config field
+  `l2_as_dot_product { scale center }`). The index stores
+  `[x, (center − |x|²) / (2·scale)]` and searches `[q, scale]` by dot
+  product, so euclidean data gets ScaNN's dot-product-only techniques
+  (residual and anisotropic AH, tree AVQ, SOAR, AH blocks over d + 1
+  dimensions); searches still return squared L2 distances. The searcher
+  (`ScannInterface`) applies it to the dataset, every query (single,
+  batched, parallel; Python, C++, Rust, `scann.torch`, `scann.tf` and the
+  TensorFlow and PyTorch ops), every upsert and rebalance, and saves
+  `scale` and `center` with the index; loaders without it (upstream ScaNN,
+  scann-core 0.2.0) refuse such an index at load time. Defaults: `center`
+  = the mean |x|², `scale` = 0.4 × the RMS norm. On SIFT-128 it returns the
+  same ids as the manual recipe of the tuning guide (20–55 % faster than
+  the best plain `squared_l2` configs at recall 0.9–0.995), 2–7 % faster
+  than that recipe (the query's coordinate is appended in C++); see
+  [tuning.md](docs/tuning.md#euclidean-data-the-exact-l2--inner-product-reduction).
+  C++ callers that mutate through `GetMutator()` convert vectors with the
+  new `ScannInterface::ToStoredDatapoints()`.
 - A mutation fuzzer (`tests/fuzz/mutfuzz.cc`): random adds, updates,
-  deletes, retrains and save/reload on 37 index configs, checked against a
+  deletes, retrains and save/reload on 43 index configs, checked against a
   shadow copy with exhaustive searches that must repeat bit for bit, with
   optional injected leaf failures. Every config runs as a ctest (label
   `mutfuzz`, about 1 s in all; also in the CI sanitizer job), and

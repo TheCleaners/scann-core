@@ -402,16 +402,18 @@ runs everything that needs nothing beyond the build:
 | `api_exercise`, `api_exercise_threaded` | the C++ API end to end on synthetic data, for 12 configs (brute force, AH, autopilot, tree + AH + reorder for both distances, SOAR with bfloat16 reordering): search modes agree, serialize/reload, mutation, retraining, bad input (including NaN/infinity) |
 | `api_exercise_avx2` | (x86-64 only) the same, with the AVX2 kernels forced on an AVX-512 machine (`SCANN_TEST_FORCE_AVX2=1`), so both kernel sets get tested (and sanitized) |
 | `mutation_regressions` | a failed `rebalance()` leaves a working index; tree + bfloat16 add/update/delete; a failed update in a SOAR tree (injected leaf failure) changes nothing; every stored vector keeps finding itself; repeated SOAR searches are bit-identical; PCA/TRUNCATE trees report and maintain their quantization error (an identity TRUNCATE tree matches an unprojected one); trees without a float dataset report it as NaN once it can't be maintained |
-| `mutfuzz_*` (label `mutfuzz`) | the mutation fuzzer (`tests/fuzz/mutfuzz.cc`) for 600 steps on each of 37 configs (brute force, int8, bf16, AH, trees with PCA/truncate, upper trees, spherical, incremental, SOAR), two also with injected leaf failures: random adds, updates, deletes, retrains and save/reload against a shadow copy, with exhaustive searches repeated bit for bit. [`scripts/fuzz.sh`](scripts/fuzz.sh) runs longer campaigns |
+| `mutfuzz_*` (label `mutfuzz`) | the mutation fuzzer (`tests/fuzz/mutfuzz.cc`) for 600 steps on each of 43 configs (brute force, int8, bf16, AH, trees with PCA/truncate, upper trees, spherical, incremental, SOAR, squared L2 through `l2_as_dot_product`), three also with injected leaf failures: random adds, updates, deletes, retrains and save/reload against a shadow copy, with exhaustive searches repeated bit for bit. [`scripts/fuzz.sh`](scripts/fuzz.sh) runs longer campaigns |
 | `artifact_loading` | about 60 damaged or mixed index directories, generated at run time (bad `.npy` headers, dtypes and shapes, out-of-range tokens, files from another index, SOAR mismatches, manifest errors) fail to load with an error; all-deleted and bfloat16-leaf trees round-trip; `SerializeToDirectory` replaces a previous index, and one that fails midway leaves a directory that fails to load. Every directory also loads from memory (`LoadArtifactsFromMemory`) with the same outcome |
 | `artifact_loading_avx2` | (x86-64 only) the same, with the AVX2 kernels forced (`SCANN_TEST_FORCE_AVX2=1`); includes searching an index whose leaves are all empty |
+| `l2_as_dot_product` | squared L2 through an inner-product index: search, batched and parallel search return the ids of a manually augmented dot-product index and exact squared L2 distances; recall against brute force; serialize and load (directory and memory) keep the reduction, and a loader without it fails on the saved distance measure; upserts (one far outside the data), updates, deletes and retraining before and after loading; an index grown from empty; config errors |
 | `config_regressions` | raw configs that crashed upstream (zero block sizes, LUT16 with other than 16 clusters, binary or unsupported distances, bad quantiles) are errors; tree + PCA/TRUNCATE + AH without residuals builds, searches well and reloads |
-| `config_builder` | `ConfigBuilder` against the Python builder's output for 75 option sets (the expected configs are generated from this build's Python package first) |
+| `config_builder` | `ConfigBuilder` against the Python builder's output for 84 option sets (the expected configs are generated from this build's Python package first) |
 | `python_docid_bookkeeping` | a failed `upsert`/`delete` leaves docids in sync with the index |
 | `python_input_validation` | NaN/infinity in builds, upserts and batched queries, and `leaves_to_search` on indexes without a tree, are clean errors (not crashes); a failed batch upsert changes nothing; padded results map to `None` |
 | `python_config_validation` | the same raw configs through `create_searcher`; the builder's `pca()`/`truncate()` with a squared-L2 tree builds; `incremental_threshold` with `pca()`, `truncate()` or `upper_tree()` raises `ValueError` |
 | `python_wrapper_edge_cases` | `upsert` with a repeated docid is rejected before anything changes; zero-query batches return empty `(0, k)` results; more than 2^32 - 1 rows is a clear error; spherical trees store unit vectors at build, upsert and `rebalance()`; `rebalance()` without float data fails cleanly |
 | `python_projection_mutation` | trees with PCA/TRUNCATE projections through inserts, updates, deletes and `rebalance()`: points stay findable, health stats (including the quantization error, in the projected space) match a fresh computation |
+| `python_l2_as_dot_product` | `builder(...).l2_as_dot_product()`: its config and errors; the manual recipe's ids (with and without SOAR) and exact squared L2 distances from `search`, `search_batched` and `search_batched_parallel`; `serialize()`/`load_searcher()`, upsert/delete with docids and `rebalance()`; an index grown from empty; `scann.torch` and `scann.tf` (each available backend) on such an index |
 | `python_rebalance_flow` | an index grown from empty with batched upserts, then retrained with `rebalance(config)` into a SOAR tree (the big-ann-benchmarks flow); the builder's SOAR options; a clear error for more leaves than points |
 | `python_serialization` | `serialize()`/`load_searcher()` round trips for 10 configs, also with every point deleted; re-serializing over another index leaves no stale files or docids; a re-serialize that fails or is killed (`SIGKILL`) midway leaves the old index, the new one, or a directory that fails to load, never a mix |
 | `python_concurrency` | 3 s of concurrent searches, upserts, deletes and rebalances from Python threads; every point keeps finding itself by docid. On free-threaded Python, also checks that importing scann keeps the GIL disabled |
@@ -535,6 +537,12 @@ pointing at the wrong vectors.
 * Rust batched search returns exactly the neighbours found per query. The
   Python API pads short rows with index 0 and NaN distance (docid `None`
   when the searcher has docids; upstream returned `docids[0]`).
+* `l2_as_dot_product()` (all builders; `l2_as_dot_product` in the config)
+  searches euclidean data through an inner-product index, so the
+  dot-product-only techniques apply to it; see
+  [docs/tuning.md](docs/tuning.md#euclidean-data-the-exact-l2--inner-product-reduction).
+  Indexes built with it don't load in upstream ScaNN (by design: it fails
+  on their distance measure).
 * `ConfigBuilder` (C++/Rust) returns errors where Python's builder silently
   ignores options, and keeps `upper_tree(soar_lambda=0)` (Python turns it
   into 1.5).
@@ -557,7 +565,7 @@ pointing at the wrong vectors.
   parameters, from measurements on GloVe-100, SIFT-128 and 768-dimensional
   embeddings: leaves, block size, how to scale the anisotropic threshold,
   reordering precision, SOAR, euclidean data through an exact
-  inner-product reduction, a per-query cost model, how to measure, and
+  inner-product reduction (`l2_as_dot_product()`), a per-query cost model, how to measure, and
   starting configurations with their recall and QPS.
 * [`docs/tensorflow.md`](docs/tensorflow.md): using scann-core from
   TensorFlow code (`scann.tf`) and its two backends, the Python one in the

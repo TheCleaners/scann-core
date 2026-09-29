@@ -45,7 +45,7 @@ exceptions.
 | `reorder(quantize=...)` | `BFLOAT16` | recall within 0.0001 of float32, half the memory, +1–7% QPS at k=10, +12–26% at k=100 on 768-d |
 | `reorder(n)` | 70–500 at k=10, 200–1000 at k=100 (recall 0.8–0.995) | more candidates only fill up to the ceiling `leaves_to_search` sets |
 | `tree(soar_lambda=...)` | only for high recall: 0.5 on GloVe (recall ≥ 0.99), 1.0 on 768-d (≥ 0.95) | 3–10% slower than without on GloVe at 0.8–0.95 |
-| euclidean data | build on the [L2 → MIPS augmentation](#euclidean-data-the-exact-l2--inner-product-reduction) | SIFT: +12–55% QPS over the untuned plain `squared_l2` grid at recall 0.8–0.995 |
+| euclidean data | `.l2_as_dot_product()`, the [L2 → MIPS reduction](#euclidean-data-the-exact-l2--inner-product-reduction) | SIFT: +12–55% QPS over the untuned plain `squared_l2` grid at recall 0.8–0.995 |
 | `hash_type` | `"lut16"` | `"lut256"` was 2.5–3× slower |
 
 Together these gave 9–65% more single-query QPS than the parameter grid
@@ -265,8 +265,13 @@ Notes:
   becomes zero or negative). With varying norms, keep T well below the
   smallest norms in the data.
 * With plain `squared_l2`, a threshold slightly hurt on SIFT (−0.0065
-  recall). Through the L2 → MIPS reduction it was needed: without it, recall
-  topped out at 0.96 (cause not investigated).
+  recall). Through the L2 → MIPS reduction it was needed: without it,
+  recall was 0.76 instead of 0.95 at 25 leaves / 150 candidates, and 0.92
+  at 80 / 500 (0.997 with it). It isn't a hard cap (the study saw recall
+  top out at 0.96 in its grid): with 400 leaves and 2,000 candidates it
+  reached 0.99, at a quarter of the QPS (`l2_as_dot_product()`, 2,000
+  queries; the manual recipe measured the same). Why the anisotropic loss
+  matters this much here wasn't investigated.
 * The VIBE benchmark's grid tries only "off" and 0.1–0.55, all too large at
   d=768 by the table above, which is why its best scann-core configs all
   had the threshold off.
@@ -360,22 +365,117 @@ ScaNN keeps residual AH, the anisotropic loss, tree AVQ and SOAR for
 reduction: append one coordinate to each database vector and one to each
 query, and search by dot product.
 
-With c = the mean of |x|² over the database and a scale s:
+With a constant c and a scale s:
 
 ```
 x' = [x, (c − |x|²) / (2s)]        q' = [q, s]
 q'·x' = q·x − |x|²/2 + c/2
+|q − x|² = |q|² + c − 2 q'·x'
 ```
 
 Since |q − x|² = |q|² − 2(q·x − |x|²/2), the largest q'·x' is exactly the
 smallest |q − x|², and reordering rescores the same quantity. (c only
 centres the extra coordinate; any constant would do.)
 
+`l2_as_dot_product()` (scann-core 0.2.1) does this inside the index:
+
 ```python
-import numpy as np
 import scann
 
-S = 1000.0  # the query's extra coordinate; 1,000 and 10,000 measured the same
+searcher = (
+    scann.scann_ops_pybind.builder(x, 10, "squared_l2")      # x: (n, d) float32
+    .tree(num_leaves=1000, num_leaves_to_search=25,
+          training_sample_size=len(x), quantize_centroids=True, avq=2.5)
+    .score_ah(3, anisotropic_quantization_threshold=150)     # ≈ 0.3 × |x| for SIFT; see above
+    .reorder(150, quantize=scann.ReorderType.BFLOAT16)
+    .l2_as_dot_product()
+    .build()
+)
+ids, sq_l2 = searcher.search_batched(queries)                # squared L2 distances
+```
+
+C++: `ConfigBuilder(10, DistanceMeasure::kSquaredL2, d)....L2AsDotProduct()`;
+Rust: `ConfigBuilder::new(10, DistanceMeasure::SquaredL2, d)....l2_as_dot_product(L2AsDotProductOptions::new())`.
+
+* **Everything else is configured as for `dot_product` over d + 1
+  dimensions.** `tree(avq=..., soar_lambda=...)` are allowed, AH is
+  residual by default, and the AH blocks cover d + 1 dimensions (SIFT:
+  129 = 43 blocks of 3). The top-level distance stays `squared_l2`.
+* **The index keeps c and s.** The searcher appends the extra coordinate to
+  the dataset at build time, to every query (single, batched, parallel; the
+  Python, C++, Rust, `scann.torch` and `scann.tf` APIs) and to every
+  upserted vector; `rebalance()` keeps them, and `serialize()` saves them.
+  `config()` shows them: `l2_as_dot_product { scale: … center: … }`.
+* **Results are squared L2 distances**, |q|² + c − 2 q'·x' computed in
+  double, clamped at 0; the ids are those of the manual recipe below with
+  the same c and s.
+* **Defaults:** c = the dataset's mean |x|²; s = 0.4 × its RMS norm,
+  0.4 · sqrt(mean |x|²) (SIFT: s ≈ 203). Pass `scale=` and `center=` to
+  override them (an empty dataset needs an explicit `scale`).
+* **Not with** `tree(spherical=True)` (it would normalize the stored
+  vectors, extra coordinate included), `truncate()` (it would drop the
+  extra coordinate) or `autopilot()`. The threshold applies to the stored
+  vectors x' (|x'|² = |x|² plus the extra coordinate squared; on SIFT, whose
+  norms vary little, |x'| ≈ |x|): set it from their norms
+  ([above](#the-anisotropic-threshold)).
+
+**The scale** sets how much the extra coordinate weighs in partitioning and
+quantization; it never affects exactness (reordering scores the exact
+q'·x'). On SIFT-128 (1000 leaves, 3 dims per block, threshold 150, bf16
+reordering; 2,000 queries), s = 25 to 10,000 (0.05× to 20× the RMS norm of
+508) gave the same recall within ±0.004 at every point of the grid, e.g.
+0.906–0.909 at 19 leaves / 100 candidates and 0.990–0.991 at 60 / 300. On
+synthetic data it mattered: Gaussian and clustered sets (d = 16 and 64,
+20,000 points, 2 or 3 dims per block, threshold 0.3 × RMS norm, 8 of 40
+leaves, 100 candidates), recall@10 was best at 0.25–0.5 × the RMS norm,
+up to 0.28 lower at 0.125×, and mostly lower above 1×, most with 3 dims per
+block (d = 64: 0.52 at 0.25×, 0.34 at 2×, 0.19 at 16×; d = 16: 0.65 at
+0.5×, 0.32 at 16×). The default 0.4× sits in the best range, and scales
+with the data.
+
+**Numerics.** The extra coordinate is computed in double
+((c − |x|²) / (2s), with |x|² around 2.6·10⁵ on SIFT) and stored as
+float32; its rounding moves q'·x' by about 10⁻⁷ × |c − |x|²|, below the
+float32 dot product's own error. The distance |q|² + c − 2 q'·x' cancels
+large terms, so its error is relative to |q|² + |x|² rather than to the
+distance itself. Measured on SIFT (1,000 queries, 10 results each, typical
+distance 4.8·10⁴): with float32 reordering at most 0.016 (3·10⁻⁸ of
+|q|² + |x|²); with bfloat16 reordering at most 6.3, median 0.55
+(1.2·10⁻⁵ of |q|² + |x|²; SIFT's integer coordinates are exact in
+bfloat16, only the extra coordinate and the products round). On data whose
+coordinates don't fit bfloat16 exactly it is larger: the mutation fuzzer's
+8-dimensional Gaussian data needed a tolerance of 10⁻² × (|q|² + |x|²),
+where plain `squared_l2` with bfloat16 needs one relative to the distance.
+Recall is unaffected,
+but with bfloat16 or int8 reordering distances near 0 (duplicates) aren't
+exact. Distances are clamped at 0.
+
+**Points outside the build data.** An upserted point with |x|² > c just
+gets a negative extra coordinate; results stay exact. But the coordinate
+grows with |x|², so a point whose norm is far outside the data is quantized
+coarsely (AH finds it only with many candidates), and retraining
+(`rebalance()`) on such outliers degrades the quantization of every point —
+as with plain `squared_l2`, where one point at 20× the typical norm took
+recall from 0.99 to 0.09 after a rebalance on synthetic data.
+
+**Saved indexes.** `scann_config.pb` holds `l2_as_dot_product` and the
+distance measure `"SquaredL2Distance [l2_as_dot_product: needs scann-core
+>= 0.2.1]"`, which loaders that don't know the reduction (upstream ScaNN,
+scann-core 0.2.0) reject when they load the index ("Invalid
+distance_measure"), rather than serving the stored d + 1-dimensional
+vectors as a dot-product index. In C++, load such an index with
+`ScannInterface` (`LoadArtifacts` or `LoadArtifactsFromMemory`, then
+`Initialize`); `CreateSearcher()` alone refuses it. Mutations through
+`GetMutator()` take vectors as the index stores them: convert them with
+`ToStoredDatapoints()`.
+
+**The manual recipe** (what the tuning study ran) builds the same index
+from augmented data; indexes built this way keep working as before:
+
+```python
+import numpy as np
+
+S = 1000.0
 
 def augment_database(x, c=None, s=S):                     # x: (n, d) float32
     sq = np.einsum("ij,ij->i", x, x, dtype=np.float64)   # |x|², in float64
@@ -384,36 +484,23 @@ def augment_database(x, c=None, s=S):                     # x: (n, d) float32
     extra = (c - sq) / (2.0 * s)
     return np.hstack([x, extra[:, None]]).astype(np.float32), c
 
-def augment_queries(q, s=S):                              # q: (n, d) float32
-    return np.hstack([q, np.full((len(q), 1), s, np.float32)])
-
-xa, c = augment_database(x)                               # store c with the index
-searcher = (
-    scann.scann_ops_pybind.builder(xa, 10, "dot_product")
-    .tree(num_leaves=1000, num_leaves_to_search=25,
-          training_sample_size=len(xa), spherical=False,
-          quantize_centroids=True, avq=2.5)
-    .score_ah(3, anisotropic_quantization_threshold=150)  # ≈ 0.3 × |x| for SIFT; see above
-    .reorder(150, quantize=scann.ReorderType.BFLOAT16)
-    .build()
-)
-
-qa = augment_queries(queries)
-ids, scores = searcher.search_batched(qa)
-sq_l2 = (queries * queries).sum(1)[:, None] + c - 2.0 * scores   # squared L2, if needed
+xa, c = augment_database(x)                               # keep c for upserts
+searcher = scann.scann_ops_pybind.builder(xa, 10, "dot_product")...build()
+qa = np.hstack([queries, np.full((len(queries), 1), S, np.float32)])
+ids, scores = searcher.search_batched(qa)                 # dot products
+sq_l2 = (queries * queries).sum(1)[:, None] + c - 2.0 * scores
 ```
 
-* **Keep c and s.** Upserted vectors need the same c and s
-  (`augment_database(new_rows, c)`, not a new mean), and so does any code
-  that converts scores back to distances. The augmented index returns dot
-  products, largest first.
-* **Don't use `spherical=True`:** it would normalize the augmented rows.
-* **s:** 1,000 and 10,000 were within noise; 100 was slightly worse.
-* The threshold is in the augmented data's units: set it from the norms
-  ([above](#the-anisotropic-threshold)). The study's queries were augmented
-  inside the timed call, so the QPS numbers include that cost.
+With the same config, `l2_as_dot_product(scale=S, center=c)` builds the
+same index and returns the same ids: on SIFT with
+`tree(random_init=False)`, all 10,000 queries at three settings matched,
+and the distances matched |q|² + c − 2·score to 0.003. (Pass `center=c`:
+the option sums the norms in another order than `np.mean`. With the
+default random initialization, training isn't reproducible run to run, so
+two builds of either kind can differ.)
 
-What it gave on SIFT (**screens**, **A/B**, **fronts**):
+What it gave on SIFT (**screens**, **A/B**, **fronts**, with the manual
+recipe and s = 1000):
 
 * With 2 dims per block, float32 reordering and no tree AVQ, it roughly
   broke even against plain `squared_l2`: +11–17% QPS and −0.007 to −0.013
@@ -425,7 +512,27 @@ What it gave on SIFT (**screens**, **A/B**, **fronts**):
 * SOAR through it didn't help, and PCA to 64 or 96 dimensions had no
   measurable effect.
 
-The builder doesn't offer this reduction itself; the recipe above is manual.
+`l2_as_dot_product()` against the manual recipe on SIFT, with the tuned
+settings above (1000 leaves, `avq=2.5`, 3 dims per block, threshold 150,
+bf16 reordering): single queries (`searcher.search()`, the manual recipe
+appending s with `np.append`), one thread pinned to one core, 10,000
+queries, best of 3 passes, each variant built and measured twice
+(scann-core built with `-march=native`, so the QPS are higher than in the
+tables below):
+
+| leaves | candidates | manual (s = 1000) recall / QPS | option (default s ≈ 203) recall / QPS | option, s = 1000 |
+|---:|---:|---:|---:|---:|
+| 10 | 70 | 0.8263 / 44,500 | 0.8264 / 47,500 | 0.8263 / 47,300 |
+| 18 | 100 | 0.9102 / 32,800 | 0.9107 / 34,400 | 0.9102 / 34,600 |
+| 25 | 150 | 0.9508 / 26,000 | 0.9518 / 27,200 | 0.9508 / 27,200 |
+| 30 | 300 | 0.9746 / 20,100 | 0.9748 / 20,800 | 0.9746 / 20,600 |
+| 60 | 300 | 0.9915 / 14,300 | 0.9918 / 14,700 | 0.9915 / 14,700 |
+| 80 | 500 | 0.9974 / 10,800 | 0.9975 / 11,000 | 0.9974 / 11,000 |
+
+The option reproduces the recipe's recall (to the default scale's
+±0.001) and is 2–7% faster: the query's extra coordinate is appended in
+C++, not by numpy in Python.
+
 
 ## k=10 and k=100
 
@@ -566,8 +673,8 @@ QPS (10 leaves, 70 candidates).
 
 ### About 1M euclidean vectors, k=10 (SIFT-128)
 
-The [L2 → MIPS recipe](#euclidean-data-the-exact-l2--inner-product-reduction)
-above: 1000 leaves, `avq=2.5`, `score_ah(3, anisotropic_quantization_threshold=150)`
+The [L2 → MIPS reduction](#euclidean-data-the-exact-l2--inner-product-reduction)
+above (`l2_as_dot_product()`; the study used the manual recipe): 1000 leaves, `avq=2.5`, `score_ah(3, anisotropic_quantization_threshold=150)`
 (≈ 0.3 × SIFT's typical norm of 508), bf16 reordering. Build 6.4 s, 306 MB.
 For recall above 0.999, the same with `score_ah(2, ...)`: 7.0 s, 328 MB.
 

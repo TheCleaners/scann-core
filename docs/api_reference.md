@@ -98,6 +98,7 @@ builder(db, k, distance_measure)
   [.tree(...) [.upper_tree(...)]]
   (.score_ah(...) | .score_brute_force(...))   # exactly one, required
   [.reorder(...)]
+  [.l2_as_dot_product(...)]                     # squared_l2 only (scann-core)
   [.set_n_training_threads(...)]
   .build(docids=None)
 ```
@@ -372,6 +373,39 @@ any other builder configuration you've set** — don't combine it with manual
 resulting config supports incremental updates (`NONE` / `ONLINE` /
 `ONLINE_INCREMENTAL`); see `upsert`/`delete` below for what that enables.
 
+## `.l2_as_dot_product(scale=None, center=None)` (scann-core)
+
+For `"squared_l2"` builders: searches by squared L2 distance through an
+inner-product index, the exact L2 → MIPS reduction, so that the
+dot-product-only techniques apply to euclidean data (residual and
+anisotropic AH, `tree(avq=...)`, `tree(soar_lambda=...)`). The index stores
+each datapoint x as `[x, (center − |x|²) / (2·scale)]` and searches each
+query q as `[q, scale]`; `q'·x' = q·x − |x|²/2 + center/2` is largest
+exactly where `|q − x|²` is smallest. Everything else in the chain is then
+configured as for `"dot_product"` over `d + 1` dimensions (AH blocks
+included: 129 dimensions are 43 blocks of 3).
+
+- **Results are squared L2 distances** (`|q|² + center − 2·q'·x'`, clamped
+  at 0), and the searcher applies the reduction to every query, batch and
+  upsert, in every binding. `rebalance()` keeps `scale` and `center`,
+  `serialize()` saves them, and `config()` shows them.
+- **`scale`** (> 0): the query's extra coordinate. Default: 0.4 × the
+  dataset's RMS norm, `0.4·sqrt(mean |x|²)`. It weighs the norm term in
+  partitioning and quantization, never exactness; see
+  [tuning.md](tuning.md#euclidean-data-the-exact-l2--inner-product-reduction)
+  for the measurements.
+- **`center`**: any constant (it centres the extra coordinate). Default:
+  the dataset's mean `|x|²`. Pass it (and `scale`) to reproduce an index
+  built with the manual recipe.
+- Not combinable with `tree(spherical=True)`, `truncate()` or
+  `autopilot()`; an empty dataset needs an explicit `scale`.
+- A saved index records the reduction in `scann_config.pb`, with a
+  `distance_measure` that loaders without it (upstream ScaNN, scann-core
+  0.2.0) reject at load time.
+
+C++: `ConfigBuilder::L2AsDotProduct({.scale, .center})`; Rust:
+`ConfigBuilder::l2_as_dot_product(L2AsDotProductOptions)`.
+
 ## Thread configuration
 
 - **`.set_n_training_threads(threads)`** — threads used only during index
@@ -577,7 +611,10 @@ more (`CosineDistance`, `L1Distance`, `GeneralJaccardDistance`,
 `GeneralHammingDistance`, and others), but none of those are reachable from
 this top-level parameter — they exist for internal/proto-level use only. If
 you want cosine similarity, L2-normalize your vectors and use
-`"dot_product"`.
+`"dot_product"`. For euclidean data, `"squared_l2"` with
+[`.l2_as_dot_product()`](#l2_as_dot_productscalenone-centernone-scann-core)
+searches through an inner-product index and still returns squared L2
+distances.
 
 ## Common errors and what they mean
 
@@ -587,8 +624,11 @@ you want cosine similarity, L2-normalize your vectors and use
 | `ValueError: hash_type must be one of ['lut16', 'lut256']` | Bad `hash_type` in `.score_ah(...)`. |
 | `ValueError: Exactly 1 of pca or truncate must be set` | Both (or an invalid combination of) `.pca(...)`/`.truncate(...)` configured. |
 | `ValueError: Exactly 1 of score_ah or score_brute_force must be set` | Neither (or both) `.score_ah(...)`/`.score_brute_force(...)` called — one is mandatory. |
-| `ValueError: AVQ only applies to dot product distance.` | `.tree(avq=...)` used with `distance_measure="squared_l2"`. |
-| `ValueError: SOAR requires dot product distance.` | `.tree(soar_lambda=...)` used with `distance_measure="squared_l2"`. |
+| `ValueError: AVQ only applies to dot product distance (or squared_l2 with l2_as_dot_product()).` | `.tree(avq=...)` used with `distance_measure="squared_l2"`. |
+| `ValueError: SOAR requires dot product distance (or squared_l2 with l2_as_dot_product()).` | `.tree(soar_lambda=...)` used with `distance_measure="squared_l2"`. (With `.l2_as_dot_product()`, both are allowed.) |
+| `ValueError: l2_as_dot_product() requires the squared_l2 distance measure.` / `... can't be combined with ...` | `.l2_as_dot_product()` on a `"dot_product"` builder, or with `tree(spherical=True)`, `truncate()` or `autopilot()`. |
+| `RuntimeError: ... Invalid distance_measure: 'SquaredL2Distance [l2_as_dot_product: needs scann-core >= 0.2.1]'` | Loading an index built with `.l2_as_dot_product()` with a ScaNN that doesn't have it (upstream ScaNN, scann-core 0.2.0). |
+| `RuntimeError: Failed to retrain searcher: l2_as_dot_product's scale and center can't change when retraining ...` | `rebalance(config)` with another `scale`/`center` than the index's (or, similarly, a config without `l2_as_dot_product` for an index that has it). |
 | `Exception: {key} has already been configured` | Called the same builder method (e.g. `.tree(...)`) twice. |
 | `Exception: build() called but no builder lambda was set.` | Internal invariant — shouldn't happen via the public `builder()` entrypoint; indicates a custom/incomplete builder setup. |
 | `ValueError: docid and database size mismatch` | `len(docids) != db.shape[0]` passed to `.build(docids=...)`. |

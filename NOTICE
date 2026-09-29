@@ -289,6 +289,34 @@ isn't a one-line change:
       create_config() raises ValueError for tree(incremental_threshold=...)
       together with pca(), truncate() or upper_tree(), which the C++ side
       can't build (upstream failed only when initializing the searcher).
+  The exact L2 -> inner-product reduction (0.2.1; squared L2 search through
+  an inner-product index, opt-in):
+  src/scann/proto/scann.proto
+      ScannConfig.l2_as_dot_product (field 900) and the
+      L2AsDotProductConfig message (scale, center). Not in upstream's
+      proto: an upstream loader keeps it as an unknown field, and fails on
+      the distance_measure such an index is saved with (see scann.cc).
+  src/scann/scann_ops/cc/scann.h, src/scann/scann_ops/cc/scann.cc
+      With l2_as_dot_product, Initialize() stores the dataset with the
+      extra coordinate (center - |x|^2) / (2 scale), filling in unset
+      parameters, and runs a DotProductDistance searcher over one more
+      dimension; Search(), SearchBatched*() append `scale` to each query and
+      return squared L2 distances; ToStoredDatapoints() /
+      stored_dimensionality() / TransformsDatapoints() convert upserted
+      vectors (and normalize them with spherical partitioning, as
+      NormalizeDatapoints() does); RetrainAndReindex() keeps scale and
+      center; config() returns the config as given; Serialize() saves the
+      parameters and the distance measure "SquaredL2Distance
+      [l2_as_dot_product: needs scann-core >= 0.2.1]", and LoadArtifacts()
+      accepts it; CreateSearcher() refuses such a config.
+  src/scann/scann_ops/cc/scann_npy.cc
+      Upsert() converts rows with ToStoredDatapoints() (it normalized them
+      for spherical partitioning before).
+  python/scann/scann_ops/py/scann_builder.py
+      l2_as_dot_product(scale=None, center=None); with it, tree(avq=...,
+      soar_lambda=...), residual AH, the AH blocks and pca() are built for
+      a dot-product index over one more dimension, and truncate(),
+      spherical trees and autopilot() are rejected.
   Performance changes (0.2.1; results unchanged unless noted):
   src/scann/scann_ops/cc/scann.h, src/scann/scann_ops/cc/scann.cc
       Thread pools are sized from scann_core::AvailableCPUs() (the CPU
