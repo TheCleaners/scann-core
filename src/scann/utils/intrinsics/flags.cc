@@ -36,10 +36,9 @@ ABSL_FLAG(bool, ignore_avx2, false,
 
 ABSL_FLAG(bool, ignore_avx512_vnni, false, "Ignore AVX512_VNNI.");
 
-ABSL_FLAG(bool, ignore_amx, true,
-          "Ignore AMX.  NOTE:  AMX support is currently experimental, and "
-          "performance is sometimes worse than AVX512_VNNI, so "
-          "it's disabled by default.");
+ABSL_FLAG(bool, ignore_amx, false,
+          "Ignore AMX.  NOTE:  AMX support is experimental, and performance "
+          "is sometimes worse than AVX512_VNNI.");
 
 ABSL_RETIRED_FLAG(bool, ignore_avx, false, "Ignore AVX1.");
 
@@ -59,10 +58,11 @@ namespace research_scann {
 namespace flags_internal {
 
 // scann-core: the ignore_* flags are honored, as for Arm below. Upstream read
-// none of the x86 ones, so ignore_amx (documented default: true) didn't keep
-// the experimental AMX kernels off on Sapphire Rapids and later. Flags are
-// read at static initialization, so only their defaults (or a build that
-// changes them) take effect; ScopedPlatformOverride changes these later.
+// none of the x86 ones, so the AMX kernels ran on Sapphire Rapids and later
+// although ignore_amx defaulted to true; scann-core keeps that behavior by
+// defaulting ignore_amx to false. Flags are read at static initialization,
+// so only their defaults (or a build that changes them) take effect;
+// ScopedPlatformOverride changes these later.
 bool should_use_avx2 = port::TestCPUFeature(port::AVX2) &&
                        !absl::GetFlag(FLAGS_ignore_avx2);
 bool should_use_avx512 = should_use_avx2 &&

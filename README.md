@@ -74,8 +74,8 @@ All three build the C++ library from source, which needs:
   pipeline by about 5%, and batched brute-force search at about half of
   clang's throughput. Use clang for speed. When no compiler is chosen, clang
   is picked if it's on PATH. The AMX kernels (Sapphire Rapids and later)
-  need clang ≥ 20, and are off by default (ScaNN's `ignore_amx` flag,
-  default true; before 0.2.1 the flag was ignored and they were on).
+  need clang ≥ 20, and are on by default; ScaNN's `ignore_amx` flag turns
+  them off (upstream documents a default of true but never read the flag).
 * **CMake ≥ 3.27**, and network access to download the C++ dependencies
   (or local copies; see [Dependencies](#dependencies)).
 * For Python: Python ≥ 3.10 with numpy and protobuf ≥ 7.36.2 (pip installs

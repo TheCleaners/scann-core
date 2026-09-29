@@ -364,8 +364,9 @@ isn't a one-line change:
       The AVX2 / AVX-512 / VNNI / AMX target attributes include popcnt.
   src/scann/utils/intrinsics/flags.cc
       The x86 ignore_avx2 / ignore_avx512 / ignore_avx512_vnni / ignore_amx
-      flags are honored (upstream read none of them; with ignore_amx's
-      default, the AMX kernels are now off unless the flag is changed).
+      flags are honored (upstream read none of them). ignore_amx defaults
+      to false, keeping the AMX kernels on as they were in practice
+      (upstream's documented default was true, but unread).
   src/scann/tree_x_hybrid/tree_ah_hybrid_residual.h
       ForEachLeafPackedCodes(), used by scann.cc to advise huge pages for
       the leaves' codes.

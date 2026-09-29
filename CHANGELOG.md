@@ -73,9 +73,10 @@ All notable changes to scann-core. Versions follow
   clang, ScaNN's hot code already used the instruction: same instruction
   count on GloVe-100).
 - ScaNN's x86 `ignore_avx2`, `ignore_avx512`, `ignore_avx512_vnni` and
-  `ignore_amx` flags are honored (upstream read none of them). With
-  `ignore_amx`'s default (true), the experimental AMX kernels are no longer
-  used on Sapphire Rapids and later, as upstream documents.
+  `ignore_amx` flags are honored (upstream read none of them). `ignore_amx`
+  now defaults to false, so the AMX kernels stay on on Sapphire Rapids and
+  later, as they were in practice (upstream documented a default of true
+  but never read the flag).
 - `upsert(docids, database, batch_size=256)`: the default `batch_size`
   was 1 (upstream's), which prepared and inserted the rows one at a
   time; 256 matches the C++ and Rust APIs. Rows prepared in one batch are
