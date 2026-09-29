@@ -224,7 +224,8 @@ jobs:
             -DSCANN_BUILD_SHARED=OFF -DSCANN_BUILD_EXAMPLES=OFF
           cmake --build build --target scann_core_api_exercise scann_core_config_regressions \
             scann_core_artifact_loading scann_core_mutation_regressions scann_core_mutfuzz \
-            scann_core_l2_as_dot_product_test scann_core_search_scratch_test
+            scann_core_l2_as_dot_product_test scann_core_search_scratch_test \
+            scann_core_lut16_avx512_test
       - name: Run
         env:
           ASAN_OPTIONS: detect_leaks=1
@@ -240,6 +241,7 @@ jobs:
           build/tests/scann_core_mutation_regressions
           build/tests/scann_core_l2_as_dot_product_test
           build/tests/scann_core_search_scratch_test
+          build/tests/scann_core_lut16_avx512_test
           ctest --test-dir build -L mutfuzz -j "$(nproc)" --output-on-failure
 
   # Rust lints and the minimum supported Rust version. DOCS_RS=1 makes

@@ -67,6 +67,7 @@
 #include "scann/tree_x_hybrid/mutator.h"
 #include "scann/tree_x_hybrid/tree_ah_hybrid_residual.h"
 #include "scann/tree_x_hybrid/tree_x_hybrid_smmd.h"
+#include "scann/utils/intrinsics/flags.h"
 #include "scann_core/config_builder.h"
 
 using namespace research_scann;
@@ -82,6 +83,13 @@ struct BogusArtifacts : UntypedSingleMachineSearcherBase::PrecomputedMutationArt
 
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IONBF, 0);
+  // SCANN_TEST_FORCE_AVX2=1: AVX2 kernels (and the canonical LUT16 layout) on
+  // an AVX-512 CPU, as in api_exercise.
+  if (const char* e = std::getenv("SCANN_TEST_FORCE_AVX2"); e && *e == '1') {
+    research_scann::flags_internal::should_use_avx512 = false;
+    research_scann::flags_internal::should_use_avx512_vnni = false;
+    research_scann::flags_internal::should_use_amx = false;
+  }
   if (argc < 4) {
     std::fprintf(stderr, "usage: %s <config> <seed> <steps> [batch]\n", argv[0]);
     return 2;
