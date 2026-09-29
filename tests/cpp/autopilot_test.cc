@@ -26,6 +26,12 @@
 //    becomes an l2_as_dot_product index (with varying norms it doesn't), dot-product data gets its recorded threshold,
 //    both reload (directory) and retrain to the same config, with recall
 //    against brute force; an index built with upstream's rules keeps them.
+//  - target_recall: ChooseCalibratedSearchDefaults on a modeled recall
+//    surface (the cheapest setting on its grids, the fallback when the
+//    target is out of reach); end to end, the calibrated defaults reach the
+//    target on held-out queries of a clustered set, recalibrating gives the
+//    same calibration (deterministic), it is recorded and survives
+//    serialize / reload / retrain, given queries are used, and the errors.
 
 #include <unistd.h>
 
@@ -35,8 +41,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -525,6 +533,256 @@ void TestEndToEnd() {
            });
 }
 
+// ChooseCalibratedSearchDefaults on a modeled recall surface.
+void TestChooseCalibration() {
+  // GloVe-100's shape: 903 leaves, 106 to search, 317 candidates.
+  const ScannConfig c = Preview(10, DistanceMeasure::kDotProduct, 100, 1183514);
+  const int num_children = c.partitioning().num_children();
+  const double target = 0.95;
+  auto model = [](int leaves, int pre) {
+    return (1 - std::exp(-leaves / 30.0)) * (1 - std::exp(-pre / 25.0));
+  };
+  int calls = 0;
+  auto recall = [&](int leaves, int pre) -> research_scann::StatusOr<double> {
+    ++calls;
+    if (leaves < 1 || leaves > num_children || pre < 10 || pre > 2 * 317)
+      Fail(absl::StrCat("calibration: setting out of range ", leaves, "/", pre));
+    return model(leaves, pre);
+  };
+  auto cal = research_scann::ChooseCalibratedSearchDefaults(c, 1183514, 100,
+                                                            target, recall);
+  if (!Ok(cal.status(), "ChooseCalibratedSearchDefaults")) return;
+  const int L = cal->leaves_to_search(), R = cal->pre_reordering_num_neighbors();
+  Expect(cal->target_met() && model(L, R) >= target &&
+             cal->sample_recall() == model(L, R) && cal->num_neighbors() == 10 &&
+             cal->target_recall() == target,
+         absl::StrCat("calibration result\n", cal->DebugString()));
+  // Nothing much cheaper reaches the target (the grids are ~20 % apart).
+  const double chosen =
+      research_scann::ModeledSearchCost(c, 1183514, 100, L, R);
+  double best = chosen;
+  for (int l = 1; l <= num_children; ++l)
+    for (int r = 10; r <= 634; ++r)
+      if (model(l, r) >= target)
+        best = std::min(best, research_scann::ModeledSearchCost(c, 1183514, 100, l, r));
+  Expect(chosen <= 1.3 * best,
+         absl::StrCat("calibration cost ", chosen, " vs the best ", best));
+  Expect(calls <= 80, absl::StrCat("calibration evaluated ", calls, " settings"));
+  std::printf("calibration: %d/%d, cost %.0f (best %.0f), %d evaluations\n", L,
+              R, chosen, best, calls);
+
+  // Out of reach: the setting with the highest recall (the most exhaustive).
+  auto capped = [&](int leaves, int pre) -> research_scann::StatusOr<double> {
+    return 0.9 * model(leaves, pre);
+  };
+  cal = research_scann::ChooseCalibratedSearchDefaults(c, 1183514, 100, 0.99,
+                                                       capped);
+  if (Ok(cal.status(), "ChooseCalibratedSearchDefaults, out of reach"))
+    Expect(!cal->target_met() && cal->leaves_to_search() == num_children &&
+               cal->pre_reordering_num_neighbors() == 634,
+           absl::StrCat("out of reach\n", cal->DebugString()));
+
+  // Brute force: one evaluation, nothing to set.
+  ScannConfig bf;
+  bf.set_num_neighbors(10);
+  bf.mutable_brute_force();
+  calls = 0;
+  auto exact = [&](int leaves, int pre) -> research_scann::StatusOr<double> {
+    ++calls;
+    Expect(leaves == 0 && pre == 0, "brute force: no tree, no reordering");
+    return 1.0;
+  };
+  cal = research_scann::ChooseCalibratedSearchDefaults(bf, 5000, 100, 0.9, exact);
+  if (Ok(cal.status(), "ChooseCalibratedSearchDefaults, brute force"))
+    Expect(calls == 1 && cal->target_met() && !cal->has_leaves_to_search() &&
+               !cal->has_pre_reordering_num_neighbors(),
+           absl::StrCat("brute force\n", cal->DebugString()));
+  Expect(!research_scann::ChooseCalibratedSearchDefaults(c, 1183514, 100, 1.5,
+                                                         recall)
+              .ok(),
+         "target_recall 1.5 rejected");
+
+  // Autopilot() applies a recorded calibration (clamped to the leaves).
+  ScannConfig recorded = TunedConfig(10, "DotProductDistance");
+  auto* rc = recorded.mutable_autopilot()->mutable_tree_ah()->mutable_calibration();
+  rc->set_leaves_to_search(1000000);
+  rc->set_pre_reordering_num_neighbors(42);
+  auto applied = research_scann::Autopilot(recorded, nullptr, 1183514, 100);
+  if (Ok(applied.status(), "Autopilot with a calibration"))
+    Expect(applied->partitioning().query_spilling().max_spill_centers() ==
+                   applied->partitioning().num_children() &&
+               applied->exact_reordering().approx_num_neighbors() == 42,
+           absl::StrCat("calibration applied\n", applied->DebugString()));
+  // ConfigBuilder: the stanza and its errors.
+  AutopilotOptions o;
+  o.target_recall = 0.9;
+  o.calibration_sample_size = 300;
+  ScannConfig t = Preview(10, DistanceMeasure::kDotProduct, 100, 1183514, o);
+  Expect(t.autopilot().tree_ah().target_recall() == 0.9 &&
+             t.autopilot().tree_ah().calibration_sample_size() == 300 &&
+             !t.autopilot().tree_ah().has_calibration() &&
+             t.partitioning().query_spilling().max_spill_centers() == 106,
+         absl::StrCat("ConfigBuilder target_recall\n", t.DebugString()));
+  for (auto [target, size, what] :
+       {std::tuple<std::optional<double>, int, const char*>{1.5, 0, "1.5"},
+        {0.0, 0, "0"},
+        {std::nullopt, 100, "sample size without a target"},
+        {0.9, -1, "negative sample size"}}) {
+    ConfigBuilder b(10, DistanceMeasure::kDotProduct, 100);
+    AutopilotOptions bad;
+    bad.target_recall = target;
+    bad.calibration_sample_size = size;
+    b.Autopilot(bad);
+    Expect(!b.Build(1183514).ok(), absl::StrCat("ConfigBuilder rejects ", what));
+  }
+}
+
+// Built indexes calibrated to a target recall.
+void TestCalibrationEndToEnd() {
+  constexpr size_t kDim = 200, kN = 30000, kQ = 300;
+  constexpr int kK = 10;
+  std::vector<float> centers = Gaussian(200, kDim, 21, 1.0f);
+  auto clustered = [&](size_t n, uint32_t seed) {
+    std::vector<float> v = Gaussian(n, kDim, seed, 0.6f);
+    std::mt19937 r(seed + 1);
+    std::uniform_int_distribution<size_t> pick(0, 199);
+    for (size_t i = 0; i < n; ++i) {
+      const size_t c = pick(r);
+      for (size_t j = 0; j < kDim; ++j) v[i * kDim + j] += centers[c * kDim + j];
+    }
+    return v;
+  };
+  const std::vector<float> data = clustered(kN, 22), queries = clustered(kQ, 23);
+
+  for (const auto& [d, target] :
+       {std::pair{DistanceMeasure::kDotProduct, 0.9},
+        std::pair{DistanceMeasure::kSquaredL2, 0.95}}) {
+    const bool l2 = d == DistanceMeasure::kSquaredL2;
+    const std::string name =
+        absl::StrCat(l2 ? "squared_l2" : "dot_product", " target ", target);
+    AutopilotOptions o;
+    o.target_recall = target;
+    ConfigBuilder b(kK, d, kDim);
+    b.Autopilot(o);
+    auto text = b.BuildText(kN);
+    if (!Ok(text.status(), name + ": config")) continue;
+    ScannInterface s;
+    if (!Ok(s.Initialize(data, kN, *text, 4), name + ": build")) continue;
+    const ScannConfig built = *s.config();
+    const auto& cal = built.autopilot().tree_ah().calibration();
+    const int leaves = built.partitioning().query_spilling().max_spill_centers();
+    const int pre = built.exact_reordering().approx_num_neighbors();
+    Expect(built.autopilot().tree_ah().target_recall() == target &&
+               cal.target_met() && cal.sample_recall() >= target &&
+               cal.leaves_to_search() == leaves &&
+               cal.pre_reordering_num_neighbors() == pre &&
+               cal.query_source() ==
+                   research_scann::AutopilotCalibration::DATAPOINTS &&
+               cal.num_queries() == 1000 && cal.num_neighbors() == kK,
+           absl::StrCat(name, ": calibration\n", built.DebugString()));
+    const double recall = Recall(s, data, queries, kDim, kK, l2);
+    std::printf("%s: %d leaves, %d candidates, sample recall %.4f, held-out "
+                "recall %.4f\n", name.c_str(), leaves, pre, cal.sample_recall(),
+                recall);
+    if (recall < target - 0.03)
+      Fail(absl::StrCat(name, ": held-out recall ", recall));
+    const auto before = Ids(s, queries, kDim, kK);
+
+    // Deterministic: recalibrating the same index gives the same result.
+    auto again = s.CalibrateSearchDefaults(data, target);
+    if (Ok(again.status(), name + ": recalibrate"))
+      Expect(again->DebugString() == cal.DebugString() &&
+                 s.config()->DebugString() == built.DebugString(),
+             absl::StrCat(name, ": recalibration differs\n", again->DebugString()));
+
+    // A search for more neighbors than the default candidates gets them.
+    NNResultsVector res;
+    if (Ok(s.Search(Ptr(queries.data(), kDim), &res, pre + 5, -1, -1),
+           name + ": search"))
+      Expect(static_cast<int>(res.size()) == pre + 5,
+             absl::StrCat(name, ": ", res.size(), " results for ", pre + 5));
+
+    // Serialize / reload / retrain keep it.
+    const fs::path dir = TestDir("calibration");
+    if (Ok(s.SerializeToDirectory(dir.string(), true), name + ": serialize")) {
+      auto artifacts = ScannInterface::LoadArtifacts(dir.string());
+      ScannInterface loaded;
+      if (Ok(artifacts.status(), name + ": LoadArtifacts") &&
+          Ok(loaded.Initialize(*artifacts), name + ": load")) {
+        Expect(loaded.config()->DebugString() == built.DebugString(),
+               absl::StrCat(name, ": reloaded config\n",
+                            loaded.config()->DebugString()));
+        Expect(Ids(loaded, queries, kDim, kK) == before,
+               name + ": reloaded results at the defaults");
+        auto retrained = loaded.RetrainAndReindex("");
+        if (Ok(retrained.status(), name + ": retrain"))
+          Expect(retrained->autopilot().tree_ah().calibration().DebugString() ==
+                         cal.DebugString() &&
+                     retrained->partitioning().query_spilling().max_spill_centers() ==
+                         leaves &&
+                     retrained->exact_reordering().approx_num_neighbors() == pre,
+                 absl::StrCat(name, ": retrained config\n",
+                              retrained->DebugString()));
+      }
+    }
+    fs::remove_all(dir);
+
+    // A higher target: recalibrated and recorded.
+    auto higher = s.CalibrateSearchDefaults(data, 0.99);
+    if (Ok(higher.status(), name + ": recalibrate to 0.99"))
+      Expect(s.config()->autopilot().tree_ah().target_recall() == 0.99 &&
+                 higher->sample_recall() >= 0.99 &&
+                 higher->leaves_to_search() * higher->pre_reordering_num_neighbors() >=
+                     leaves * pre &&
+                 s.config()->partitioning().query_spilling().max_spill_centers() ==
+                     higher->leaves_to_search(),
+             absl::StrCat(name, ": recalibrated to 0.99\n", higher->DebugString()));
+  }
+
+  // Given queries.
+  {
+    AutopilotOptions o;
+    o.target_recall = 0.9;
+    ConfigBuilder b(kK, DistanceMeasure::kDotProduct, kDim);
+    b.Autopilot(o);
+    auto text = b.BuildText(kN);
+    ScannInterface s;
+    if (Ok(text.status(), "given queries: config") &&
+        Ok(s.Initialize(data, kN, *text, 4,
+                        research_scann::ConstSpan<float>(queries.data(), 200 * kDim)),
+           "given queries: build")) {
+      const auto& cal = s.config()->autopilot().tree_ah().calibration();
+      Expect(cal.query_source() == research_scann::AutopilotCalibration::GIVEN &&
+                 cal.num_queries() == 200 && cal.target_met(),
+             absl::StrCat("given queries\n", cal.DebugString()));
+    }
+    // Errors: queries without a target; the wrong width; a non-autopilot
+    // index.
+    ConfigBuilder plain(kK, DistanceMeasure::kDotProduct, kDim);
+    plain.Autopilot();
+    ScannInterface t;
+    Expect(!t.Initialize(data, kN, *plain.BuildText(kN), 4,
+                         research_scann::ConstSpan<float>(queries.data(), kDim))
+                .ok(),
+           "calibration queries without a target rejected");
+    Expect(!s.CalibrateSearchDefaults(data, 0.9,
+                                      research_scann::ConstSpan<float>(
+                                          queries.data(), kDim + 1))
+                .ok(),
+           "calibration queries of the wrong width rejected");
+    Expect(!s.CalibrateSearchDefaults(
+                 research_scann::ConstSpan<float>(data.data(), kDim * 10), 0.9)
+                .ok(),
+           "a dataset of the wrong size rejected");
+    ConfigBuilder manual(kK, DistanceMeasure::kDotProduct, kDim);
+    manual.ScoreBruteForce();
+    ScannInterface m;
+    if (Ok(m.Initialize(data, kN, *manual.BuildText(kN), 4), "brute force build"))
+      Expect(!m.CalibrateSearchDefaults(data, 0.9).ok(),
+             "calibrating a non-autopilot index rejected");
+  }
+}
+
 }  // namespace
 
 // With no argument, every part; "rules" or "end_to_end" runs one of them
@@ -540,8 +798,12 @@ int main(int argc, char** argv) {
     TestTunedPreviews();
     TestUpstreamRules();
     TestDataDependence();
+    TestChooseCalibration();
   }
-  if (part != "rules") TestEndToEnd();
+  if (part != "rules") {
+    TestEndToEnd();
+    TestCalibrationEndToEnd();
+  }
   std::printf("autopilot: %s (%d failure(s))\n", g_failures ? "FAILED" : "PASSED",
               g_failures);
   return g_failures ? 1 : 0;

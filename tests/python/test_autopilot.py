@@ -26,6 +26,11 @@
   an ONLINE autopilot index.
 - A tree with AVQ and incremental training takes upserts and deletes
   (upstream's ApplyAvq left it with a dangling mutator).
+- autopilot(target_recall=...): the calibrated defaults reach the target
+  on held-out queries of a clustered set, at fewer leaves than the rules'
+  defaults; the calibration is recorded, survives serialize() /
+  load_searcher() and rebalance(); calibration_queries are used when given;
+  the argument errors.
 
 Run with scann-core's build/python on PYTHONPATH:
   PYTHONPATH=build/python python tests/python/test_autopilot.py
@@ -262,7 +267,102 @@ def test_avq_incremental():
   check("n9" in list(ids), "AVQ tree with incremental training: deletes")
 
 
+def calibration(cfg):
+  m = re.search(r"calibration \{([^}]*)\}", cfg)
+  return m.group(1) if m else None
+
+
+def test_target_recall():
+  d, n, k = 200, 30000, 10
+  centers = np.random.default_rng(1).standard_normal((200, d)).astype(np.float32)
+  def points(m, seed):
+    r = np.random.default_rng(seed)
+    return (centers[r.integers(0, 200, m)] +
+            0.6 * r.standard_normal((m, d))).astype(np.float32)
+  x, q = points(n, 2), points(300, 3)
+  gt = brute_force(x, q, k, "dot_product")
+  def rec(s, **kw):
+    ids, _ = s.search_batched(q, **kw)
+    return np.mean([len(np.intersect1d(a, b)) / k for a, b in zip(ids, gt)])
+
+  default = scann.scann_ops_pybind.builder(x, k, "dot_product").autopilot().build()
+  dcfg = default.config()
+  check(calibration(dcfg) is None and "target_recall" not in dcfg,
+        "no target: no calibration")
+  s = scann.scann_ops_pybind.builder(x, k, "dot_product").autopilot(
+      target_recall=0.9).build()
+  cfg = s.config()
+  cal = calibration(cfg)
+  check(cal is not None and "target_recall: 0.9" in cal and
+        "target_met: true" in cal and "query_source: DATAPOINTS" in cal and
+        "num_queries: 1000" in cal and "num_neighbors: 10" in cal,
+        f"calibration recorded: {cal}")
+  leaves = int(field(cfg, "max_spill_centers"))
+  pre = int(field(cfg, "approx_num_neighbors"))
+  check(f"leaves_to_search: {leaves}" in cal and
+        f"pre_reordering_num_neighbors: {pre}" in cal,
+        "the config's defaults are the calibrated ones")
+  check(leaves < int(field(dcfg, "max_spill_centers")),
+        f"calibrated leaves {leaves} < the rules' default")
+  sample = float(field(cal, "sample_recall"))
+  check(sample >= 0.9, f"sample recall {sample:.4f} >= 0.9")
+  r = rec(s)
+  check(r >= 0.87, f"held-out recall at the calibrated defaults {r:.4f} ~ 0.9")
+  check(rec(s) == rec(s, leaves_to_search=leaves, pre_reorder_num_neighbors=pre),
+        "defaults = the calibrated settings")
+  # A search for more neighbors than the pre-reordering default gets them.
+  ids, _ = s.search(q[0], final_num_neighbors=pre + 5)
+  check(len(ids) == pre + 5, "final_num_neighbors above the pre-reordering default")
+
+  tmp = tempfile.mkdtemp(dir=".")
+  try:
+    s.serialize(tmp)
+    t = scann.scann_ops_pybind.load_searcher(tmp)
+    check(t.config() == cfg, "load_searcher keeps the calibration")
+    check(all(np.array_equal(t.search(v)[0], s.search(v)[0]) for v in q[:50]),
+          "load_searcher: same results at the defaults")
+  finally:
+    shutil.rmtree(tmp)
+  s.rebalance()
+  check(calibration(s.config()) == cal and
+        field(s.config(), "max_spill_centers") == str(leaves),
+        "rebalance keeps the calibration")
+
+  # Given queries; a higher target needs more.
+  s2 = scann.scann_ops_pybind.builder(x, k, "dot_product").autopilot(
+      target_recall=0.97, calibration_queries=points(200, 7)).build()
+  cal2 = calibration(s2.config())
+  check("query_source: GIVEN" in cal2 and "num_queries: 200" in cal2,
+        f"calibration_queries: {cal2}")
+  check(int(field(cal2, "leaves_to_search")) * int(
+      field(cal2, "pre_reordering_num_neighbors")) >= leaves * pre,
+        "a higher target: at least as many leaves or candidates")
+  s3 = scann.scann_ops_pybind.builder(x, k, "dot_product").autopilot(
+      target_recall=0.9, calibration_sample_size=300).build()
+  check("num_queries: 300" in calibration(s3.config()), "calibration_sample_size")
+  # Upstream's rules with a target: calibrated too.
+  s4 = scann.scann_ops_pybind.builder(x, k, "dot_product").autopilot(
+      rules="upstream", target_recall=0.9).build()
+  check("rules" not in s4.config() and calibration(s4.config()),
+        "upstream rules with a target")
+
+  b = lambda **kw: scann.scann_ops_pybind.builder(x, k, "dot_product").autopilot(**kw)
+  expect_error(lambda: b(target_recall=1.5).build(), "target_recall",
+               "target_recall out of range")
+  expect_error(lambda: b(target_recall=0).build(), "target_recall",
+               "target_recall 0")
+  expect_error(lambda: b(calibration_queries=q).build(), "target_recall",
+               "calibration_queries without target_recall")
+  expect_error(lambda: b(calibration_sample_size=10).build(), "target_recall",
+               "calibration_sample_size without target_recall")
+  expect_error(lambda: b(target_recall=0.9, calibration_sample_size=0).build(),
+               "calibration_sample_size", "calibration_sample_size 0")
+  expect_error(lambda: b(target_recall=0.9, calibration_queries=q[:, :10]).build(),
+               "columns", "calibration_queries of the wrong width")
+
+
 def main():
+  test_target_recall()
   test_avq_incremental()
   test_stanza()
   test_previews()

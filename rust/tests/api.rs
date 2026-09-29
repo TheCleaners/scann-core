@@ -372,6 +372,82 @@ fn autopilot_rules() {
     assert!(!plain.config().contains("l2_as_dot_product {"));
 }
 
+#[test]
+fn autopilot_target_recall() {
+    // A dot-product set large enough for a tree (200 dimensions: from 27,510
+    // points), calibrated to recall@10 0.9 on sampled datapoints.
+    let (n, dim, k) = (30000, 200, 10);
+    let data = dataset(n, dim, 31);
+    let queries = dataset(200, dim, 32);
+    let builder = || ConfigBuilder::new(k, DistanceMeasure::DotProduct, dim);
+    let mut index = builder()
+        .autopilot_with(AutopilotOptions::new().target_recall(0.9))
+        .build_index(&data)
+        .unwrap();
+    let config = index.config();
+    assert!(config.contains("calibration {"), "{config}");
+    assert_eq!(field(&config, "target_met"), Some("true"), "{config}");
+    assert_eq!(field(&config, "query_source"), Some("DATAPOINTS"), "{config}");
+    assert_eq!(field(&config, "max_spill_centers"), field(&config, "leaves_to_search"));
+    assert_eq!(field(&config, "approx_num_neighbors"), field(&config, "pre_reordering_num_neighbors"));
+    // Held-out queries at the calibrated defaults.
+    let exact = |q: &[f32]| {
+        let mut all: Vec<(f32, u32)> = data
+            .chunks(dim)
+            .enumerate()
+            .map(|(i, x)| (-x.iter().zip(q).map(|(a, b)| a * b).sum::<f32>(), i as u32))
+            .collect();
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        all.iter().take(k).map(|&(_, i)| i).collect::<Vec<u32>>()
+    };
+    let mut hits = 0;
+    for q in queries.chunks(dim) {
+        let got = index.search(q, SearchOptions::default()).unwrap().indices;
+        let want = exact(q);
+        hits += got.iter().filter(|i| want.contains(i)).count();
+    }
+    let recall = hits as f64 / (k * queries.len() / dim) as f64;
+    assert!(recall >= 0.87, "held-out recall {recall}");
+    // Serialized and loaded: the same calibrated defaults.
+    let dir = temp_dir("calibrated");
+    index.serialize(&dir, true).unwrap();
+    let mut loaded = ScannIndex::load(&dir).unwrap();
+    assert_eq!(loaded.config(), config);
+    for q in queries.chunks(dim).take(20) {
+        assert_eq!(
+            loaded.search(q, SearchOptions::default()).unwrap().indices,
+            index.search(q, SearchOptions::default()).unwrap().indices
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    // Given queries.
+    let mut given = builder()
+        .autopilot_with(AutopilotOptions::new().target_recall(0.9))
+        .build_index_with_calibration_queries(&data, &queries)
+        .unwrap();
+    let config = given.config();
+    assert_eq!(field(&config, "query_source"), Some("GIVEN"), "{config}");
+    assert_eq!(field(&config, "num_queries"), Some("200"), "{config}");
+    let mut sized = builder()
+        .autopilot_with(AutopilotOptions::new().target_recall(0.9).calibration_sample_size(300))
+        .build_index(&data)
+        .unwrap();
+    assert_eq!(field(&sized.config(), "num_queries"), Some("300"));
+    // Errors.
+    for bad in [1.5, 0.0, f64::NAN] {
+        assert!(builder().autopilot_with(AutopilotOptions::new().target_recall(bad)).build(1000).is_err());
+    }
+    assert!(builder()
+        .autopilot_with(AutopilotOptions::new().calibration_sample_size(100))
+        .build(1000)
+        .is_err());
+    assert!(builder()
+        .autopilot_with(AutopilotOptions::new().target_recall(0.9))
+        .build_index_with_calibration_queries(&data, &queries[..dim + 1])
+        .is_err());
+    assert!(builder().autopilot_with(AutopilotOptions::new()).build_index_with_calibration_queries(&data, &queries).is_err());
+}
+
 fn is_invalid_argument<T: std::fmt::Debug>(r: Result<T, ScannError>) -> bool {
     matches!(r, Err(ScannError::InvalidArgument(_)))
 }
