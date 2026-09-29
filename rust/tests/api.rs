@@ -17,9 +17,9 @@
 //! serialize/load, mutation, concurrency and error handling.
 
 use scann_core::{
-    AhOptions, ConfigBuilder, DistanceMeasure, IncrementalMode, IncrementalThreshold, Neighbors,
-    PcaOptions, Quantization, ReorderOptions, ScannError, ScannIndex, SearchOptions, TreeOptions,
-    UpperTreeOptions,
+    AhOptions, ConfigBuilder, DistanceMeasure, IncrementalMode, IncrementalThreshold,
+    L2AsDotProductOptions, Neighbors, PcaOptions, Quantization, ReorderOptions, ScannError,
+    ScannIndex, SearchOptions, TreeOptions, UpperTreeOptions,
 };
 use std::path::PathBuf;
 
@@ -526,4 +526,121 @@ fn raw_config_values_are_errors_not_crashes() {
             other => panic!("expected an error for\n{config}\ngot {other:?}"),
         }
     }
+}
+
+/// `dataset` with row i scaled by 1 + (i % 7) / 2: norms vary, so the
+/// L2 -> inner-product reduction's extra coordinate does too.
+fn varied_norms(n: usize, seed: u64) -> Vec<f32> {
+    let mut d = dataset(n, DIM, seed);
+    for (i, r) in d.chunks_mut(DIM).enumerate() {
+        let f = 1.0 + (i % 7) as f32 / 2.0;
+        r.iter_mut().for_each(|x| *x *= f);
+    }
+    d
+}
+
+fn sq_norm(r: &[f32]) -> f64 {
+    r.iter().map(|&x| x as f64 * x as f64).sum()
+}
+
+fn l2_tree(b: ConfigBuilder) -> ConfigBuilder {
+    b.tree(TreeOptions::new(30, 8).random_init(false).avq(2.5))
+        .score_ah(AhOptions::new(3).anisotropic_quantization_threshold(0.5))
+        .reorder(ReorderOptions::new(100))
+        .training_threads(1)
+}
+
+#[test]
+fn l2_as_dot_product_matches_the_manual_recipe() {
+    let data = varied_norms(N, 31);
+    let queries = varied_norms(40, 32);
+    let n = data.len() / DIM;
+    let center = data.chunks(DIM).map(sq_norm).sum::<f64>() / n as f64;
+    let scale = 0.8;
+
+    let mut index = l2_tree(ConfigBuilder::new(K, DistanceMeasure::SquaredL2, DIM))
+        .l2_as_dot_product(L2AsDotProductOptions::new().scale(scale).center(center))
+        .build_index(&data)
+        .unwrap();
+    assert_eq!(index.dimensionality(), DIM);
+    assert!(index.config().contains("l2_as_dot_product"));
+
+    // The manual recipe: a dot-product index on [x, (c - |x|^2) / (2 s)],
+    // searched with [q, s].
+    let mut augmented = Vec::with_capacity(n * (DIM + 1));
+    for r in data.chunks(DIM) {
+        augmented.extend_from_slice(r);
+        augmented.push(((center - sq_norm(r)) / (2.0 * scale)) as f32);
+    }
+    let manual = l2_tree(ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM + 1))
+        .build_index(&augmented)
+        .unwrap();
+    let mut aug_queries = Vec::new();
+    for q in queries.chunks(DIM) {
+        aug_queries.extend_from_slice(q);
+        aug_queries.push(scale as f32);
+    }
+
+    let opts = SearchOptions::k(K).leaves_to_search(8).pre_reorder_num_neighbors(50);
+    let check = |index: &ScannIndex, what: &str| {
+        let got = index.search_batched(&queries, opts).unwrap();
+        let par = index.search_batched_parallel(&queries, opts, 7).unwrap();
+        let want = manual.search_batched(&aug_queries, opts).unwrap();
+        for (i, q) in queries.chunks(DIM).enumerate() {
+            let single = index.search(q, opts).unwrap();
+            for g in [&got[i], &par[i], &single] {
+                assert_eq!(g.indices, want[i].indices, "{what}: query {i} ids");
+                for ((&id, &d), &dot) in g.indices.iter().zip(&g.distances).zip(&want[i].distances) {
+                    // |q|^2 + c - 2 q'.x', and the exact squared L2 distance.
+                    let conv = (sq_norm(q) + center - 2.0 * dot as f64).max(0.0);
+                    assert!((d as f64 - conv).abs() <= 1e-5 * (1.0 + conv), "{what}: {d} vs {conv}");
+                    let x = row(&data, id as usize);
+                    let exact: f64 = x.iter().zip(q).map(|(&a, &b)| (a as f64 - b as f64).powi(2)).sum();
+                    let tol = 1e-5 * (sq_norm(q) + sq_norm(x) + center + 1.0);
+                    assert!((d as f64 - exact).abs() <= tol, "{what}: {d} vs exact {exact}");
+                }
+            }
+        }
+    };
+    check(&index, "built");
+
+    // serialize + load keeps the reduction.
+    let dir = temp_dir("l2mips");
+    index.serialize(&dir, true).unwrap();
+    let mut loaded = ScannIndex::load(&dir).unwrap();
+    assert_eq!(loaded.config(), index.config());
+    check(&loaded, "loaded");
+
+    // Upserts (one far outside the data: |x|^2 >> center), then exact
+    // searches find each vector first.
+    let mut far = row(&data, 0).to_vec();
+    far.iter_mut().for_each(|x| *x *= 40.0);
+    let extra = varied_norms(10, 33);
+    let ids = loaded.upsert(&[None, Some(3)], &[&far[..], row(&extra, 0)].concat(), 2).unwrap();
+    assert_eq!(ids, vec![N as u32, 3]);
+    loaded.add(&extra[DIM..]).unwrap();
+    let exhaustive = SearchOptions::k(1).leaves_to_search(30).pre_reorder_num_neighbors(N + 20);
+    for (v, id) in [(&far[..], N as u32), (row(&extra, 0), 3), (row(&extra, 4), N as u32 + 4)] {
+        let got = loaded.search(v, exhaustive).unwrap();
+        assert_eq!(got.indices, vec![id]);
+        assert!(got.distances[0].abs() <= 1e-4 * (sq_norm(v) + center) as f32, "{}", got.distances[0]);
+    }
+    loaded.delete(&[N as u32]).unwrap();
+    loaded.rebalance(None).unwrap();
+    assert!(loaded.config().contains("l2_as_dot_product"));
+    let got = loaded.search(row(&extra, 4), exhaustive).unwrap();
+    assert_eq!(got.distances[0], 0.0);
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // Builder errors.
+    let err = ConfigBuilder::new(K, DistanceMeasure::DotProduct, DIM)
+        .score_brute_force(Quantization::Float32)
+        .l2_as_dot_product(L2AsDotProductOptions::new())
+        .build(100);
+    assert!(err.is_err());
+    let err = ConfigBuilder::new(K, DistanceMeasure::SquaredL2, DIM)
+        .score_brute_force(Quantization::Float32)
+        .l2_as_dot_product(L2AsDotProductOptions::new().scale(f64::NAN))
+        .build(100);
+    assert!(matches!(err, Err(ScannError::InvalidArgument(_))), "{err:?}");
 }

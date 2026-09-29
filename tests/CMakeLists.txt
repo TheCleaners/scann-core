@@ -60,12 +60,14 @@ set(SCANN_MUTFUZZ_CONFIGS
   tree_pca_ah_dot tree_trunc_ah_dot tree_upper_ah_dot tree_upper2_ah_dot
   tree_sph_ah_dot tree_sph_bf_l2 tree_sph_bf16_dot tree_incr_ah_dot
   tree_incr_bf_l2 tree_soar_ah_dot tree_soar_ah_rint8_dot tree_soar_bf_dot
-  tree_soar_bf16_dot tree_soar_int8_dot tree_incr_soar_ah_dot)
+  tree_soar_bf16_dot tree_soar_int8_dot tree_incr_soar_ah_dot
+  l2mips_bf tree_l2mips_ah tree_l2mips_ah_dpb3 tree_soar_l2mips_ah
+  tree_l2mips_ah_rbf16 tree_incr_l2mips_ah)
 foreach(cfg IN LISTS SCANN_MUTFUZZ_CONFIGS)
   add_test(NAME mutfuzz_${cfg} COMMAND scann_core_mutfuzz ${cfg} 1 600 4)
   set_tests_properties(mutfuzz_${cfg} PROPERTIES TIMEOUT 900 LABELS mutfuzz)
 endforeach()
-foreach(cfg tree_ah_dot tree_soar_ah_dot)
+foreach(cfg tree_ah_dot tree_soar_ah_dot tree_l2mips_ah)
   add_test(NAME mutfuzz_${cfg}_inject COMMAND scann_core_mutfuzz ${cfg} 2 600 4)
   set_tests_properties(mutfuzz_${cfg}_inject PROPERTIES TIMEOUT 900
     LABELS mutfuzz ENVIRONMENT INJECT=1)
@@ -93,6 +95,15 @@ add_executable(scann_core_config_regressions cpp/config_regressions.cc)
 target_link_libraries(scann_core_config_regressions PRIVATE scann::core)
 add_test(NAME config_regressions COMMAND scann_core_config_regressions)
 set_tests_properties(config_regressions PROPERTIES TIMEOUT 900)
+
+# The exact L2 -> inner-product reduction (l2_as_dot_product): results equal
+# to a manually augmented dot-product index's, exact squared L2 distances,
+# persistence (directory and in memory), mutations, retraining, config
+# errors, and a clean load failure where the reduction is unknown.
+add_executable(scann_core_l2_as_dot_product_test cpp/l2_as_dot_product_test.cc)
+target_link_libraries(scann_core_l2_as_dot_product_test PRIVATE scann::core)
+add_test(NAME l2_as_dot_product COMMAND scann_core_l2_as_dot_product_test)
+set_tests_properties(l2_as_dot_product PROPERTIES TIMEOUT 900)
 
 # The default thread count (scann_core::AvailableCPUs): cgroup quota parsing,
 # the SCANN_NUM_THREADS override, the affinity mask.
@@ -202,6 +213,12 @@ if(SCANN_BUILD_PYTHON AND SCANN_PYTHON_RUNTIME_OK)
   scann_add_python_test(python_torch_native python/test_torch_native.py)
   set_tests_properties(python_torch_native PROPERTIES SKIP_RETURN_CODE 77
                        TIMEOUT 1800 ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
+  # builder(...).l2_as_dot_product(): the manual recipe's ids, squared L2
+  # distances, persistence, mutations, rebalance, and scann.torch /
+  # scann.tf on such an index when PyTorch / TensorFlow are installed.
+  scann_add_python_test(python_l2_as_dot_product python/test_l2_as_dot_product.py)
+  set_tests_properties(python_l2_as_dot_product PROPERTIES TIMEOUT 900
+                       ENVIRONMENT "${SCANN_TORCH_TEST_ENV}")
 
   # The Python examples assert their results, so they run as tests too.
   # The TensorFlow ones exit with 77 (skipped) without TensorFlow.

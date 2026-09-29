@@ -110,6 +110,22 @@ CASES = {
         ("truncate", {"reduction_dim": 64}),
         ("tree", {"num_leaves": 64, "num_leaves_to_search": 8}),
         ("score_ah", {"dimensions_per_block": 2})]),
+    # scann-core's l2_as_dot_product(): a dot-product index over one more
+    # dimension (AVQ, SOAR, residual AH), top-level distance squared_l2.
+    "l2mips_tree_ah": ("squared_l2", [
+        ("tree", {"num_leaves": 64, "num_leaves_to_search": 8, "avq": 2.5,
+                  "soar_lambda": 1.0, "quantize_centroids": True}),
+        ("score_ah", {"dimensions_per_block": 3,
+                      "anisotropic_quantization_threshold": 150.0}),
+        ("reorder", {"reordering_num_neighbors": 100, "quantize": RT.BFLOAT16}),
+        ("l2_as_dot_product", {})]),
+    "l2mips_pca_explicit": ("squared_l2", [
+        ("l2_as_dot_product", {"scale": 1000.0, "center": 5.5}),
+        ("pca", {"reduction_dim": 32, "pca_significance_threshold": None}),
+        ("tree", {"num_leaves": 64, "num_leaves_to_search": 8}),
+        ("score_ah", {"dimensions_per_block": 2})]),
+    "l2mips_bf": ("squared_l2", [
+        ("score_brute_force", {}), ("l2_as_dot_product", {"scale": 2.0})]),
     "autopilot_default": ("dot_product", [("autopilot", {})]),
     "autopilot_online_int8": ("squared_l2", [
         ("autopilot", {"mode": scann.scann_ops.py.scann_builder.IncrementalMode.ONLINE,

@@ -43,7 +43,8 @@ tree_ah_lut256_dot tree_ah_dpb3_l2 tree_qc_ah_dot tree_pca_ah_dot
 tree_trunc_ah_dot tree_upper_ah_dot tree_upper2_ah_dot tree_sph_ah_dot
 tree_sph_bf_l2 tree_sph_bf16_dot tree_incr_ah_dot tree_incr_bf_l2
 tree_soar_ah_dot tree_soar_ah_rint8_dot tree_soar_bf_dot tree_soar_bf16_dot
-tree_soar_int8_dot tree_incr_soar_ah_dot"
+tree_soar_int8_dot tree_incr_soar_ah_dot l2mips_bf tree_l2mips_ah
+tree_l2mips_ah_dpb3 tree_soar_l2mips_ah tree_l2mips_ah_rbf16 tree_incr_l2mips_ah"
 [ -x "$BIN" ] || { echo "no fuzzer binary at $BIN (see the header)" >&2; exit 1; }
 mkdir -p "$LOG"
 export BIN LOG ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}" \

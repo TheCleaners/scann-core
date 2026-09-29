@@ -41,6 +41,11 @@
 //  - bfloat16 and AH without reordering: see the tolerances in check().
 // Every checked search is also repeated and must match bit for bit.
 //
+// Configs with "l2mips" search squared L2 through an inner-product index
+// (L2AsDotProduct): the shadow holds the vectors as given, the mutator gets
+// them through ScannInterface::ToStoredDatapoints (with the extra
+// coordinate), and the searches return squared L2 distances.
+//
 // With INJECT=1 in the environment, some adds and updates on tree + AH
 // indexes get a precomputed leaf artifact of the wrong type for one of their
 // leaves: the mutation must fail and leave the index exactly as it was
@@ -114,6 +119,10 @@ int main(int argc, char** argv) {
   if (cfg.find("sph") != std::string::npos) t.spherical = true;
   if (cfg.find("qc") != std::string::npos) t.quantize_centroids = true;
   if (cfg.find("tree") != std::string::npos) b.Tree(t);
+  // l2mips: squared L2 through an inner-product index (L2AsDotProduct);
+  // mutations go through ScannInterface::ToStoredDatapoints.
+  const bool mips = cfg.find("l2mips") != std::string::npos;
+  if (mips) b.L2AsDotProduct();
   if (cfg.find("pca") != std::string::npos) { sc::PcaOptions p; p.reduction_dim = 6; b.Pca(p); }
   if (cfg.find("trunc") != std::string::npos) b.Truncate(6);
   if (cfg.find("upper") != std::string::npos) {
@@ -175,6 +184,14 @@ int main(int argc, char** argv) {
   auto st = s->Initialize(flat, n0, *text, 1);
   if (!st.ok()) { std::printf("init: %s\n", st.ToString().c_str()); return 2; }
 
+  // The vector as the index stores it (with l2mips, with its extra
+  // coordinate); a DatapointPtr to it stays valid until the next call.
+  std::vector<float> stored_buf;
+  auto to_stored = [&](const std::vector<float>& v) {
+    if (!mips) return MakeDatapointPtr(v.data(), dim);
+    s->ToStoredDatapoints(v, &stored_buf);
+    return MakeDatapointPtr(stored_buf.data(), stored_buf.size());
+  };
   auto dist = [&](const std::vector<float>& q, const std::vector<float>& x) {
     double d = 0;
     for (size_t k = 0; k < dim; ++k) d += l2 ? (q[k] - x[k]) * (q[k] - x[k]) : -double(q[k]) * x[k];
@@ -204,6 +221,14 @@ int main(int argc, char** argv) {
         // 100 runs per config.
         double tol = exact ? 1e-3 * (1 + std::fabs(ref)) : 0.25 * (1 + std::fabs(ref));
         if (cfg.find("bf16") != std::string::npos) tol = 0.02 * (1 + std::fabs(ref));
+        if (mips && cfg.find("bf16") != std::string::npos) {
+          // Through the reduction, bfloat16 rounds q'.x' (~ (|q|^2 + |x|^2)
+          // / 2), not the difference q - x: the error scales with the norms
+          // even when the distance is ~0.
+          double qn = 0, xn = 0;
+          for (size_t k = 0; k < dim; ++k) { qn += double(q[k]) * q[k]; xn += double(shadow[idx][k]) * shadow[idx][k]; }
+          tol += 0.01 * (qn + xn);
+        }
         if (cfg.find("noreorder") != std::string::npos) {
           double qn = 0, xn = 0;
           for (size_t k = 0; k < dim; ++k) { qn += double(q[k]) * q[k]; xn += double(shadow[idx][k]) * shadow[idx][k]; }
@@ -265,7 +290,7 @@ int main(int argc, char** argv) {
   // Artifacts for v with leaf `bad` replaced by a bogus one; null if this
   // index's artifacts aren't TreeAHHybridResidual's.
   auto bogus_artifacts = [&](Mutator* m, const std::vector<float>& v) -> std::unique_ptr<UntypedSingleMachineSearcherBase::PrecomputedMutationArtifacts> {
-    auto a = m->ComputePrecomputedMutationArtifacts(MakeDatapointPtr(v.data(), dim));
+    auto a = m->ComputePrecomputedMutationArtifacts(to_stored(v));
     if (auto* t = dynamic_cast<TreeAhArtifacts*>(a.get()); t && !t->tokens.empty()) {
       t->leaf_precomputed_artifacts[rng() % t->tokens.size()] = std::make_unique<BogusArtifacts>();
       return a;
@@ -304,8 +329,8 @@ int main(int argc, char** argv) {
         UntypedSingleMachineSearcherBase::MutationOptions mo{.precomputed_mutation_artifacts = a.get()};
         const bool is_update = rng() % 2;
         DatapointIndex i = rng() % shadow.size();
-        bool ok = std::getenv("CONTROL") ? false : is_update ? m->UpdateDatapoint(MakeDatapointPtr(v.data(), dim), i, mo).ok()
-                            : m->AddDatapoint(MakeDatapointPtr(v.data(), dim), "", mo).ok();
+        bool ok = std::getenv("CONTROL") ? false : is_update ? m->UpdateDatapoint(to_stored(v), i, mo).ok()
+                            : m->AddDatapoint(to_stored(v), "", mo).ok();
         if (ok) {
           // Leaves that take no artifacts (brute force) ignore the bogus
           // one: a normal mutation.
@@ -335,11 +360,11 @@ int main(int argc, char** argv) {
       int bs = 1 + rng() % max_batch;
       DenseDataset<float> ds;
       std::vector<std::vector<float>> vs;
-      for (int i = 0; i < bs; ++i) { vs.push_back(rand_vec()); (void)ds.Append(MakeDatapointPtr(vs.back().data(), dim), ""); }
+      for (int i = 0; i < bs; ++i) { vs.push_back(rand_vec()); (void)ds.Append(to_stored(vs.back()), ""); }
       auto pre = m->ComputePrecomputedMutationArtifacts(ds, s->parallel_query_pool());
       for (int i = 0; i < bs; ++i) {
         UntypedSingleMachineSearcherBase::MutationOptions mo{.precomputed_mutation_artifacts = pre[i].get()};
-        auto r = m->AddDatapoint(MakeDatapointPtr(vs[i].data(), dim), "", mo);
+        auto r = m->AddDatapoint(to_stored(vs[i]), "", mo);
         if (!r.ok()) { FAILF("step %d add: %s", step, r.status().ToString().c_str()); continue; }
         if (*r != shadow.size()) FAILF("step %d add returned %u, expected %zu", step, *r, shadow.size());
         shadow_add(vs[i]);
@@ -347,7 +372,7 @@ int main(int argc, char** argv) {
     } else if (op < 65 && !shadow.empty()) {  // update
       DatapointIndex i = rng() % shadow.size();
       auto v = rand_vec();
-      auto r = m->UpdateDatapoint(MakeDatapointPtr(v.data(), dim), i, {});
+      auto r = m->UpdateDatapoint(to_stored(v), i, {});
       if (!r.ok()) FAILF("step %d update %u: %s", step, i, r.status().ToString().c_str());
       else { if (*r != i) FAILF("step %d update returned %u, expected %u", step, *r, i); shadow_set(i, v); }
     } else if (op < 95 && !shadow.empty()) {  // delete

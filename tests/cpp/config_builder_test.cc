@@ -125,6 +125,11 @@ void Apply(ConfigBuilder& b, const std::string& method, const Args& a) {
     b.Pca(o);
   } else if (method == "truncate") {
     b.Truncate(I(a.at("reduction_dim")));
+  } else if (method == "l2_as_dot_product") {
+    scann_core::L2AsDotProductOptions o;
+    if (has("scale")) o.scale = F(a.at("scale"));
+    if (has("center")) o.center = F(a.at("center"));
+    b.L2AsDotProduct(o);
   } else if (method == "autopilot") {
     IncrementalMode m = IncrementalMode::kNone;
     if (has("mode"))
@@ -295,6 +300,42 @@ int main(int argc, char** argv) {
   ExpectError("incremental_threshold with upper_tree", [&](ConfigBuilder& b) {
     b.Tree(incremental_tree).UpperTree({40, 10}).ScoreAh(ah);
   });
+
+  // L2AsDotProduct(): only for squared L2, and not with what would break
+  // the reduction (as the Python builder).
+  ExpectError("l2_as_dot_product with dot product", [&](ConfigBuilder& b) {
+    b.ScoreAh(ah).L2AsDotProduct();
+  });
+  ExpectError("l2_as_dot_product with a spherical tree", [&](ConfigBuilder& b) {
+    b = ConfigBuilder(10, DistanceMeasure::kSquaredL2, 128);
+    auto t = tree;
+    t.spherical = true;
+    b.Tree(t).ScoreAh(ah).L2AsDotProduct();
+  });
+  ExpectError("l2_as_dot_product with truncate", [&](ConfigBuilder& b) {
+    b = ConfigBuilder(10, DistanceMeasure::kSquaredL2, 128);
+    b.Truncate(64).Tree(tree).ScoreAh(ah).L2AsDotProduct();
+  });
+  ExpectError("l2_as_dot_product with autopilot", [&](ConfigBuilder& b) {
+    b = ConfigBuilder(10, DistanceMeasure::kSquaredL2, 128);
+    b.Autopilot().L2AsDotProduct();
+  });
+  ExpectError("l2_as_dot_product scale 0", [&](ConfigBuilder& b) {
+    b = ConfigBuilder(10, DistanceMeasure::kSquaredL2, 128);
+    b.ScoreAh(ah).L2AsDotProduct({0.0, {}});
+  });
+  ExpectError("l2_as_dot_product twice", [&](ConfigBuilder& b) {
+    b = ConfigBuilder(10, DistanceMeasure::kSquaredL2, 128);
+    b.ScoreAh(ah).L2AsDotProduct().L2AsDotProduct();
+  });
+  // dimensions_per_block may be the dimensionality + 1 (one AH block).
+  {
+    ConfigBuilder b(10, DistanceMeasure::kSquaredL2, 8);
+    scann_core::AhOptions a9;
+    a9.dimensions_per_block = 9;
+    if (!b.ScoreAh(a9).L2AsDotProduct().Build().ok())
+      Fail("l2_as_dot_product: 9 dimensions per block of 8 + 1 rejected");
+  }
 
   // soar_lambda = 0.0 on the upper tree is kept (Python turns it into 1.5).
   {
