@@ -120,7 +120,8 @@ std::optional<double> OptF(double v) {
 
 std::unique_ptr<ScannIndex> scann_new(rust::Slice<const float> dataset,
                                       uint64_t n_points, rust::Str config,
-                                      int32_t training_threads) {
+                                      int32_t training_threads,
+                                      rust::Slice<const float> calibration_queries) {
   // Datapoint indices are 32-bit; don't let the cast below truncate.
   // (ScannIndex::with_training_threads already checks this.)
   if (n_points > research_scann::kInvalidDatapointIndex)
@@ -129,7 +130,9 @@ std::unique_ptr<ScannIndex> scann_new(rust::Slice<const float> dataset,
   auto idx = std::make_unique<ScannIndex>();
   ThrowIfNotOk(idx->Initialize(ConstSpan<float>(dataset.data(), dataset.size()),
                                static_cast<DatapointIndex>(n_points),
-                               View(config), training_threads),
+                               View(config), training_threads,
+                               ConstSpan<float>(calibration_queries.data(),
+                                                calibration_queries.size())),
                "Error initializing searcher");
   return idx;
 }
@@ -395,6 +398,8 @@ void config_builder_autopilot(ConfigBuilder& b, const FfiAutopilotOptions& o) {
   a.rules = o.upstream_rules ? scann_core::AutopilotRules::kUpstream
                              : scann_core::AutopilotRules::kTuned;
   a.allow_l2_as_dot_product = o.allow_l2_as_dot_product;
+  if (!std::isnan(o.target_recall)) a.target_recall = o.target_recall;
+  a.calibration_sample_size = o.calibration_sample_size;
   b.Autopilot(a);
 }
 
