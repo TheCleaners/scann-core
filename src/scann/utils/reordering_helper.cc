@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #include "scann/utils/reordering_helper.h"
 
@@ -23,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -254,6 +259,131 @@ class SetLimitedInnerTop1Functor {
 
 }  // namespace one_to_many_low_level
 
+namespace {
+
+// scann-core: software prefetching of the candidates' rows for reordering.
+// Reordering reads one row per candidate at a random place in the dataset,
+// so it mostly waits on memory. The one-to-many kernels score the
+// candidates in groups of three, one from each third of the result list
+// ((i, i + m, i + 2m) with m = n / 3; the n % 3 left over last or, in the
+// int8 and bfloat16 kernels, first). Their own prefetches reach only the
+// next group or two (to L1), and the float32 kernels' none at all past 512
+// dimensions. CandidateRowPrefetcher primes the first `ahead` rows of each
+// third and, each time a candidate has been scored, prefetches every cache
+// line of the row `ahead` positions further on in its third, into L2
+// (prefetcht1 on x86: on Zen 4, prefetches to L1 were slower, as they take
+// the L1 miss buffers the kernel's own loads need).
+//
+// The distance keeps a fixed number of bytes in flight, tuned on Zen 4:
+//  - float32 kernels: about 9 KiB (8 rows ahead per third for 100
+//    dimensions, 3 for 256; fewer and more were slower). Rows over 2 KiB
+//    (above 512 dimensions) aren't prefetched: there the kernel streams at
+//    the core's memory bandwidth, and every distance tried was as fast or
+//    slower;
+//  - int8 and bfloat16 kernels, which prefetch the next rows themselves:
+//    about 6 KiB (10 rows ahead for 100-dimensional bfloat16, 2 for 512;
+//    3 for 512 gained nothing). Rows over 1 KiB (bfloat16 above 512
+//    dimensions, int8 above 1024) aren't prefetched: at 768 bfloat16
+//    dimensions no distance was faster.
+//
+// Prefetching doesn't change what the kernels compute: the results are
+// bit-identical, and a wrong guess of the kernel's order costs only time.
+class CandidateRowPrefetcher {
+ public:
+  // How far ahead to prefetch, for one kind of kernel.
+  struct Tuning {
+    size_t bytes_in_flight;
+    size_t max_row_bytes;
+  };
+  static constexpr Tuning kFloatKernel = {9 * 1024, 2048};
+  static constexpr Tuning kQuantizedKernel = {6 * 1024, 1024};
+
+  CandidateRowPrefetcher(const void* rows, size_t row_bytes,
+                         ConstSpan<pair<DatapointIndex, float>> result,
+                         Tuning tuning)
+      : rows_(static_cast<const char*>(rows)),
+        row_bytes_(row_bytes),
+        result_(result.data()),
+        size_(result.size()),
+        third_(result.size() / 3),
+        ahead_(RowsAhead(row_bytes, tuning)) {}
+
+  bool enabled() const { return ahead_ != 0 && size_ != 0; }
+
+  void Prime() const {
+    const size_t per_third = std::min(ahead_, third_);
+    for (size_t start : {size_t{0}, third_, 2 * third_}) {
+      for (size_t pos = start; pos < start + per_third; ++pos) Row(pos);
+    }
+    for (size_t pos = 3 * third_; pos < size_; ++pos) Row(pos);
+  }
+
+  SCANN_INLINE void AfterScored(size_t pos) const {
+    const size_t next = pos + ahead_;
+    const size_t limit =
+        pos < third_ ? third_ : (pos < 2 * third_ ? 2 * third_ : size_);
+    if (next < limit) Row(next);
+  }
+
+ private:
+  static size_t RowsAhead(size_t row_bytes, Tuning tuning) {
+    if (row_bytes == 0 || row_bytes > tuning.max_row_bytes) return 0;
+    const size_t group_bytes = 3 * row_bytes;
+    return std::clamp<size_t>(
+        (tuning.bytes_in_flight + group_bytes / 2) / group_bytes, 1, 16);
+  }
+
+  SCANN_INLINE void Row(size_t pos) const {
+    const char* row = rows_ + size_t{result_[pos].first} * row_bytes_;
+    const uintptr_t end = reinterpret_cast<uintptr_t>(row) + row_bytes_;
+    for (uintptr_t line = reinterpret_cast<uintptr_t>(row) & ~uintptr_t{63};
+         line < end; line += 64) {
+#if defined(__GNUC__) || defined(__clang__)
+      __builtin_prefetch(reinterpret_cast<const void*>(line), 0, 2);
+#else
+      absl::PrefetchToLocalCache(reinterpret_cast<const void*>(line));
+#endif
+    }
+  }
+
+  const char* rows_;
+  size_t row_bytes_;
+  const pair<DatapointIndex, float>* result_;
+  size_t size_;
+  size_t third_;
+  size_t ahead_;
+};
+
+template <typename Inner>
+class PrefetchingCallback {
+ public:
+  PrefetchingCallback(Inner* inner, const CandidateRowPrefetcher& prefetcher)
+      : inner_(inner), prefetcher_(prefetcher) {}
+
+  template <typename ValueT>
+  SCANN_INLINE void invoke(size_t index, ValueT val) const {
+    prefetcher_.AfterScored(index);
+    inner_->invoke(index, val);
+  }
+
+  SCANN_INLINE void prefetch(size_t index) const { inner_->prefetch(index); }
+
+ private:
+  Inner* inner_;
+  CandidateRowPrefetcher prefetcher_;
+};
+
+template <typename T>
+CandidateRowPrefetcher MakeRowPrefetcher(const DefaultDenseDatasetView<T>& view,
+                                         const NNResultsVector& result) {
+  return CandidateRowPrefetcher(
+      view.GetPtr(0), view.dimensionality() * sizeof(T), MakeConstSpan(result),
+      std::is_same_v<T, float> ? CandidateRowPrefetcher::kFloatKernel
+                               : CandidateRowPrefetcher::kQuantizedKernel);
+}
+
+}  // namespace
+
 template <typename T>
 Status ExactReorderingHelper<T>::ComputeDistancesForReordering(
     const DatapointPtr<T>& query, NNResultsVector* result) const {
@@ -262,6 +392,20 @@ Status ExactReorderingHelper<T>::ComputeDistancesForReordering(
   if (query.IsDense() && exact_reordering_dataset_->IsDense()) {
     const auto& dense_dataset =
         *down_cast<const DenseDataset<T>*>(exact_reordering_dataset_.get());
+    if constexpr (std::is_same_v<T, float>) {
+      const DefaultDenseDatasetView<T> view(dense_dataset);
+      const CandidateRowPrefetcher prefetcher =
+          MakeRowPrefetcher(view, *result);
+      if (prefetcher.enabled()) {
+        prefetcher.Prime();
+        one_to_many_low_level::SetDistanceFunctor<pair<DatapointIndex, float>>
+            set_distance(MakeMutableSpan(*result));
+        PrefetchingCallback callback(&set_distance, prefetcher);
+        DenseDistanceOneToMany(*exact_reordering_distance_, query, &view,
+                               MakeMutableSpan(*result), &callback, nullptr);
+        return OkStatus();
+      }
+    }
     DenseDistanceOneToMany<T, pair<DatapointIndex, float>>(
         *exact_reordering_distance_, query, dense_dataset,
         MakeMutableSpan(*result));
@@ -298,6 +442,21 @@ ExactReorderingHelper<T>::ComputeTop1ReorderingDistance(
   if (query.IsDense() && exact_reordering_dataset_->IsDense()) {
     const auto& dense_dataset =
         *down_cast<const DenseDataset<T>*>(exact_reordering_dataset_.get());
+    if constexpr (std::is_same_v<T, float>) {
+      const DefaultDenseDatasetView<T> view(dense_dataset);
+      const CandidateRowPrefetcher prefetcher =
+          MakeRowPrefetcher(view, *result);
+      if (prefetcher.enabled()) {
+        prefetcher.Prime();
+        one_to_many_low_level::SetTop1Functor<pair<DatapointIndex, float>,
+                                              float>
+            set_top1;
+        PrefetchingCallback callback(&set_top1, prefetcher);
+        DenseDistanceOneToMany(*exact_reordering_distance_, query, &view,
+                               MakeMutableSpan(*result), &callback, nullptr);
+        return set_top1.Top1Pair(MakeMutableSpan(*result));
+      }
+    }
     return DenseDistanceOneToManyTop1<T, float, pair<DatapointIndex, float>>(
         *exact_reordering_distance_, query, dense_dataset,
         MakeMutableSpan(*result));
@@ -429,13 +588,9 @@ FixedPointFloatDenseDotProductReorderingHelper::CreateBruteForceSearcher(
 Status
 FixedPointFloatDenseDotProductReorderingHelper::ComputeDistancesForReordering(
     const DatapointPtr<float>& query, NNResultsVector* result) const {
-  auto preprocessed = PrepareForAsymmetricScalarQuantizedDotProduct(
-      query, *inverse_multipliers_);
-  DenseDotProductDistanceOneToManyInt8Float(
-      MakeDatapointPtr(preprocessed.get(), query.nonzero_entries()),
-      *fixed_point_dataset_, MakeMutableSpan(*result));
-
-  return OkStatus();
+  one_to_many_low_level::SetDistanceFunctor<pair<DatapointIndex, float>>
+      set_distance(MakeMutableSpan(*result));
+  return ComputeDistancesForReordering(query, result, &set_distance);
 }
 
 template <typename CallbackFunctor>
@@ -445,10 +600,22 @@ FixedPointFloatDenseDotProductReorderingHelper::ComputeDistancesForReordering(
     CallbackFunctor* __restrict__ callback) const {
   auto preprocessed = PrepareForAsymmetricScalarQuantizedDotProduct(
       query, *inverse_multipliers_);
-  auto view = DefaultDenseDatasetView<int8_t>(*fixed_point_dataset_);
-  one_to_many_low_level::DenseDotProductDistanceOneToManyInt8FloatLowLevel<
-      DenseDatasetView<int8_t>, false, DatapointIndex>(
-      preprocessed.get(), &view, nullptr, MakeMutableSpan(*result), callback);
+  const DefaultDenseDatasetView<int8_t> view(*fixed_point_dataset_);
+  const CandidateRowPrefetcher prefetcher = MakeRowPrefetcher(view, *result);
+  constexpr const float* kNoMultipliersForDotProductDistance = nullptr;
+  constexpr const DatapointIndex* kNoIndices = nullptr;
+  if (prefetcher.enabled()) {
+    prefetcher.Prime();
+    one_to_many_low_level::OneToManyInt8FloatDispatch<false, false>(
+        preprocessed.get(), view, kNoMultipliersForDotProductDistance,
+        kNoIndices, MakeMutableSpan(*result),
+        PrefetchingCallback(callback, prefetcher));
+  } else {
+    one_to_many_low_level::OneToManyInt8FloatDispatch<false, false>(
+        preprocessed.get(), view, kNoMultipliersForDotProductDistance,
+        kNoIndices, MakeMutableSpan(*result),
+        one_to_many_low_level::GetCopyableCallback(callback));
+  }
   return OkStatus();
 }
 
@@ -744,12 +911,20 @@ Bfloat16ReorderingHelper<kIsDotProduct>::~Bfloat16ReorderingHelper() = default;
 template <bool kIsDotProduct>
 Status Bfloat16ReorderingHelper<kIsDotProduct>::ComputeDistancesForReordering(
     const DatapointPtr<float>& query, NNResultsVector* result) const {
-  auto view = DefaultDenseDatasetView<int16_t>(*bfloat16_dataset_);
-  if constexpr (kIsDotProduct) {
-    DenseDotProductDistanceOneToManyBf16Float(query, view,
-                                              MakeMutableSpan(*result));
+  const DefaultDenseDatasetView<int16_t> view(*bfloat16_dataset_);
+  const CandidateRowPrefetcher prefetcher = MakeRowPrefetcher(view, *result);
+  one_to_many_low_level::SetDistanceFunctor<pair<DatapointIndex, float>>
+      set_distance(MakeMutableSpan(*result));
+  constexpr const DatapointIndex* kNoIndices = nullptr;
+  if (prefetcher.enabled()) {
+    prefetcher.Prime();
+    one_to_many_low_level::OneToManyBf16FloatDispatch<false, !kIsDotProduct>(
+        query.values(), view, kNoIndices, MakeMutableSpan(*result),
+        PrefetchingCallback(&set_distance, prefetcher));
   } else {
-    OneToManyBf16FloatSquaredL2(query, view, MakeMutableSpan(*result));
+    one_to_many_low_level::OneToManyBf16FloatDispatch<false, !kIsDotProduct>(
+        query.values(), view, kNoIndices, MakeMutableSpan(*result),
+        set_distance);
   }
   return OkStatus();
 }

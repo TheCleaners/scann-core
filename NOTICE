@@ -473,6 +473,15 @@ isn't a one-line change:
       what the AVX2 kernel pushes (its thresholds and their clamping, int32
       accumulators from 256 blocks, datapoint-translation and batch-filter
       predicates), for bit-identical results.
+  src/scann/utils/reordering_helper.cc
+      Reordering prefetches the candidates' rows (CandidateRowPrefetcher):
+      the float32 (up to 512 dimensions), bfloat16 and int8 reordering
+      helpers prime the first rows of each third of the candidate list and,
+      as each candidate is scored, prefetch every cache line of a row a few
+      positions further on in its third, into L2. The kernels and their
+      arithmetic are unchanged (bit-identical results); the int8 helper
+      calls the kernel with the plain dataset view instead of the virtual
+      one.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
       directly (no docid lock, no context manager). upsert() passes the rows
