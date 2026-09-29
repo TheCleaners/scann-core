@@ -166,6 +166,44 @@ Status PostprocessDistancesForSpilling(
   return OkStatus();
 }
 
+Status PostprocessDistancesForSpillingFast(
+    ConstSpan<float> distances, QuerySpillingConfig::SpillingType spilling_type,
+    double spilling_threshold, int32_t max_centers,
+    int32_t num_tokenized_branch,
+    std::vector<pair<DatapointIndex, float>>* child_centers) {
+  float max_dist_to_consider = std::numeric_limits<float>::infinity();
+  if (spilling_type != QuerySpillingConfig::NO_SPILLING &&
+      spilling_type != QuerySpillingConfig::FIXED_NUMBER_OF_CENTERS) {
+    const float nearest_center_distance =
+        *std::min_element(distances.begin(), distances.end());
+    float spill_thresh =
+        std::nextafter(cast_ops::DoubleToFloat(spilling_threshold),
+                       std::numeric_limits<float>::infinity());
+    SCANN_ASSIGN_OR_RETURN(
+        max_dist_to_consider,
+        ComputeThreshold(nearest_center_distance, spill_thresh, spilling_type));
+  }
+  const int32_t max_results =
+      (spilling_type == QuerySpillingConfig::NO_SPILLING)
+          ? std::max(1, num_tokenized_branch)
+          : max_centers;
+  child_centers->clear();
+  // A negative max_centers takes every center within the threshold, as
+  // FastTopNeighbors (size_t) would.
+  const size_t k = static_cast<size_t>(static_cast<int64_t>(max_results));
+  if constexpr (std::is_same_v<DatapointIndex, uint32_t>) {
+    scann_core::SelectTopK(distances.data(), distances.size(), k,
+                           max_dist_to_consider, child_centers);
+  } else {
+    scann_core::ScratchLease<std::vector<std::pair<uint32_t, float>>> tmp;
+    tmp->clear();
+    scann_core::SelectTopK(distances.data(), distances.size(), k,
+                           max_dist_to_consider, tmp.get());
+    child_centers->assign(tmp->begin(), tmp->end());
+  }
+  return OkStatus();
+}
+
 }  // namespace kmeans_tree_internal
 
 Status KMeansTreeNode::Train(const DatasetView& training_data,

@@ -49,6 +49,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <utility>
 #include <vector>
 
 namespace scann_core {
@@ -62,6 +63,16 @@ void SetFastInt8TokenizationEnabled(bool enabled);
 
 // "avx512_vnni", "avx2" or "" (none: the exact kernel runs).
 const char* FastInt8KernelName();
+
+// The k smallest of distances[0, n) that are <= max_distance (NaNs never),
+// by (distance, index): ties go to the lower index, so the result depends
+// only on the input. Appended to *out as (index, distance), in no particular
+// order. For the fast kernel's leaf selection (it replaces ScaNN's
+// FastTopNeighbors there, whose ties depend on its buffer's history);
+// AVX-512 or AVX2, else scalar.
+void SelectTopK(const float* distances, size_t n, size_t k,
+                float max_distance,
+                std::vector<std::pair<uint32_t, float>>* out);
 
 template <typename T, size_t kAlign>
 struct AlignedAllocator {

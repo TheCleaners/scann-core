@@ -114,7 +114,8 @@ class KMeansTreeNode {
   Status GetAllDistancesInt8(const DistanceMeasure& dist,
                              const DatapointPtr<float>& query,
                              std::vector<OutT>* distances,
-                             bool allow_fast_int8 = false) const;
+                             bool allow_fast_int8 = false,
+                             bool* used_fast_int8 = nullptr) const;
 
   void CreateFixedPointCenters();
 
@@ -222,6 +223,18 @@ Status PostprocessDistancesForSpilling(
     int32_t num_tokenized_branch,
     std::vector<pair<DatapointIndex, float>>* child_centers);
 
+// scann-core: the same selection for the fast int8 kernel's distances, with
+// scann_core::SelectTopK instead of FastTopNeighbors: ties at the cutoff go
+// to the lower center index (FastTopNeighbors' depend on its buffer's
+// history), and the threshold is inclusive exactly (FastTopNeighbors let
+// its SIMD part accept one float step above it). Deterministic like the
+// original, not bit-identical to it.
+Status PostprocessDistancesForSpillingFast(
+    ConstSpan<float> distances, QuerySpillingConfig::SpillingType spilling_type,
+    double spilling_threshold, int32_t max_centers,
+    int32_t num_tokenized_branch,
+    std::vector<pair<DatapointIndex, float>>* child_centers);
+
 }  // namespace kmeans_tree_internal
 
 template <typename Real, typename OutT>
@@ -238,7 +251,8 @@ template <typename OutT>
 Status KMeansTreeNode::GetAllDistancesInt8(const DistanceMeasure& dist,
                                            const DatapointPtr<float>& query,
                                            std::vector<OutT>* distances,
-                                           bool allow_fast_int8) const {
+                                           bool allow_fast_int8,
+                                           bool* used_fast_int8) const {
   const auto& centers = fixed_point_centers_;
   const bool is_sq_l2 =
       dist.specially_optimized_distance_tag() == DistanceMeasure::SQUARED_L2;
@@ -299,6 +313,7 @@ Status KMeansTreeNode::GetAllDistancesInt8(const DistanceMeasure& dist,
     DenseDotProductDistanceOneToManyInt8Float(adjusted, centers,
                                               MakeMutableSpan(*distances));
   }
+  if (used_fast_int8) *used_fast_int8 = fast;
   if (is_sq_l2) {
     DCHECK_EQ(center_squared_l2_norms_.size(), distances->size());
     float query_norm = SquaredL2Norm(query);
@@ -332,8 +347,14 @@ Status KMeansTreeNode::FindChildrenWithSpilling(
     this->GetAllDistancesFloatingPoint(dist, query, &distances);
   } else {
     static_assert(std::is_same_v<DataType, int8_t>);
-    SCANN_RETURN_IF_ERROR(
-        this->GetAllDistancesInt8(dist, query, &distances, allow_fast_int8));
+    bool used_fast = false;
+    SCANN_RETURN_IF_ERROR(this->GetAllDistancesInt8(
+        dist, query, &distances, allow_fast_int8, &used_fast));
+    if (used_fast) {
+      return kmeans_tree_internal::PostprocessDistancesForSpillingFast(
+          MakeMutableSpan(distances), spilling_type, spilling_threshold,
+          max_centers, num_tokenized_branch, child_centers);
+    }
   }
 
   return kmeans_tree_internal::PostprocessDistancesForSpilling(

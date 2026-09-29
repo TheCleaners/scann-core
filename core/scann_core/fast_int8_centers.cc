@@ -387,6 +387,271 @@ void FastInt8Centers::RunAvx512Vnni(const QuantizedQuery& q,
 
 #endif
 
+// --- SelectTopK ---
+//
+// Two passes over the distances:
+//  1. the minimum of each of G groups (element i is in group i mod G), G >=
+//     2k: the k-th smallest group minimum T is >= the k-th smallest
+//     distance (k distinct elements are <= T), and for distances in random
+//     order only about 1.4k (k = 1: one) elements are <= T;
+//  2. collect the elements <= min(T, max_distance), then the k smallest of
+//     those by (distance, index).
+// Exact; the result depends only on the input.
+
+namespace {
+
+// Maps floats to integers of the same order (-0 as +0).
+inline uint32_t OrderedBits(float d) {
+  d += 0.0f;
+  uint32_t b;
+  std::memcpy(&b, &d, sizeof(b));
+  return (b & 0x80000000u) ? ~b : (b | 0x80000000u);
+}
+
+struct TopKBuffer {
+  std::vector<float> group_min;
+  std::vector<float> d;
+  std::vector<uint32_t> i;
+  std::vector<uint64_t> keys;
+};
+
+// Per-thread scratch: not kept once grown past 1 MiB.
+bool ScratchIsRetainable(const TopKBuffer& b) {
+  return (b.group_min.capacity() + b.d.capacity() + b.i.capacity()) * 4 +
+             b.keys.capacity() * 8 <=
+         kMaxRetainedBytes;
+}
+
+size_t NumGroups(size_t k) {
+  return (std::max<size_t>(64, 2 * k) + 15) / 16 * 16;
+}
+
+void GroupMinScalar(const float* d, size_t n, size_t g, float* out) {
+  std::fill(out, out + g, std::numeric_limits<float>::infinity());
+  for (size_t i = 0; i < n; ++i) {
+    float& m = out[i % g];
+    if (d[i] < m) m = d[i];
+  }
+}
+
+size_t CollectScalar(const float* d, size_t n, float t, float* od,
+                     uint32_t* oi) {
+  size_t c = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (d[i] <= t) {
+      od[c] = d[i];
+      oi[c] = static_cast<uint32_t>(i);
+      ++c;
+    }
+  }
+  return c;
+}
+
+#ifdef __x86_64__
+
+__attribute__((target("avx,avx2,fma,avx512f"))) void GroupMinAvx512(
+    const float* d, size_t n, size_t g, float* out) {
+  const __m512 inf = _mm512_set1_ps(std::numeric_limits<float>::infinity());
+  for (size_t j = 0; j < g; j += 16) _mm512_storeu_ps(out + j, inf);
+  for (size_t base = 0; base < n; base += g) {
+    const size_t len = std::min(g, n - base);
+    size_t j = 0;
+    for (; j + 16 <= len; j += 16) {
+      // min(x, m) is m when x is NaN.
+      _mm512_storeu_ps(out + j, _mm512_min_ps(_mm512_loadu_ps(d + base + j),
+                                              _mm512_loadu_ps(out + j)));
+    }
+    if (j < len) {
+      const __mmask16 lm = static_cast<__mmask16>((1u << (len - j)) - 1);
+      const __m512 x = _mm512_mask_loadu_ps(inf, lm, d + base + j);
+      _mm512_storeu_ps(out + j, _mm512_min_ps(x, _mm512_loadu_ps(out + j)));
+    }
+  }
+}
+
+// The k-th smallest group minimum for G = 16 * kRegs groups, in registers;
+// the k-th smallest of those by rank counting (no data-dependent branches):
+// the largest minimum with fewer than k minima below it.
+template <int kRegs>
+__attribute__((target("avx,avx2,fma,avx512f"))) float GroupThresholdAvx512(
+    const float* d, size_t n, size_t k) {
+  constexpr size_t g = 16 * kRegs;
+  const __m512 inf = _mm512_set1_ps(std::numeric_limits<float>::infinity());
+  __m512 acc[kRegs];
+  for (int a = 0; a < kRegs; ++a) acc[a] = inf;
+  size_t base = 0;
+  for (; base + g <= n; base += g) {
+    for (int a = 0; a < kRegs; ++a) {
+      // min(x, m) is m when x is NaN.
+      acc[a] = _mm512_min_ps(_mm512_loadu_ps(d + base + 16 * a), acc[a]);
+    }
+  }
+  for (int a = 0; a < kRegs; ++a) {
+    const size_t first = base + 16 * a;
+    if (first >= n) break;
+    const size_t len = std::min<size_t>(16, n - first);
+    const __mmask16 lm = static_cast<__mmask16>((1u << len) - 1);
+    acc[a] = _mm512_min_ps(_mm512_mask_loadu_ps(inf, lm, d + first), acc[a]);
+  }
+  if (k == 1) {
+    __m512 m = acc[0];
+    for (int a = 1; a < kRegs; ++a) m = _mm512_min_ps(m, acc[a]);
+    return _mm512_reduce_min_ps(m);
+  }
+  alignas(64) float mins[g];
+  for (int a = 0; a < kRegs; ++a) _mm512_store_ps(mins + 16 * a, acc[a]);
+  float t = -std::numeric_limits<float>::infinity();
+  for (size_t i = 0; i < g; ++i) {
+    const __m512 v = _mm512_set1_ps(mins[i]);
+    int below = 0;
+    for (int a = 0; a < kRegs; ++a)
+      below += __builtin_popcount(_mm512_cmp_ps_mask(acc[a], v, _CMP_LT_OQ));
+    if (static_cast<size_t>(below) < k) t = std::max(t, mins[i]);
+  }
+  return t;
+}
+
+// Writes up to 16 past the count.
+__attribute__((target("avx,avx2,fma,avx512f"))) size_t CollectAvx512(
+    const float* d, size_t n, float t, float* od, uint32_t* oi) {
+  const __m512 tv = _mm512_set1_ps(t);
+  __m512i idx = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+                                  13, 14, 15);
+  const __m512i step = _mm512_set1_epi32(16);
+  size_t c = 0;
+  for (size_t i = 0; i < n; i += 16, idx = _mm512_add_epi32(idx, step)) {
+    const __mmask16 lm = n - i >= 16
+                             ? static_cast<__mmask16>(0xFFFF)
+                             : static_cast<__mmask16>((1u << (n - i)) - 1);
+    const __m512 v = _mm512_maskz_loadu_ps(lm, d + i);
+    const __mmask16 m = lm & _mm512_cmp_ps_mask(v, tv, _CMP_LE_OQ);
+    if (m == 0) continue;
+    _mm512_storeu_ps(od + c, _mm512_maskz_compress_ps(m, v));
+    _mm512_storeu_si512(oi + c, _mm512_maskz_compress_epi32(m, idx));
+    c += static_cast<size_t>(__builtin_popcount(m));
+  }
+  return c;
+}
+
+__attribute__((target("avx,avx2,fma"))) void GroupMinAvx2(const float* d,
+                                                          size_t n, size_t g,
+                                                          float* out) {
+  const __m256 inf = _mm256_set1_ps(std::numeric_limits<float>::infinity());
+  for (size_t j = 0; j < g; j += 8) _mm256_storeu_ps(out + j, inf);
+  for (size_t base = 0; base < n; base += g) {
+    const size_t len = std::min(g, n - base);
+    size_t j = 0;
+    for (; j + 8 <= len; j += 8) {
+      _mm256_storeu_ps(out + j, _mm256_min_ps(_mm256_loadu_ps(d + base + j),
+                                              _mm256_loadu_ps(out + j)));
+    }
+    for (; j < len; ++j) {
+      if (d[base + j] < out[j]) out[j] = d[base + j];
+    }
+  }
+}
+
+__attribute__((target("avx,avx2,fma"))) size_t CollectAvx2(
+    const float* d, size_t n, float t, float* od, uint32_t* oi) {
+  const __m256 tv = _mm256_set1_ps(t);
+  size_t c = 0, i = 0;
+  for (; i + 8 <= n; i += 8) {
+    unsigned m = static_cast<unsigned>(_mm256_movemask_ps(
+        _mm256_cmp_ps(_mm256_loadu_ps(d + i), tv, _CMP_LE_OQ)));
+    while (m) {
+      const unsigned j = static_cast<unsigned>(__builtin_ctz(m));
+      m &= m - 1;
+      od[c] = d[i + j];
+      oi[c] = static_cast<uint32_t>(i + j);
+      ++c;
+    }
+  }
+  for (; i < n; ++i) {
+    if (d[i] <= t) {
+      od[c] = d[i];
+      oi[c] = static_cast<uint32_t>(i);
+      ++c;
+    }
+  }
+  return c;
+}
+
+#endif
+
+}  // namespace
+
+void SelectTopK(const float* distances, size_t n, size_t k,
+                float max_distance,
+                std::vector<std::pair<uint32_t, float>>* out) {
+  if (k == 0 || n == 0) return;
+  k = std::min(k, n);
+  ScratchLease<TopKBuffer> b;
+  int isa = 0;  // 2: AVX-512, 1: AVX2, 0: scalar
+#ifdef __x86_64__
+  if (research_scann::RuntimeSupportsAvx512()) {
+    isa = 2;
+  } else if (research_scann::RuntimeSupportsAvx2()) {
+    isa = 1;
+  }
+#endif
+  float t = max_distance;
+  const size_t g = NumGroups(k);
+  if (g < n) {
+    float kth = std::numeric_limits<float>::quiet_NaN();
+#ifdef __x86_64__
+    // Rank counting is quadratic in G: only for the smallest G.
+    if (isa == 2 && g == 64) kth = GroupThresholdAvx512<4>(distances, n, k);
+#endif
+    if (std::isnan(kth)) {
+      b->group_min.resize(g);
+#ifdef __x86_64__
+    if (isa == 2) {
+      GroupMinAvx512(distances, n, g, b->group_min.data());
+    } else if (isa == 1) {
+      GroupMinAvx2(distances, n, g, b->group_min.data());
+    } else {
+      GroupMinScalar(distances, n, g, b->group_min.data());
+    }
+#else
+    GroupMinScalar(distances, n, g, b->group_min.data());
+#endif
+    std::nth_element(b->group_min.begin(), b->group_min.begin() + (k - 1),
+                     b->group_min.end());
+      kth = b->group_min[k - 1];
+    }
+    // Group minima are never NaN (min() skips NaNs, groups start at inf).
+    if (kth < t) t = kth;
+  }
+  b->d.resize(n + 16);
+  b->i.resize(n + 16);
+  size_t c;
+#ifdef __x86_64__
+  if (isa == 2) {
+    c = CollectAvx512(distances, n, t, b->d.data(), b->i.data());
+  } else if (isa == 1) {
+    c = CollectAvx2(distances, n, t, b->d.data(), b->i.data());
+  } else {
+    c = CollectScalar(distances, n, t, b->d.data(), b->i.data());
+  }
+#else
+  c = CollectScalar(distances, n, t, b->d.data(), b->i.data());
+#endif
+  out->reserve(out->size() + std::min(c, k));
+  if (c <= k) {
+    for (size_t j = 0; j < c; ++j) out->emplace_back(b->i[j], b->d[j]);
+    return;
+  }
+  b->keys.resize(c);
+  for (size_t j = 0; j < c; ++j)
+    b->keys[j] = (uint64_t{OrderedBits(b->d[j])} << 32) | b->i[j];
+  std::nth_element(b->keys.begin(), b->keys.begin() + (k - 1),
+                   b->keys.begin() + c);
+  for (size_t j = 0; j < k; ++j) {
+    const uint32_t i = static_cast<uint32_t>(b->keys[j]);
+    out->emplace_back(i, distances[i]);
+  }
+}
+
 bool FastInt8Centers::DotProductDistancesWith(const char* kernel,
                                               const float* query,
                                               float* out) const {
