@@ -385,6 +385,12 @@ isn't a one-line change:
       DeduplicateDatabaseSpilledResults() sorts with std::sort by (index,
       distance) instead of std::stable_sort by index (a temporary buffer
       per query); same results.
+  src/scann/distance_measures/one_to_many/one_to_many_asymmetric_impl.inc
+      With a float query on AVX2, OneToManyAsymmetricTemplate computes two
+      groups of three rows at once (six independent accumulators; each row
+      computed exactly as before), HandleXDims expands each 8-byte half of
+      16 int8 values straight from memory, and the paired path prefetches
+      each cache line of the next rows once instead of every 16 elements.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
       directly (no docid lock, no context manager). upsert() passes the rows

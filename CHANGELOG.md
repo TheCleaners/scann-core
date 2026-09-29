@@ -65,6 +65,15 @@ All notable changes to scann-core. Versions follow
   one CCD (bound by memory bandwidth). About +25 ms of load time.
   `SCANN_HUGEPAGES=0` turns it off. See
   [docs/api_reference.md](docs/api_reference.md#memory-huge-pages).
+- Lower fixed cost per query: the int8 kernel that scores a query against
+  the tree's centroids (`quantize_centroids=True`, the tuned configs'
+  tokenization, most of a query's cost when few leaves are searched)
+  computes six centroids at a time instead of three, reads each 8-byte half
+  straight into the conversion, and prefetches each cache line once
+  (results bit-identical: each centroid's sum is computed with the same
+  operations in the same order). Its bfloat16 twin, used for reordering,
+  gets the same. C++ `Search()` with 1 leaf and 10 candidates on GloVe-100
+  (1,500 leaves): 10.3 → 9.35 µs.
 
 ### Changed
 - The x86 builds use `-mpopcnt` by default (`SCANN_ARCH_FLAGS`), and the
