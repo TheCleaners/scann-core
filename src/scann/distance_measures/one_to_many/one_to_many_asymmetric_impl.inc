@@ -130,6 +130,30 @@ SCANN_SIMD_INLINE Simd<float, kUnrollBy> HandleXDims(
 
   static_assert(kNumDims == 4 || kNumDims == 8 || kNumDims == 16);
 
+  // scann-core: on AVX2, expand each 8-byte half of the 16 int8 values
+  // straight from memory (one vpmovsxbd with a memory operand each; the
+  // generic code below loads 16 bytes, then shifts or broadcasts the upper
+  // half into a register first). The same values in the same order.
+  if constexpr (std::is_same_v<DataT, int8_t> && kNumDims == 16 &&
+                IsSame<Simd<float>, Avx2<float>>()) {
+    static_assert(decltype(qq_vals)::kNumRegisters == 2);
+    decltype(qq_vals) mult;
+    if constexpr (kIsSquaredL2) {
+      mult = LoadXFloats<kNumDims>(inv_multipliers_for_squared_l2 + dim);
+    }
+    for (size_t half : Seq(2)) {
+      for (size_t jj : Seq(kUnrollBy)) {
+        const __m128i bytes = _mm_loadl_epi64(
+            reinterpret_cast<const __m128i*>(ptrs[jj] + dim + 8 * half));
+        accums[jj] = FusedMultiplyOp<kIsSquaredL2, DataT>(
+            qq_vals[half],
+            Avx2<float>{AvxFunctionsAvx2Fma::Int8ToFloatLower(bytes)},
+            mult[half], accums[jj]);
+      }
+    }
+    return accums;
+  }
+
   static_assert(std::is_same_v<DataT, int8_t> || kNumDims <= 8 ||
                 Simd<int16_t>::kRegisterBits >= 256);
 
@@ -296,12 +320,20 @@ SCANN_SIMD_INLINE void ComputeOneToManyScores(
   Simd<float, kUnrollBy> accums = Zeros();
 
   size_t dim = 0;
+  // scann-core: the paired (kUnrollBy == 6) AVX2 path prefetches each cache
+  // line of the next rows once, instead of once per 16 elements (up to 4
+  // prefetches per line; they took load slots from the kernel). No effect on
+  // results.
+  constexpr bool kPrefetchPerLine = kUnrollBy == 6;
+  constexpr size_t kElementsPerLine = 64 / sizeof(DataT);
   if constexpr (std::is_same_v<DataT, int8_t> ||
                 Simd<int16_t>::kRegisterBits >= 256) {
     for (; dim + 16 <= dimensionality; dim += 16) {
       if constexpr (kShouldPrefetch) {
-        for (size_t jj : Seq(kUnrollBy)) {
-          absl::PrefetchToLocalCacheNta(prefetch_ptrs[jj] + dim);
+        if (!kPrefetchPerLine || dim % kElementsPerLine == 0) {
+          for (size_t jj : Seq(kUnrollBy)) {
+            absl::PrefetchToLocalCacheNta(prefetch_ptrs[jj] + dim);
+          }
         }
       }
       accums = HandleXDims<16, kIsSquaredL2>(
@@ -325,13 +357,28 @@ SCANN_SIMD_INLINE void ComputeOneToManyScores(
     }
   }
 
+  if constexpr (kShouldPrefetch && kPrefetchPerLine) {
+    // The rows' last lines (rows needn't start on a line boundary).
+    for (size_t jj : Seq(kUnrollBy)) {
+      absl::PrefetchToLocalCacheNta(prefetch_ptrs[jj] + dimensionality - 1);
+    }
+  }
+
   if (dim + 4 <= dimensionality) {
     accums = HandleXDims<4, kIsSquaredL2>(
         query, ptrs, inv_multipliers_for_squared_l2, dim, accums);
     dim += 4;
   }
 
-  if constexpr (kUnrollBy == 4) {
+  if constexpr (kUnrollBy == 6) {
+    // scann-core: two groups of three rows (see OneToManyAsymmetricTemplate);
+    // HorizontalSum3X reduces each accumulator on its own, so every row gets
+    // the bits it gets in a group of three.
+    HorizontalSum3X(accums[0], accums[1], accums[2], &results[0], &results[1],
+                    &results[2]);
+    HorizontalSum3X(accums[3], accums[4], accums[5], &results[3], &results[4],
+                    &results[5]);
+  } else if constexpr (kUnrollBy == 4) {
     HorizontalSum4X(accums[0], accums[1], accums[2], accums[3], &results[0],
                     &results[1], &results[2], &results[3]);
   } else if constexpr (kUnrollBy == 3) {
@@ -645,7 +692,59 @@ SCANN_SIMD_INLINE void OneToManyAsymmetricTemplate(
   }
 
   array<const DataT*, kUnrollBy> prefetch_ptrs;
-  for (size_t j : Seq(num_outer_iters)) {
+  size_t j_start = 0;
+  // scann-core: with a float query, the AVX2 kernel computes two outer
+  // iterations (two groups of kUnrollBy = 3 rows) at once. Each row keeps its
+  // own accumulator and exactly the same operations in the same order (the
+  // results are bit-identical), but six independent FMA chains instead of
+  // three hide more of the FMA latency. Together with the direct loads in
+  // HandleXDims and one prefetch per line, the int8 tokenization of a
+  // 1500-centroid tree (most of a query's fixed cost) is about 17 % faster.
+  if constexpr (kUnrollBy == 3 && std::is_same_v<QueryT, float> &&
+                IsSame<Simd<float>, Avx2<float>>()) {
+    constexpr size_t kPairUnroll = 2 * kUnrollBy;
+    array<const DataT*, kPairUnroll> pair_prefetch_ptrs;
+    for (; j_start + 1 < num_outer_iters; j_start += 2) {
+      const size_t j = j_start;
+      if constexpr (kShouldPrefetch) {
+        for (size_t half : Seq(2)) {
+          if (j + half + num_prefetch_datapoints < num_outer_iters) {
+            const size_t prefetch_j = j + half + num_prefetch_datapoints;
+            for (size_t jj : Seq(kUnrollBy)) {
+              pair_prefetch_ptrs[half * kUnrollBy + jj] =
+                  get_db_ptr(prefetch_j + jj * num_outer_iters);
+            }
+          } else {
+            for (size_t jj : Seq(kUnrollBy)) {
+              pair_prefetch_ptrs[half * kUnrollBy + jj] = get_db_ptr(0);
+            }
+          }
+        }
+      }
+
+      array<const DataT*, kPairUnroll> ptrs;
+      for (size_t half : Seq(2)) {
+        for (size_t jj : Seq(kUnrollBy)) {
+          ptrs[half * kUnrollBy + jj] =
+              get_db_ptr(j + half + jj * num_outer_iters);
+        }
+      }
+
+      array<float, kPairUnroll> results;
+      ComputeOneToManyScores<kIsSquaredL2, kShouldPrefetch>(
+          query, ptrs, pair_prefetch_ptrs, inv_multipliers_for_squared_l2,
+          dimensionality, num_outer_iters, results);
+
+      for (size_t half : Seq(2)) {
+        for (size_t jj : Seq(kUnrollBy)) {
+          InvokeCallbackSimd(callback, j + half + jj * num_outer_iters,
+                             results[half * kUnrollBy + jj], datapoint_bytes,
+                             ptrs[half * kUnrollBy + jj]);
+        }
+      }
+    }
+  }
+  for (size_t j : Seq(j_start, num_outer_iters)) {
     if constexpr (kShouldPrefetch) {
       if (j + num_prefetch_datapoints < num_outer_iters) {
         const size_t prefetch_j = j + num_prefetch_datapoints;

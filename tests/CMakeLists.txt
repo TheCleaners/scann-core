@@ -105,6 +105,15 @@ target_link_libraries(scann_core_l2_as_dot_product_test PRIVATE scann::core)
 add_test(NAME l2_as_dot_product COMMAND scann_core_l2_as_dot_product_test)
 set_tests_properties(l2_as_dot_product PROPERTIES TIMEOUT 900)
 
+# The single-query fast paths (0.2.1): the LUT16 dot-product lookup table
+# builder and FastTopNeighbors::InitLikeNew against the code they replace,
+# bit for bit; per-thread scratch leases; searches from 8 threads at once
+# against the same searches one at a time.
+add_executable(scann_core_search_scratch_test cpp/search_scratch_test.cc)
+target_link_libraries(scann_core_search_scratch_test PRIVATE scann::core)
+add_test(NAME search_scratch COMMAND scann_core_search_scratch_test)
+set_tests_properties(search_scratch PROPERTIES TIMEOUT 900)
+
 # The default thread count (scann_core::AvailableCPUs): cgroup quota parsing,
 # the SCANN_NUM_THREADS override, the affinity mask.
 add_executable(scann_core_available_cpus_test cpp/available_cpus_test.cc)

@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -44,6 +48,7 @@
 #include "scann/utils/scalar_quantization_helpers.h"
 #include "scann/utils/types.h"
 #include "scann/utils/util_functions.h"
+#include "scann_core/scratch.h"
 
 namespace research_scann {
 
@@ -153,9 +158,11 @@ Status PostprocessDistancesForSpilling(
       (spilling_type == QuerySpillingConfig::NO_SPILLING)
           ? std::max(1, num_tokenized_branch)
           : max_centers;
-  FastTopNeighbors<float> top_n(max_results, epsilon);
-  top_n.PushBlock(distances, 0);
-  top_n.FinishUnsorted(child_centers);
+  // scann-core: a per-thread FastTopNeighbors, initialized as a new one.
+  scann_core::ScratchLease<FastTopNeighbors<float>> top_n;
+  top_n->InitLikeNew(max_results, epsilon);
+  top_n->PushBlock(distances, 0);
+  top_n->FinishUnsorted(child_centers);
   return OkStatus();
 }
 

@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 
 
@@ -21,12 +25,14 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "absl/base/call_once.h"
 #include "absl/strings/str_cat.h"
 #include "scann/base/search_parameters.h"
 #include "scann/data_format/datapoint.h"
@@ -46,6 +52,7 @@
 #include "scann/utils/top_n_amortized_constant.h"
 #include "scann/utils/types.h"
 #include "scann/utils/util_functions.h"
+#include "scann_core/scratch.h"
 
 namespace research_scann {
 namespace asymmetric_hashing2 {
@@ -245,9 +252,63 @@ class AsymmetricQueryer : public AsymmetricQueryerBase {
   }
 
  private:
+  // scann-core: the model's Lut16DotProductLookupBuilder, made on first use
+  // (nullptr where it doesn't apply or doesn't reproduce the generic path).
+  const asymmetric_hashing_internal::Lut16DotProductLookupBuilder*
+  lut16_dot_product_lookup_builder() const;
+
   shared_ptr<const ChunkingProjection<T>> projector_;
   shared_ptr<const Model<T>> model_;
+
+  mutable absl::once_flag lut16_dot_product_once_;
+  mutable std::unique_ptr<
+      const asymmetric_hashing_internal::Lut16DotProductLookupBuilder>
+      lut16_dot_product_;
+  // Whether projector_ cuts a dense query of the builder's total_dims() into
+  // consecutive slices, one per block (checked on a probe query).
+  mutable bool lut16_contiguous_chunks_ = false;
 };
+
+template <typename T>
+const asymmetric_hashing_internal::Lut16DotProductLookupBuilder*
+AsymmetricQueryer<T>::lut16_dot_product_lookup_builder() const {
+  if constexpr (std::is_same_v<T, float>) {
+    absl::call_once(lut16_dot_product_once_, [this] {
+      if (model_->num_clusters_per_block() != 16) return;
+      lut16_dot_product_ =
+          asymmetric_hashing_internal::Lut16DotProductLookupBuilder::Create(
+              model_->centers());
+      if (!lut16_dot_product_ || projector_->initial_projector() != nullptr ||
+          projector_->is_identity_chunk_impl()) {
+        return;
+      }
+      const size_t dims = lut16_dot_product_->total_dims();
+      std::vector<float> probe(dims);
+      for (size_t i = 0; i < dims; ++i) probe[i] = static_cast<float>(i + 1);
+      ChunkedDatapoint<float> projected;
+      if (!projector_
+               ->ProjectInput(
+                   DatapointPtr<float>(nullptr, probe.data(), dims, dims),
+                   &projected)
+               .ok() ||
+          !lut16_dot_product_->Accepts(projected)) {
+        return;
+      }
+      size_t offset = 0;
+      for (size_t b = 0; b < projected.size(); ++b) {
+        const DatapointPtr<float> chunk = projected[b];
+        for (size_t d = 0; d < chunk.dimensionality(); ++d) {
+          if (chunk.values()[d] != probe[offset + d]) return;
+        }
+        offset += chunk.dimensionality();
+      }
+      lut16_contiguous_chunks_ = offset == dims;
+    });
+    return lut16_dot_product_.get();
+  } else {
+    return nullptr;
+  }
+}
 
 template <typename T>
 inline ConstSpan<T> GetRawLookupTable(const LookupTable& lookup_table) {
@@ -287,12 +348,43 @@ StatusOr<LookupTable> AsymmetricQueryer<T>::CreateLookupTable(
       return query;
     }
   }();
-  SCANN_ASSIGN_OR_RETURN(
-      auto raw_float_lookup,
-      asymmetric_hashing_internal::CreateRawFloatLookupTable(
-          query_no_bias, *projector_, lookup_distance, model_->centers(),
-          model_->block_transposed_centers(),
-          model_->num_clusters_per_block()));
+  // scann-core: dot-product LUT16 models compute the raw table in one pass
+  // (same values; see Lut16DotProductLookupBuilder), into a per-thread
+  // buffer, from the query itself when the projection only slices it.
+  scann_core::ScratchLease<std::vector<float>> raw_float_lookup_scratch;
+  std::vector<float>& raw_float_lookup = *raw_float_lookup_scratch;
+  bool have_raw_float_lookup = false;
+  if constexpr (std::is_same_v<T, float>) {
+    if (lookup_distance.specially_optimized_distance_tag() ==
+        DistanceMeasure::DOT_PRODUCT) {
+      if (const auto* builder = lut16_dot_product_lookup_builder()) {
+        raw_float_lookup.resize(16 * model_->num_blocks());
+        if (lut16_contiguous_chunks_ && query_no_bias.IsDense() &&
+            query_no_bias.dimensionality() == builder->total_dims() &&
+            query_no_bias.nonzero_entries() == builder->total_dims()) {
+          builder->ComputeContiguous(query_no_bias.values(),
+                                     MakeMutableSpan(raw_float_lookup));
+          have_raw_float_lookup = true;
+        } else {
+          ChunkedDatapoint<float> projected;
+          SCANN_RETURN_IF_ERROR(
+              projector_->ProjectInput(query_no_bias, &projected));
+          if (builder->Accepts(projected)) {
+            builder->Compute(projected, MakeMutableSpan(raw_float_lookup));
+            have_raw_float_lookup = true;
+          }
+        }
+      }
+    }
+  }
+  if (!have_raw_float_lookup) {
+    SCANN_ASSIGN_OR_RETURN(
+        raw_float_lookup,
+        asymmetric_hashing_internal::CreateRawFloatLookupTable(
+            query_no_bias, *projector_, lookup_distance, model_->centers(),
+            model_->block_transposed_centers(),
+            model_->num_clusters_per_block()));
+  }
 
   LookupTable result;
   if (IsIntegerType<LookupElement>() &&

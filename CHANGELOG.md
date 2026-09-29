@@ -65,6 +65,40 @@ All notable changes to scann-core. Versions follow
   one CCD (bound by memory bandwidth). About +25 ms of load time.
   `SCANN_HUGEPAGES=0` turns it off. See
   [docs/api_reference.md](docs/api_reference.md#memory-huge-pages).
+- `search()` costs less per query, with bit-identical results (the next
+  three items). Through the Python API, one pinned thread, tuned
+  GloVe-100 (1,500 leaves, int8 centroids, bfloat16 reordering) and
+  SIFT-128 (`l2_as_dot_product`, 1,000 leaves), 6 alternating runs,
+  medians: 1 leaf / 10 candidates 11.4 → 9.6 µs (GloVe) and 10.4 →
+  8.7 µs (SIFT); at recall 0.8 / 0.9 / 0.95, −6 / −2 / 0 % (GloVe, noise
+  about ±1.5 %) and −9 / −7 / −6 % (SIFT). `search_batched` and
+  `search_batched_parallel` (8 threads) +1 to +11 % QPS.
+- The int8 kernel that scores a query against the tree's centroids
+  (`quantize_centroids=True`, the tuned configs' tokenization, most of a
+  query's cost when few leaves are searched) computes six centroids at a
+  time instead of three, reads each 8-byte half straight into the
+  conversion, and prefetches each cache line once (results bit-identical:
+  each centroid's sum is computed with the same operations in the same
+  order). Its bfloat16 twin, used for reordering, gets the same. C++
+  `Search()` with 1 leaf and 10 candidates on GloVe-100 (1,500 leaves):
+  10.1 → 9.1 µs.
+- A tree + AH `search()` makes 2 heap allocations instead of 14 (with the
+  next item's per-thread lookup-table buffer): the distances to the
+  centroids, the int8-adjusted query, the list of leaves and the top-N
+  buffers of tokenization and of the leaf scan are per-thread buffers that
+  are reused (the top-N ones initialized exactly as new ones, so results
+  are bit-identical). The time saved was within the noise (glibc's
+  per-thread cache made those allocations cheap), but a search no longer
+  allocates and zero-fills 4–8 KB per query.
+- The lookup table of a dot-product AH index (LUT16, the default with
+  `score_ah(1–4)` on `dot_product` and `l2_as_dot_product` indexes) is
+  computed in one pass over all blocks (it was one distance call per
+  block, 50 for GloVe-100) and its conversion to int8 vectorizes, with the
+  same values bit for bit: the new code evaluates each entry with the
+  operations the generic code uses on this build, and checks that against
+  the generic code when the index is first searched (falling back to it
+  otherwise). C++ `Search()` with 1 leaf and 10 candidates: GloVe-100
+  9.1 → 8.4 µs, SIFT-128 (`l2_as_dot_product`) 8.2 → 7.7 µs.
 
 ### Changed
 - The x86 builds use `-mpopcnt` by default (`SCANN_ARCH_FLAGS`), and the

@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified in 2026 by Elias Benali (@ebenali) and TheCleaners for
+// scann-core (a derived work of ScaNN, not an official Google product);
+// see NOTICE.
 
 #ifndef SCANN_UTILS_FAST_TOP_NEIGHBORS_H_
 #define SCANN_UTILS_FAST_TOP_NEIGHBORS_H_
@@ -81,6 +85,7 @@ class FastTopNeighbors {
     sz_ = rhs.sz_;
     max_results_ = rhs.max_results_;
     capacity_ = rhs.capacity_;
+    allocated_capacity_ = rhs.allocated_capacity_;
     max_capacity_ = rhs.max_capacity_;
     epsilon_ = rhs.epsilon_.load(std::memory_order_relaxed);
     mutator_held_ = rhs.mutator_held_;
@@ -114,6 +119,40 @@ class FastTopNeighbors {
     }
 
     AllocateArrays(capacity_);
+    FillDistancesForMSan();
+  }
+
+  // scann-core: the state Init() gives a newly constructed object (the same
+  // capacity, so the same garbage collections and results), reusing this
+  // object's arrays when they are large enough. For per-thread scratch
+  // objects (a plain Init() keeps a larger old capacity instead).
+  void InitLikeNew(size_t max_results,
+                   DistT epsilon = MaxOrInfinity<DistT>()) {
+    CHECK(!mutator_held_);
+    sz_ = 0;
+    epsilon_.store(epsilon, std::memory_order_relaxed);
+    max_results_ = max_results;
+    const size_t max_no_realloc_results =
+        (epsilon < MaxOrInfinity<DistT>()) ? 128 : 16384;
+    size_t capacity;
+    if (max_results == 0) {
+      capacity = 32;
+      max_capacity_ = 0;
+    } else if (max_results <= max_no_realloc_results) {
+      capacity = max_capacity_ = NextMultipleOf(2 * max_results, 32);
+    } else {
+      capacity = 2 * max_no_realloc_results;
+      constexpr size_t kMaxPossibleResults =
+          (numeric_limits<size_t>::max() ^ size_t(31)) / 2;
+      max_capacity_ =
+          NextMultipleOf(2 * std::min(kMaxPossibleResults, max_results), 32);
+    }
+    if (FixedCapacity == 0 && indices_ != nullptr &&
+        capacity <= allocated_capacity_) {
+      capacity_ = capacity;
+    } else {
+      AllocateArrays(capacity);
+    }
     FillDistancesForMSan();
   }
 
@@ -275,6 +314,10 @@ class FastTopNeighbors {
 
   size_t max_capacity_ = 0;
 
+  // scann-core: the capacity the arrays were allocated for (see
+  // InitLikeNew).
+  size_t allocated_capacity_ = 0;
+
   std::atomic<DistT> epsilon_ = MaxOrInfinity<DistT>();
 
   constexpr static size_t kPadding = 96;
@@ -390,6 +433,15 @@ class FastTopNeighbors<DistT, DatapointIndexT, FixedCapacity>::Mutator {
   friend class FastTopNeighbors;
 };
 
+// scann-core: per-thread scratch FastTopNeighbors (scann_core::ScratchLease)
+// are kept only while their arrays are small.
+template <typename DistT, typename DatapointIndexT, size_t FixedCapacity>
+bool ScratchIsRetainable(
+    const FastTopNeighbors<DistT, DatapointIndexT, FixedCapacity>& top_n) {
+  return top_n.capacity() * (sizeof(DistT) + 2 * sizeof(DatapointIndexT)) <=
+         (size_t{1} << 20);
+}
+
 template <typename DistT, typename DatapointIndexT = DatapointIndex>
 using FastTopNeighborsMutator =
     typename FastTopNeighbors<DistT, DatapointIndexT>::Mutator;
@@ -479,6 +531,7 @@ template <typename DistT, typename DatapointIndexT, size_t FixedCapacity>
 void FastTopNeighbors<DistT, DatapointIndexT, FixedCapacity>::AllocateArrays(
     size_t capacity) {
   capacity_ = capacity;
+  allocated_capacity_ = capacity;
   size_t indices_capacity = 2 * capacity_ + kPadding;
   size_t distances_capacity = capacity_ + kPadding;
   size_t mask_capacity = 2 * capacity_ / 32 + 2;

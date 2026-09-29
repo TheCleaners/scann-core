@@ -385,6 +385,40 @@ isn't a one-line change:
       DeduplicateDatabaseSpilledResults() sorts with std::sort by (index,
       distance) instead of std::stable_sort by index (a temporary buffer
       per query); same results.
+  src/scann/distance_measures/one_to_many/one_to_many_asymmetric_impl.inc
+      With a float query on AVX2, OneToManyAsymmetricTemplate computes two
+      groups of three rows at once (six independent accumulators; each row
+      computed exactly as before), HandleXDims expands each 8-byte half of
+      16 int8 values straight from memory, and the paired path prefetches
+      each cache line of the next rows once instead of every 16 elements.
+  src/scann/utils/fast_top_neighbors.h
+      InitLikeNew(): the state a new object gets from Init(), reusing the
+      object's arrays when they are large enough (allocated_capacity_);
+      ScratchIsRetainable() for scann_core::ScratchLease.
+  src/scann/trees/kmeans_tree/kmeans_tree_node.h,
+  src/scann/trees/kmeans_tree/kmeans_tree_node.cc,
+  src/scann/tree_x_hybrid/tree_ah_hybrid_residual.cc
+      FindChildrenWithSpilling(), GetAllDistancesInt8() (dense queries),
+      PostprocessDistancesForSpilling(), FindNeighborsImpl() and
+      FindNeighborsInternal1() (global top-N) use per-thread scratch objects
+      (scann_core::ScratchLease, core/scann_core/scratch.h) for the
+      centroid distances, the adjusted query, the top-N buffers, the token
+      list and the leaf list, instead of allocating them per query.
+  src/scann/hashes/internal/asymmetric_hashing_impl.h,
+  src/scann/hashes/internal/asymmetric_hashing_impl.cc
+      Lut16DotProductLookupBuilder: the raw float LUT of a dot-product
+      model with 16 centers per block and blocks of 1-4 dimensions, from a
+      dimension-major copy of the centers, evaluating each entry with the
+      same operations as the generic DenseDistanceOneToMany path for the
+      build's Highway lane count (and DenseDotProductSse4 for the 16th
+      center); Create() verifies that against the generic path on test
+      inputs and declines otherwise. ConvertLookupToFixedPoint's truncating
+      int8 conversion is branch-free (same values), so it vectorizes.
+  src/scann/hashes/asymmetric_hashing2/querying.h
+      CreateLookupTable() uses the model's Lut16DotProductLookupBuilder
+      (made on first use) for DOT_PRODUCT lookups, reading the blocks
+      straight from the query when the projection is plain chunking
+      (checked once with a probe query), into a per-thread buffer.
   python/scann/scann_ops/py/scann_ops_pybind.py
       search() on a searcher without docids calls the pybind searcher
       directly (no docid lock, no context manager). upsert() passes the rows
