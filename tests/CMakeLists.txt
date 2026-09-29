@@ -124,6 +124,14 @@ target_link_libraries(scann_core_search_scratch_test PRIVATE scann::core)
 add_test(NAME search_scratch COMMAND scann_core_search_scratch_test)
 set_tests_properties(search_scratch PROPERTIES TIMEOUT 900)
 
+# Reordering with the candidates' rows prefetched (0.3) against the
+# one-to-many kernels without it, bit for bit: float32, bfloat16 and int8
+# reordering, many dimensionalities and candidate counts.
+add_executable(scann_core_reorder_prefetch_test cpp/reorder_prefetch_test.cc)
+target_link_libraries(scann_core_reorder_prefetch_test PRIVATE scann::core)
+add_test(NAME reorder_prefetch COMMAND scann_core_reorder_prefetch_test)
+set_tests_properties(reorder_prefetch PROPERTIES TIMEOUT 900)
+
 # The AVX-512 LUT16 layout (conversions, resizes, per-datapoint writes)
 # and, on AVX-512 CPUs, the AVX-512 kernel against the AVX2 one, bit for bit.
 add_executable(scann_core_lut16_avx512_test cpp/lut16_avx512_test.cc)
